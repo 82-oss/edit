@@ -121,3 +121,12 @@ export function keepRule(word: string, how: string, asks = true, grouped = false
     `Keep it only when their next words say yes (to all, or to the ones they name). If they go on without answering, it stays this ${word}'s: don't keep it, and don't ask about it again.`
   );
 }
+
+/**
+ * The teaching draft (teaching_draft.ts; Sphe, Nov 22): an Edit V2 channel
+ * project's agent notes what might be taught as it goes, unseen, still asks
+ * at the end of its turn, and moves the draft word for word when told to
+ * teach what was talked about.
+ */
+export const DRAFT_RULE =
+  "YOUR TEACHING DRAFT: what could become this channel's teaching but isn't said to hold (a taste that sounds general, an effect or a sound they liked, a fix that might hold for every video) goes into your draft as you work, quietly, with draft_teaching: each lesson in the words it will be kept in, with its lane; each effect by its folder. The person never sees it; you're shown it with each of their messages. Still ask at the end of your turn as above, and mark what you asked (asked). A yes: teach_drafted with its names. A no: drop it. Unanswered, it stays in the draft and isn't asked again. \"Teach everything we talked about\" (\"teach this\", \"keep all of that\") is their yes to the whole draft: teach_drafted, then name what was kept and what wasn't, and why. They can ask what's in it, or tell you to drop one. What's said outright to hold is kept at once, as above, never drafted; a fix for this video only is neither.";

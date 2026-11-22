@@ -35,8 +35,9 @@ test("tool_reference_is_one_short_line_per_tool", () => {
   // start_removal's marks, unmark and blur mode (Nov 18: the agent's in and out points, the tracked blur) a few words more;
   // addons and set_addon (Nov 21: a channel's add-ons, set through the agent) a line each; note_lesson's line gone from
   // the house's list alone (Nov 21: the lessons inbox removed; V2's never had it), so the gap is that line wider;
-  // remove_effect_files and save_to_library's also (Nov 22: a kept effect carries only what its page loads) a line more.
-  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_850);
+  // remove_effect_files and save_to_library's also (Nov 22: a kept effect carries only what its page loads) a line more;
+  // draft_teaching and teach_drafted (Nov 22: the hidden teaching draft) two lines.
+  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 3_450);
   expect(reference).toContain("- apply_edit_plan(base_rev: integer, operations: array, ");
   // Commentary's posts, video references and shot checks, Edit Script and the team's effects, came in Oct 26;
   // read_upload (any file dropped in, Oct 31) one short line more (note_lesson, the lessons inbox of Nov 1, came and went: Nov 21),
@@ -54,8 +55,8 @@ test("tool_reference_is_one_short_line_per_tool", () => {
 
 test("every tool takes project_id; the instructions list the skills", () => {
   // other_channels (Nov 14): a channel's agent reaching into another channel; find_camera_time (Nov 17); teach_removal and check_removal (Nov 17); start_removal (Nov 17);
-  // addons and set_addon (Nov 21); note_lesson gone (Nov 21: Sphe, "completely remove the lessons inbox system"); remove_effect_files (Nov 22).
-  expect(TOOLS.length).toBe(129);
+  // addons and set_addon (Nov 21); note_lesson gone (Nov 21: Sphe, "completely remove the lessons inbox system"); remove_effect_files, draft_teaching and teach_drafted (Nov 22).
+  expect(TOOLS.length).toBe(131);
   for (const tool of TOOLS) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.properties.project_id).toEqual({

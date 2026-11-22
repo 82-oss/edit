@@ -51,6 +51,8 @@ export const HQ_TOOLS: readonly string[] = [
   "remove_effect_files",
   "archive_in_library",
   "remember",
+  "draft_teaching",
+  "teach_drafted",
   "teach_removal",
   "addons",
   "set_addon",

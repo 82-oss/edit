@@ -25,6 +25,8 @@ import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
 import { changeLesson, changedMost, lessonRefusal, MEMORY_MOST, PART_MOST } from "./teaching.ts";
 import * as teachingConflicts from "./teaching_conflicts.ts";
+import * as draft from "./teaching_draft.ts";
+import * as lanes from "./lanes.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** An effect's name from a call, in a project made the new way. */
@@ -542,6 +544,141 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   return text(`${changing ? "Changed" : "Remembered as"} ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`);
 }
 
+// ---------------------------------------------------------------- the teaching draft (teaching_draft.ts; Sphe, Nov 22)
+
+/** A `for` the draft keeps, or none. */
+const forOf = (value: unknown): "group" | "channel" | undefined => (value === "group" || value === "channel" ? value : value === undefined || value === null ? undefined : (() => { throw new Error('for is "group" or "channel"'); })());
+
+/** A string the draft needs, trimmed, at most `most` characters. */
+function said(value: unknown, what: string, most: number): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${what} is required`);
+  if (value.trim().length > most) throw new Error(`${what} is at most ${most} characters`);
+  return value.trim();
+}
+
+/** What's taught now in `lane` of the project's channel, by name (the channel's own winning over its group's). */
+function taughtIn(channel: string, lane: draft.Lane): v2cloud.Skill[] {
+  return lane === "edit" ? v2cloud.memories(channels.placesOf(channel, "edit")) : lanes.lessonsOf({ channel, lane });
+}
+
+async function draftTeaching({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  named(app, projectId, { name: "-" });
+  const channel = app.store.get(projectId)!.project.channel;
+  if (typeof channel !== "string" || channel === "") throw new Error("This project isn't a channel's, so nothing is drafted or kept from it.");
+  const now = draft.read(app.store, projectId);
+  const list = (value: unknown, what: string): Record<string, unknown>[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.some((one) => typeof one !== "object" || one === null)) throw new Error(`${what} is a list of objects`);
+    return value as Record<string, unknown>[];
+  };
+  const names = (value: unknown, what: string): string[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.some((one) => typeof one !== "string")) throw new Error(`${what} is a list of names in the draft`);
+    return value as string[];
+  };
+  const done: string[] = [];
+  await placeHere(app, projectId);
+  for (const given of list(args.lessons, "lessons")) {
+    const name = libraryName(given.name, "a lesson's name");
+    const lane = given.lane === undefined ? "edit" : typeof given.lane === "string" && (draft.LANES as readonly string[]).includes(given.lane) ? (given.lane as draft.Lane) : (() => { throw new Error(`${name}: lane is ${draft.LANES.join(", ")}`); })();
+    const reserved = v2cloud.reservedName(name, lane);
+    if (reserved !== null) throw new Error(reserved);
+    const text = said(given.text, `${name}: text`, PART_MOST[lane]);
+    const note = given.note === undefined || given.note === "" ? undefined : said(given.note, `${name}: note`, 160);
+    // Checked now as remember will check it, so it moves word for word: a part (with a note, or one taught as a part) up to its lane's longest, else a memory.
+    const before = taughtIn(channel, lane).find((one) => one.name === name);
+    const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
+    const refused = lessonRefusal(text, lane, part, part ? PART_MOST[lane] : MEMORY_MOST);
+    if (refused !== null) throw new Error(`${name}: ${refused.replace("(a longer part, read when needed, takes a note)", "(a longer part takes a note: when to read it)")}`);
+    if (taughtIn(channel, lane).some((one) => one.name === name && one.text.trim() === text)) {
+      done.push(`${name} is taught already, word for word: not drafted`);
+      continue;
+    }
+    const lesson: draft.Lesson = { name, lane, text, said: said(given.said, `${name}: said`, 600), at: Date.now(), ...(note !== undefined ? { note } : {}), ...(forOf(given.for) !== undefined ? { for: forOf(given.for)! } : {}) };
+    const at = now.lessons.findIndex((one) => one.name === name && one.lane === lane);
+    if (at >= 0) now.lessons[at] = lesson;
+    else if (now.lessons.length >= draft.LESSONS_MOST) throw new Error(`the draft holds ${draft.LESSONS_MOST} lessons at most: teach or drop some first`);
+    else now.lessons.push(lesson);
+    done.push(`${at >= 0 ? "changed" : "drafted"} lesson ${name} [${lane}]`);
+  }
+  for (const given of list(args.effects, "effects")) {
+    const name = libraryName(given.name, "an effect's name");
+    const kind = given.kind === "sound" ? "sound" : "effect";
+    const entry = kind === "sound" ? effects.SOUND_ENTRY : effects.ENTRY;
+    if (!fs.existsSync(join(effects.folder(app.store, projectId, name), entry))) throw new Error(`effects/${name}/ has no ${entry}: draft an effect built in this project`);
+    const as = given.as === undefined || given.as === "" ? undefined : libraryName(given.as, `${name}: as`);
+    const effect: draft.Effect = { name, kind, category: said(given.category, `${name}: category`, 40), note: said(given.note, `${name}: note`, 160), brief: said(given.brief, `${name}: brief`, 240), said: said(given.said, `${name}: said`, 600), at: Date.now(), ...(as !== undefined ? { as } : {}), ...(forOf(given.for) !== undefined ? { for: forOf(given.for)! } : {}) };
+    const at = now.effects.findIndex((one) => one.name === name);
+    if (at >= 0) now.effects[at] = effect;
+    else if (now.effects.length >= draft.EFFECTS_MOST) throw new Error(`the draft holds ${draft.EFFECTS_MOST} effects at most: teach or drop some first`);
+    else now.effects.push(effect);
+    done.push(`${at >= 0 ? "changed" : "drafted"} ${kind} ${name}`);
+  }
+  const known = (name: string) => now.lessons.some((one) => one.name === name) || now.effects.some((one) => one.name === name);
+  for (const name of names(args.asked, "asked")) {
+    if (!known(name)) throw new Error(`asked: there's no ${name} in the draft`);
+    for (const one of [...now.lessons, ...now.effects]) if (one.name === name) one.asked = true;
+  }
+  for (const name of names(args.drop, "drop")) {
+    if (!known(name)) throw new Error(`drop: there's no ${name} in the draft`);
+    now.lessons = now.lessons.filter((one) => one.name !== name);
+    now.effects = now.effects.filter((one) => one.name !== name);
+    done.push(`dropped ${name}`);
+  }
+  if (done.length === 0 && names(args.asked, "asked").length === 0) throw new Error("give lessons or effects to draft, asked, or drop");
+  draft.write(app.store, projectId, now);
+  return text(`${done.join("; ") || "marked as asked"}. The draft holds ${now.lessons.length} lesson${now.lessons.length === 1 ? "" : "s"} and ${now.effects.length} effect${now.effects.length === 1 ? "" : "s"}, unseen by the person.`);
+}
+
+async function teachDrafted({ app, args, projectId, scope }: ToolCall): Promise<Content[]> {
+  named(app, projectId, { name: "-" });
+  cloudOn();
+  teacherOnly("Teaching the draft");
+  const channel = app.store.get(projectId)!.project.channel;
+  if (typeof channel !== "string" || channel === "") throw new Error("This project isn't a channel's, so nothing is drafted or kept from it.");
+  const now = draft.read(app.store, projectId);
+  const wanted = args.names === undefined || args.names === null ? null : Array.isArray(args.names) && args.names.every((one) => typeof one === "string") ? new Set(args.names as string[]) : (() => { throw new Error("names is a list of the draft's names (leave it out for all of it)"); })();
+  if (wanted !== null) for (const name of wanted) if (!now.lessons.some((one) => one.name === name) && !now.effects.some((one) => one.name === name)) throw new Error(`there's no ${name} in the draft`);
+  if (now.lessons.length === 0 && now.effects.length === 0) return text("The draft is empty: nothing to teach.");
+  const kept: string[] = [];
+  const left: string[] = [];
+  const keptLessons = new Set<draft.Lesson>();
+  const keptEffects = new Set<draft.Effect>();
+  // Each through the tool a kept one takes (remember, a lane's remember, save_to_library), word for word.
+  for (const one of now.lessons) {
+    if (wanted !== null && !wanted.has(one.name)) continue;
+    const given = { skill: one.name, text: one.text, reason: one.said, ...(one.note !== undefined ? { note: one.note } : {}), ...(one.for !== undefined ? { for: one.for } : {}) };
+    try {
+      if (taughtIn(channel, one.lane).some((taught) => taught.name === one.name && taught.text.trim() === one.text.trim())) kept.push(`${one.name} (taught already, word for word)`);
+      else if (one.lane === "edit") kept.push(textOf(await remember({ app, args: given, projectId, scope })));
+      else kept.push(await lanes.call("remember", given, { channel, lane: one.lane }));
+      keptLessons.add(one);
+    } catch (error) {
+      left.push(`${one.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  for (const one of now.effects) {
+    if (wanted !== null && !wanted.has(one.name)) continue;
+    const given = { kind: one.kind, name: one.name, category: one.category, note: one.note, brief: one.brief, reason: one.said, ...(one.as !== undefined ? { as: one.as } : {}), ...(one.for !== undefined ? { for: one.for } : {}) };
+    try {
+      kept.push(textOf(await saveToLibrary({ app, args: given, projectId, scope })));
+      keptEffects.add(one);
+    } catch (error) {
+      left.push(`${one.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  // What went is gone from the draft; what didn't stays, for the person to settle.
+  const after = draft.read(app.store, projectId);
+  draft.write(app.store, projectId, {
+    ...after,
+    lessons: after.lessons.filter((one) => ![...keptLessons].some((gone) => gone.name === one.name && gone.lane === one.lane && gone.text === one.text)),
+    effects: after.effects.filter((one) => ![...keptEffects].some((gone) => gone.name === one.name && gone.at === one.at)),
+  });
+  return text([kept.length === 0 ? "Nothing was kept." : `Kept:\n${kept.map((one) => `- ${one}`).join("\n")}`, left.length === 0 ? "" : `Left in the draft:\n${left.map((one) => `- ${one}`).join("\n")}`].filter((one) => one !== "").join("\n"));
+}
+
+const textOf = (content: Content[]): string => content.map((one) => (one.type === "text" ? one.text : "")).join(" ").trim();
+
 /**
  * `teach_removal`: what this channel takes out of its footage's picture
  * (removal_lesson.ts), kept as its `removal` lesson (its group's by default),
@@ -680,6 +817,8 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["remove_effect_files", removeEffectFiles],
   ["archive_in_library", archiveInLibrary],
   ["remember", remember],
+  ["draft_teaching", draftTeaching],
+  ["teach_drafted", teachDrafted],
   ["teach_removal", teachRemoval],
   ["read_skill", readSkill],
   ["make_sound", makeSound],

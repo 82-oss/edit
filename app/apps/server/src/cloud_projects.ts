@@ -52,6 +52,7 @@ import * as diag from "./diag.ts";
 import { inArea, runtime } from "./effect/runtime.ts";
 import * as chatSync from "./chat_sync.ts";
 import * as researchCloud from "./research_cloud.ts";
+import * as teachingDraft from "./teaching_draft.ts";
 import { readState as readStateFile } from "./files.ts";
 import { markOpened } from "./opened.ts";
 import { crashed, isBug } from "./guard.ts";
@@ -1622,6 +1623,10 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
   // Its chat too, so the conversation continues here (chat_sync.ts).
   void chatSync.pull(app.store, id, (app.agents as { chatLoaded?: (project: string) => boolean }).chatLoaded?.(id) ?? false).catch((error: unknown) => {
     diag.warn("cloud", `fetching ${id}'s chat: ${diag.messageOf(error)}`);
+  });
+  // And its agent's teaching draft (teaching_draft.ts), so what could be taught from it is still there.
+  void teachingDraft.pull(app.store, id).catch((error: unknown) => {
+    diag.warn("cloud", `fetching ${id}'s teaching draft: ${diag.messageOf(error)}`);
   });
 }
 

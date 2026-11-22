@@ -48,7 +48,7 @@ import { stableStringify } from "./stable.ts";
 import type { Project } from "./model.ts";
 import type { Store } from "./store.ts";
 import * as toolChanges from "./tool_changes.ts";
-import { keepRule } from "./teaching.ts";
+import { DRAFT_RULE, keepRule } from "./teaching.ts";
 
 type Json = unknown;
 
@@ -2143,7 +2143,7 @@ function hqInstructions(project: Pick<Project, "name" | "style" | "settings" | "
     channel === null
       ? "This project isn't a channel's, so nothing is kept from the person's feedback: don't offer to keep it."
       : v2cloud.teacher()
-        ? keepRule("video", "keep it with remember", true, channels.groupOf(project.channel!) !== null)
+        ? `${keepRule("video", "keep it with remember", true, channels.groupOf(project.channel!) !== null)} ${DRAFT_RULE}`
         : "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
   const places = channels.placesOfProject(project);
   const known = v2cloud.memories(places);
@@ -2229,7 +2229,7 @@ const UNREAD =
 
 /** Said to a channel's agent while its edit style is still empty (Sphe, Nov 22: its tools all work; it never pretends there's a style). */
 const UNTAUGHT =
-  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own, so there's no house style here to follow and you don't start on the edit by yourself. Do what the person asks (build, look at and place effects, bring footage in, cut), and say plainly, once, that nothing is taught yet and what you chose on your own. Never keep a lesson or an effect only to get started: keep what they say to keep, as KEEPING WHAT YOU'RE TAUGHT says, or bring another channel's style in with other_channels when they point you at one.";
+  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own, so there's no house style here to follow and you don't start on the edit by yourself. Do what the person asks (build, look at and place effects, bring footage in, cut), and say plainly, once, that nothing is taught yet and what you chose on your own. Never keep a lesson or an effect only to get started: draft what you build and what they like with draft_teaching (it's how this channel gets its first teaching), keep what they say to keep, or bring another channel's style in with other_channels when they point you at one.";
 
 /** A saved chat, read as serde reads `Chat` (every field defaults; a wrong type refuses the whole file). */
 export function readChat(text: string): Chat {

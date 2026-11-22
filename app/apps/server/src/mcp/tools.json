@@ -4292,6 +4292,151 @@
     "name": "remember"
   },
   {
+    "description": "Your teaching draft for this project (Edit V2, a channel's): what could become the channel's teaching but isn't said to hold yet, kept unseen by the person until they say to teach it (teach_drafted). A lesson in its final words, ready to keep as it is, with its lane; an effect or a sound built here, with what keeping it needs. The same name changes one. asked: the names you asked about at the end of this turn. drop: names the person said no to, or told you to drop.",
+    "inputSchema": {
+      "properties": {
+        "lessons": {
+          "items": {
+            "properties": {
+              "name": {
+                "description": "lower-case words with hyphens",
+                "type": "string"
+              },
+              "text": {
+                "description": "Exactly as it'll be kept",
+                "type": "string"
+              },
+              "lane": {
+                "description": "Which of the channel's lanes it teaches (default edit)",
+                "enum": [
+                  "edit",
+                  "script",
+                  "ideas",
+                  "thumbnails"
+                ],
+                "type": "string"
+              },
+              "note": {
+                "description": "Only for a longer part: when to read it",
+                "type": "string"
+              },
+              "for": {
+                "enum": [
+                  "group",
+                  "channel"
+                ],
+                "type": "string"
+              },
+              "said": {
+                "description": "What the person said, in their words",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "text",
+              "said"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "effects": {
+          "items": {
+            "properties": {
+              "name": {
+                "description": "Its folder here (effects/<name>/)",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "effect",
+                  "sound"
+                ],
+                "type": "string"
+              },
+              "as": {
+                "description": "Its name in the library (default: the folder's)",
+                "type": "string"
+              },
+              "category": {
+                "type": "string"
+              },
+              "note": {
+                "description": "When to use it, in a line",
+                "type": "string"
+              },
+              "brief": {
+                "description": "How to change it without making it again",
+                "type": "string"
+              },
+              "for": {
+                "enum": [
+                  "group",
+                  "channel"
+                ],
+                "type": "string"
+              },
+              "said": {
+                "description": "What the person said of it, in their words",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "category",
+              "note",
+              "brief",
+              "said"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "asked": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "drop": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "draft_teaching"
+  },
+  {
+    "description": "Keep your teaching draft in the channel, word for word, through the same tools a kept lesson and a kept effect take (a teacher's; Edit V2): when the person says yes to one you asked about (names), or to teach what you've talked about (all of it, names left out). What's kept leaves the draft; what's refused (it contradicts what's taught, say) stays, with why.",
+    "inputSchema": {
+      "properties": {
+        "names": {
+          "description": "The draft's names to keep; leave it out for the whole draft",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "teach_drafted"
+  },
+  {
     "description": "Teach what this channel takes out of its footage's picture, and when, as the person says. Examples: \"we only want their subtitles removed\", \"only the watermarks\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\", \"remove watermarks only when we ask\", \"remove watermarks automatically after import\". One lesson of the channel's edit style, kept for its group (every channel in it) unless for says this channel alone. A part on means theirs out wherever a footage file actually has it: Edit looks at every file on the timeline itself (their subtitles and text read off it, each file's own see-through mark found without an example; a compilation's files come from many re-uploaders, most with none) and does nothing to a file without. Each part given is set (and when it runs: automatically after import, or only when someone asks), the others stay; the camera's own stamp is never taken out. Examples are optional and only help: give one when the person shows one, a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there, a watermark's box is a hint for that file. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself as footage is cut. A teacher's to do.",
     "inputSchema": {
       "properties": {

@@ -34,6 +34,7 @@ import * as seams from "./seams.ts";
 import * as progress from "./progress.ts";
 import { read, SerdeError, unexpected } from "./serde.ts";
 import { stableStringify } from "./stable.ts";
+import * as teachingDraft from "./teaching_draft.ts";
 
 /** Who agent edits come from. */
 const ORIGIN = "agent";
@@ -608,7 +609,10 @@ export async function messageContext(app: App, id: string, playhead: number | nu
   const gone = await missingMedia.forAgent(app.store.home, live.project);
   const broken = [...(gone === "" ? [] : [gone]), ...(notes ? effects.untoldFailures(app, id) : [])];
   const said = broken.length === 0 ? "" : `\n\n(Edit, automatically) ${broken.join(" ")}`;
-  const where = said === "" || cleared === "" || cleared.startsWith("\n") ? `${said}${cleared}` : `${said}\n\n${cleared}`;
+  const whereNow = said === "" || cleared === "" || cleared.startsWith("\n") ? `${said}${cleared}` : `${said}\n\n${cleared}`;
+  // Its teaching draft (teaching_draft.ts), unseen by the person: the agent's own, read back with every message.
+  const drafted = live.project.hq === true && typeof live.project.channel === "string" && live.project.channel !== "" ? teachingDraft.context(teachingDraft.read(app.store, id)) : "";
+  const where = drafted === "" ? whereNow : whereNow === "" ? drafted : `${whereNow}\n\n${drafted}`;
   const taken = !notes
     ? []
     : await editNotes.take(app, id).catch((error: unknown) => {
