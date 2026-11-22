@@ -1125,6 +1125,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         jobs.beat(home, key);
         speeds.uploadTick(home, projectId, done, total);
       }, signal);
+      speeds.uploadFinished(home, projectId);
       haltShare(projectId);
       if (!(resumed && !replace && (await alreadyUp(`${prefix}/poster.jpg`, poster)))) await cloud.uploadFileKeptAt(poster, `${prefix}/poster.jpg`, () => haltShare(projectId), signal);
       haltShare(projectId);
@@ -1134,12 +1135,15 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     // censoring, a waveform and the files' details (Fields), and the clips
     // under each moment (a note is pinned to its footage as it's written).
     sharing.set(projectId, "describing it");
+    const describing = Date.now();
     const extra = await describe(app, live.project, chosen.path, copy, prefix, clips, run);
     haltShare(projectId);
     const durationMs = Math.round((chosen.frames / fps) * 1000);
     // Published: noted done in the same write that lists its full-quality upload (the export itself, for the page's
     // Download button, which goes up after the version and is named in it once it's up: fullBehind).
     const published = (version: number, url: string, taken: number, unchanged = false): { url: string; version: number } => {
+      // How long the page's details and the publish took here, for the next share's time left.
+      speeds.notePublish(home, seconds, (Date.now() - describing) / 1000);
       fs.rmSync(copy, { force: true });
       jobs.handOff(
         home,
@@ -1436,7 +1440,7 @@ const PIECES_AT_ONCE = new Semaphore(2);
  * intro (card 1, Oct 29). False when the export wasn't made of chunks (or
  * isn't the file they were joined into): then it's made whole.
  */
-async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal, tell?: (share: number) => void): Promise<boolean> {
+export async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal, tell?: (share: number) => void): Promise<boolean> {
   const last = lastChunks(cache, project);
   if (last === null || last.output !== source || !fs.existsSync(source) || fs.statSync(source).size !== last.size) return false;
   const dir = join(chunkFolder(cache, project), "review");
@@ -1444,10 +1448,14 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
   const pieceOf = (key: string) => join(dir, `${key}.mp4`);
   let made = 0;
   const encoders = new Set<string>();
-  // Its percent by the frames of the pieces there (those kept from before count from the start); the join is the last 5%.
+  // Its percent by the frames of the pieces there (those kept from before count from the start) and of those being made,
+  // as FFmpeg reports them; the join is the last 5%. Told only as each piece ended, a copy of a few long chunks said 0%
+  // until it jumped to 95% (Nov 22, a MacBook Air), its own pace never heard, the share's percent held through it.
   const frames = Math.max(1, last.chunks.reduce((sum, chunk) => sum + chunk.frames, 0));
   let there = last.chunks.filter((chunk) => fs.existsSync(pieceOf(chunk.key))).reduce((sum, chunk) => sum + chunk.frames, 0);
-  tell?.((there / frames) * 0.95);
+  const making = new Map<string, number>();
+  const say = () => tell?.(((there + [...making.values()].reduce((sum, one) => sum + one, 0)) / frames) * 0.95);
+  say();
   await Promise.all(
     last.chunks.map((chunk) =>
       PIECES_AT_ONCE.with(async () => {
@@ -1456,11 +1464,20 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
         const partial = `${piece}.partial.mp4`;
         // No chapters: the export's run to its end and would count in the piece's length (review_runtime.py).
         const common = ["-v", "error", "-nostdin", "-y", "-ss", (chunk.at / last.fps).toFixed(6), "-i", source, "-frames:v", String(chunk.frames), "-an", "-map_chapters", "-1", "-vf", "scale=-2:720"];
-        encoders.add(await encodeReview(common, partial, run));
+        // FFmpeg's report is a share of the whole video's length (`shareRun`): of all the frames, this piece's made.
+        const piecesOwn = tell === undefined ? undefined : (share: number) => {
+          making.set(chunk.key, Math.min(chunk.frames, Math.max(0, share * frames)));
+          say();
+        };
+        try {
+          encoders.add(await encodeReview(common, partial, run, piecesOwn));
+        } finally {
+          making.delete(chunk.key);
+        }
         fs.renameSync(partial, piece);
         made += 1;
         there += chunk.frames;
-        tell?.((there / frames) * 0.95);
+        say();
       }),
     ),
   );

@@ -449,3 +449,39 @@ test("Cancel while a share fetches its export back from the cloud: the download 
     cleanup();
   }
 }, 30_000);
+
+test("a review copy made from the export's chunks says how far each piece being made is, not only as each one ends", async () => {
+  // Nov 22, a MacBook Air: 0% until it jumped to 95%, its own pace never heard and the share's percent held through it.
+  const dir = fs.mkdtempSync(nodePath.join(process.env.HOME ?? "/tmp", ".cache", "review-pieces-"));
+  try {
+    const source = nodePath.join(dir, "export.mp4");
+    fs.writeFileSync(source, "an export");
+    const folder = nodePath.join(dir, "export-chunks", "p1");
+    fs.mkdirSync(folder, { recursive: true });
+    // Two chunks of 300 frames: a 20 s video at 30 fps.
+    fs.writeFileSync(nodePath.join(folder, "manifest-v1.json"), JSON.stringify({ output: source, size: fs.statSync(source).size, fps: 30, chunks: [{ key: "a", at: 0, frames: 300 }, { key: "b", at: 300, frames: 300 }] }));
+    const real = nodePath.join(dir, "real.mp4");
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=30", "-t", "0.2", "-c:v", "libx264", "-preset", "ultrafast", real]);
+    const told: number[] = [];
+    // Each piece's FFmpeg reports a quarter of its 10 s made, then half, as a share of the whole 20 s, then ends.
+    const run = async (command: string[], output?: string, tell?: (share: number) => void): Promise<Uint8Array> => {
+      if (command.includes("concat")) {
+        fs.writeFileSync(output!, "joined");
+        return new Uint8Array();
+      }
+      if (output !== undefined) {
+        tell?.(2.5 / 20);
+        tell?.(5 / 20);
+        fs.copyFileSync(real, output);
+      }
+      return new Uint8Array();
+    };
+    expect(await reviews.reviewCopyFromChunks(dir, "p1", source, nodePath.join(dir, "copy.mp4"), run, undefined, (share) => told.push(share))).toBe(true);
+    // Heard between the start and the first piece's end: a piece's own frames as they're made.
+    expect(told.some((share) => share > 0 && share < 0.95 / 2)).toBe(true);
+    for (let at = 1; at < told.length; at++) expect(told[at]!).toBeGreaterThanOrEqual(told[at - 1]! - 1e-9);
+    expect(told.at(-1)).toBeCloseTo(0.95);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

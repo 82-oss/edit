@@ -319,6 +319,7 @@ test("a share's review copy and upload keep their time until their turn, so the 
     speeds.uploadTick(home, "another", 0, 6_000_000);
     speeds.clock.now = () => 7_000;
     speeds.uploadTick(home, "another", 6_000_000, 6_000_000);
+    speeds.uploadFinished(home, "another");
     speeds.clock.now = real;
     // The share's row is begun on the real clock: the looks are counted from it.
     const t0 = Date.now();
@@ -385,6 +386,90 @@ test("the video's time isn't said for the whole until the engine's own pace is h
     expect(early.progress).toBeLessThanOrEqual(0.3);
     expect(early.elapsed_s).toBe(4);
   } finally {
+    cleanup();
+  }
+});
+
+// Nov 22, a MacBook Air: the upload was guessed at about half its real time. Its speed was taught as its count of bytes
+// handed to the network reached the file's size, with the last parts still on their way.
+test("the upload's speed is taught when the cloud has the file, not when its count reaches the size", () => {
+  const { home, cleanup } = fixtureHome("export-speeds-upload");
+  const real = speeds.clock.now;
+  try {
+    speeds.clock.now = () => 0;
+    speeds.uploadTick(home, "p", 0, 20_000_000);
+    // All 20 MB handed over in 10 s; the cloud says it's up 10 s later: 1 MB a second, not 2.
+    speeds.clock.now = () => 10_000;
+    speeds.uploadTick(home, "p", 20_000_000, 20_000_000);
+    expect(speeds.read(home).upload_bps).toBeUndefined();
+    speeds.clock.now = () => 20_000;
+    speeds.uploadFinished(home, "p");
+    expect(speeds.read(home).upload_bps).toBeCloseTo(1_000_000, -3);
+  } finally {
+    speeds.clock.now = real;
+    speeds.reset();
+    cleanup();
+  }
+});
+
+// Nov 22, a MacBook Air: the video's own row said "a moment" with 11 s to go. Past its frames the engine joins the
+// chunks into one file at its own pace, slower than the frames'; at the frames' pace its end of the bar was a moment.
+test("the video's join is timed at its own pace, never at the frames', and says no time until that's heard", async () => {
+  const { JOINING } = await import("../src/exports.ts");
+  const { app, store, cleanup } = fixtureHome("export-steps-join");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const t0 = 13_000_000;
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0, updated_ms: t0, started_ms: t0, seconds: 60 };
+    const video = (given: ExportSteps) => given.steps.find((one) => one.kind === "video")!;
+    // The frames: 94% in 20 s (4.7% a second).
+    for (let s = 0; s <= 20; s++) steps.stepsOf(app, id, { ...job, progress: (0.94 * s) / 20 }, t0 + s * 1000);
+    // The join: 6% of the bar in 12 s, half a percent a second.
+    const joining = steps.stepsOf(app, id, { ...job, progress: 0.94, phase: JOINING }, t0 + 21_000)!;
+    expect(video(joining).left_s).toBeNull();
+    expect(joining.left_s).toBeNull();
+    steps.stepsOf(app, id, { ...job, progress: 0.945, phase: JOINING }, t0 + 22_000);
+    const heard = steps.stepsOf(app, id, { ...job, progress: 0.96, phase: JOINING }, t0 + 25_000)!;
+    // 4% left at half a percent a second: about 8 s, not the frames' pace's 1 s ("a moment").
+    expect(video(heard).left_s!).toBeGreaterThan(6);
+    expect(video(heard).left_s!).toBeLessThan(10);
+  } finally {
+    cleanup();
+  }
+});
+
+// Nov 22, a MacBook Air: the share's last seconds ("Describing it…", the publish) weren't in its time left.
+test("a share's upload time counts the page's details and the publish after it, as long as they take here", async () => {
+  const jobs = await import("../src/jobs.ts");
+  const { sharingForTests } = await import("../src/reviews.ts");
+  const { app, home, store, cleanup } = fixtureHome("export-steps-publish");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // A megabyte a second, and the details and publish of a minute's video in 12 s.
+    const real = speeds.clock.now;
+    speeds.clock.now = () => 1_000;
+    speeds.uploadTick(home, "another", 0, 6_000_000);
+    speeds.clock.now = () => 7_000;
+    speeds.uploadFinished(home, "another");
+    speeds.clock.now = real;
+    speeds.notePublish(home, 60, 12);
+    const t0 = Date.now();
+    jobs.begin(home, "share", id, {}, "", "uploading");
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "done" as const, progress: 1, updated_ms: t0, started_ms: t0, seconds: 60, share: true };
+    const upload = (given: ExportSteps) => given.steps.find((one) => one.kind === "upload")!;
+    sharingForTests(id, "uploading 0%");
+    const going = steps.stepsOf(app, id, job, t0)!;
+    // The bytes' time and the 12 s after them.
+    expect(upload(going).left_s!).toBeGreaterThan(12);
+    sharingForTests(id, "describing it");
+    steps.stepsOf(app, id, job, t0 + 60_000);
+    const describing = steps.stepsOf(app, id, job, t0 + 64_000)!;
+    sharingForTests(id, null);
+    // 4 s into its 12: about 8 s left, not the 3 s it always said.
+    expect(upload(describing).left_s!).toBeGreaterThan(6);
+    expect(upload(describing).left_s!).toBeLessThan(10);
+  } finally {
+    speeds.reset();
     cleanup();
   }
 });

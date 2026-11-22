@@ -141,6 +141,11 @@ interface Run {
   said?: ExportSteps;
   /** Which steps' times are from their own pace by now (`ownPace`). */
   own?: Set<string>;
+  /** The video's join or sound mix after its frames (`JOINING`, `MIXING`), and its progress as it began: its own pace. */
+  phase?: string;
+  phaseVideo?: [number, number] | null;
+  /** When its upload's bytes were up and the page's details and the publish began. */
+  upAt?: number;
 }
 
 /**
@@ -346,13 +351,21 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   // The video.
   const p = exporting && job.state === "running" ? Math.min(1, Math.max(0, job.progress)) : 0;
   if (stage === 2 && p > 0 && run.video === null) run.video = [now, p];
+  // Past its frames, the join and the sound's mix go at their own pace, not the frames': at the frames' pace the join's
+  // end of the bar read "a moment" with 11 s to go (Nov 22, a MacBook Air). No time for it until its own is heard.
+  const phase = stage === 2 && (job?.phase === JOINING || job?.phase === MIXING) ? job.phase : "";
+  if ((run.phase ?? "") !== phase) {
+    run.phase = phase;
+    run.phaseVideo = phase === "" ? null : [now, p];
+  }
   let videoOwn: number | null = null;
   let videoGuess: number | null = null;
   if (stage > 2) videoGuess = 0;
   else {
-    const own = run.video !== null && now - run.video[0] >= 5000 && p - run.video[1] >= 0.005 ? (p - run.video[1]) / ((now - run.video[0]) / 1000) : null;
+    const from = phase === "" ? run.video : (run.phaseVideo ?? null);
+    const own = from !== null && now - from[0] >= (phase === "" ? 5000 : 3000) && p - from[1] >= (phase === "" ? 0.005 : 0.002) ? (p - from[1]) / ((now - from[0]) / 1000) : null;
     if (own !== null) videoOwn = (1 - p) / own;
-    else if (measured.export_spf !== undefined) videoGuess = frames * measured.export_spf * (1 - p);
+    else if (phase === "" && measured.export_spf !== undefined) videoGuess = frames * measured.export_spf * (1 - p);
   }
   if (stage === 2 && videoOwn !== null) grounded = true;
   const video: ExportStep = {
@@ -389,9 +402,12 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     const bytes = upload?.total ?? reviewBytes(seconds);
     const sent = stage === 4 ? (upload?.done ?? 0) : 0;
     const bps = (stage === 4 ? upload?.bps : null) ?? measured.upload_bps ?? null;
-    // Up: the page's details and the publish, seconds.
+    // Up: the page's details and the publish, as long as they take here (`publish_spv`), counted in the upload's time
+    // (Nov 22: the last seconds, "Describing it…" and the publish, weren't in the time left).
     const up = stage === 4 && line !== null && !line.startsWith("uploading");
-    const uploadLeft = up ? 3 : bps === null ? null : (bytes - sent) / bps;
+    if (up) run.upAt ??= now;
+    const publishing = measured.publish_spv === undefined ? 3 : seconds * measured.publish_spv;
+    const uploadLeft = up ? Math.max(1, publishing - (now - run.upAt!) / 1000) : bps === null ? null : (bytes - sent) / bps + publishing;
     // Its own pace: this upload's measured bytes a second, or the last seconds once its bytes are up.
     const uploadOwn = stage === 4 && (up || (upload?.bps ?? null) !== null);
     if (uploadOwn) grounded = true;

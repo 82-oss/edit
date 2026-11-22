@@ -23,6 +23,8 @@ export interface Speeds {
   copy_spv?: number;
   /** Bytes a second an upload goes at. */
   upload_bps?: number;
+  /** Seconds a share's page details (words, waveform) and its publish take a second of video, once its upload is up. */
+  publish_spv?: number;
   /** Bytes a second footage comes down from the cloud at (footage_ready.ts). */
   download_bps?: number;
 }
@@ -81,6 +83,12 @@ export function noteCopy(home: string, videoSeconds: number, seconds: number): v
   note(home, "copy_spv", seconds / videoSeconds);
 }
 
+/** A share's page details and publish, for `videoSeconds` of video, done in `seconds` after its upload. */
+export function notePublish(home: string, videoSeconds: number, seconds: number): void {
+  if (videoSeconds < 5 || seconds < 0.2) return;
+  note(home, "publish_spv", seconds / videoSeconds);
+}
+
 /** Footage coming down: `bytes` in `seconds` (a few seconds of a project being got ready here). */
 export function noteDownload(home: string, bytes: number, seconds: number): void {
   if (bytes < 8_000_000 || seconds < 2) return;
@@ -99,8 +107,8 @@ const uploads = new Map<string, Upload>();
 /** The clock (tests move it). */
 export const clock = { now: () => Date.now() };
 
-/** An upload's progress, as it goes: `done` of `total` bytes. Its end teaches the upload speed. */
-export function uploadTick(home: string, project: string, done: number, total: number): void {
+/** An upload's progress, as it goes: `done` of `total` bytes (handed to the network: ahead of what has arrived). */
+export function uploadTick(_home: string, project: string, done: number, total: number): void {
   const now = clock.now();
   const was = uploads.get(project);
   // A new upload (the poster after the video, a retry): measured from here.
@@ -108,11 +116,20 @@ export function uploadTick(home: string, project: string, done: number, total: n
   upload.done = done;
   upload.at = now;
   uploads.set(project, upload);
-  if (total > 0 && done >= total) {
-    const seconds = (now - upload.first[0]) / 1000;
-    const bytes = done - upload.first[1];
-    if (bytes > 1_000_000 && seconds >= 1) note(home, "upload_bps", bytes / seconds);
-  }
+}
+
+/**
+ * The upload under way for `project` is up (the cloud has said so): it teaches the upload speed, from its first bytes
+ * to now. Taught as its count reached its size, the speed was about twice the line's (Nov 22, a MacBook Air: the
+ * upload guessed at about half its real time), since the count is of bytes handed to the network, several MB and a
+ * part or more ahead of what has arrived, and the last parts were still on their way.
+ */
+export function uploadFinished(home: string, project: string): void {
+  const upload = uploads.get(project);
+  if (upload === undefined || upload.total <= 0) return;
+  const seconds = (clock.now() - upload.first[0]) / 1000;
+  const bytes = upload.total - upload.first[1];
+  if (bytes > 1_000_000 && seconds >= 1) note(home, "upload_bps", bytes / seconds);
 }
 
 /** The upload under way for a project: its bytes and its own speed once it has gone a few seconds (null before). */
