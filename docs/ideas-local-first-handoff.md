@@ -28,7 +28,7 @@ Changed on `mandalorian` only, outside the repo:
 
 ### 1. Reboot `mandalorian`
 
-Its NVIDIA driver is wedged (`NVRM: dmaAllocMapping_GM107: can't alloc VA space`). The desktop, Chrome, FFmpeg and prod's GPU work are stuck, and killing them doesn't help. It may need a hard power cycle.
+Its NVIDIA driver is wedged (`NVRM: dmaAllocMapping_GM107: can't alloc VA space`). The desktop, Chrome, FFmpeg and prod's GPU work are stuck, and killing them doesn't help. It may need a hard power cycle. Booting into Windows counts as the reboot.
 
 The full server test suite triggered this at 21:30 by running GPU tests beside prod's removal, and it was also running during the 20:30 freeze. The same driver error was in the log from 08:36, so prod's own load may trigger it too. That isn't settled.
 
@@ -93,7 +93,11 @@ Run `bun ~/.cache/edit-prod-build/idle.ts 7790` first and swap only when it exit
 
 ## Continuing on Windows
 
+Windows is on the same PC as `mandalorian`, so booting into it also clears the wedged driver, and prod Edit is off until the PC is back in Linux.
+
 - `git pull` on `main` gets everything in the repo, including this file.
-- The session's memory, `~/.cache/edit-prod-build`, the prod service and prod's data stay on `mandalorian`.
-- The repo has no Windows build or CI job. Reading code, editing and pushing will work, but the native addon, GPU tests and many server tests may not, and that hasn't been tried. Use GitHub Actions as the check.
+- **Edit doesn't run on Windows.** From there you can read and change the code, push, and use GitHub Actions as the check.
+- **Possible from Windows:** step 2 through CI, and the code for the items in step 5.
+- **Needs Linux or a Mac:** steps 3 and 4, and running the server tests by hand.
+- The session's memory, `~/.cache/edit-prod-build`, the prod service and prod's data are on the Linux side.
 - Commit only your own paths (`git commit -o -- <paths>`), since other sessions share the `mandalorian` checkout, and never add a `Co-authored-by` trailer.
