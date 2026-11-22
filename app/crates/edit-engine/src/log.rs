@@ -4,7 +4,7 @@
 //! Without a sink (tests, tools) problems go to stderr.
 
 use std::fmt::Display;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,16 +31,25 @@ pub trait Sink: Send + Sync {
     fn record(&self, area: &str, name: &str, took: Duration, failure: Option<&str>);
 }
 
-static SINK: OnceLock<Box<dyn Sink>> = OnceLock::new();
+static SINK: parking_lot::RwLock<Option<Arc<dyn Sink>>> = parking_lot::RwLock::new(None);
 
-/// Sends everything from now on to `sink`. Only the first call counts.
+/// Sends everything from now on to `sink`, in place of any sink before it (a
+/// process's later `init` is the one heard: Nov 22, the server's tests run
+/// many files in one process, and an earlier file's silent sink kept every
+/// engine line from a later file's log, failing export_ahead's Share test on
+/// every Linux release check). Says whether there was none before.
 pub fn use_sink(sink: Box<dyn Sink>) -> bool {
-    SINK.set(sink).is_ok()
+    SINK.write().replace(Arc::from(sink)).is_none()
+}
+
+/// The sink now, taken out of the lock before it's called (a sink that logs never waits on itself).
+fn sink() -> Option<Arc<dyn Sink>> {
+    SINK.read().clone()
 }
 
 pub fn log(level: Level, area: &str, message: impl Into<String>) {
     let message = message.into();
-    match SINK.get() {
+    match sink() {
         Some(sink) => sink.log(level, area, message),
         None if level != Level::Info => eprintln!("edit: {area}: {message}"),
         None => {}
@@ -61,7 +70,7 @@ pub fn error(area: &str, message: impl Into<String>) {
 
 /// Records that `name` took `took` (the host logs it if it failed or was slow).
 pub fn record(area: &str, name: &str, took: Duration, failure: Option<&str>) {
-    match SINK.get() {
+    match sink() {
         Some(sink) => sink.record(area, name, took, failure),
         None => {
             if let Some(why) = failure {
@@ -115,5 +124,27 @@ mod tests {
         assert_eq!(human(Duration::from_millis(850)), "850 ms");
         assert_eq!(human(Duration::from_millis(12_400)), "12.4 s");
         assert_eq!(human(Duration::from_secs(185)), "3 min 05 s");
+    }
+
+    #[test]
+    fn a_later_sink_takes_the_place_of_the_first() {
+        struct Kept(&'static str, Arc<parking_lot::Mutex<Vec<String>>>);
+        impl Sink for Kept {
+            fn log(&self, _: Level, _: &str, message: String) {
+                if message.starts_with("sink test:") {
+                    self.1.lock().push(format!("{}: {message}", self.0));
+                }
+            }
+            fn record(&self, _: &str, _: &str, _: Duration, _: Option<&str>) {}
+        }
+        let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        use_sink(Box::new(Kept("first", heard.clone())));
+        info("test", "sink test: one");
+        use_sink(Box::new(Kept("second", heard.clone())));
+        info("test", "sink test: two");
+        assert_eq!(
+            *heard.lock(),
+            ["first: sink test: one", "second: sink test: two"]
+        );
     }
 }
