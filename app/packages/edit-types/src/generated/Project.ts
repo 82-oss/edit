@@ -122,4 +122,13 @@ subtitle_look?: string,
  * video, and blurring it unasked would), and kept in the project so it
  * holds on every computer that opens it, not only the one that moved it.
  */
-removal_held?: boolean, };
+removal_held?: boolean, 
+/**
+ * Its footage is local while it's in work (Nov 22): each source one
+ * plain file on the computer working on it (the original, and one
+ * working copy where the original is slow to jump in), the cloud
+ * keeping the originals and the working copies for other computers.
+ * Chosen once, at its first import, and never changed after, so it
+ * never changes path mid-life; false for every project from before.
+ */
+local_media?: boolean, };

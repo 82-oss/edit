@@ -116,6 +116,14 @@ pub struct Project {
     /// holds on every computer that opens it, not only the one that moved it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removal_held: bool,
+    /// Its footage is local while it's in work (Nov 22): each source one
+    /// plain file on the computer working on it (the original, and one
+    /// working copy where the original is slow to jump in), the cloud
+    /// keeping the originals and the working copies for other computers.
+    /// Chosen once, at its first import, and never changed after, so it
+    /// never changes path mid-life; false for every project from before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_media: bool,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -2000,6 +2008,7 @@ impl Project {
             compilation: None,
             subtitle_look: None,
             removal_held: false,
+            local_media: false,
         };
         for kind in [
             TrackKind::Video,

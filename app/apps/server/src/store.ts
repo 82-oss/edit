@@ -961,6 +961,9 @@ function keepTestMark(current: Project, next: Project): void {
   else next.origin = current.origin;
   if (current.shown === true) next.shown = true;
   else delete next.shown;
+  // Where its footage lives is chosen once, at its first import (local_first.ts): a page that read it before then
+  // never takes it back.
+  if (current.local_media === true) next.local_media = true;
 }
 
 function summaryOf(project: Project, modifiedMs: number): ProjectSummary {
