@@ -28,8 +28,6 @@ Also found while checking, not from the old files: before a deleted review link 
 - **Originals going up aren't uploads "behind"** (`cloud_media.ts` `runUpload`), so they never give way to a play or an import's downloads, and a Script import has no running row for the upload pacing to see (`cloud.ts` `forPerson`).
 - **Restoring an archived project's excerpts still cuts straight from R2** (`cloud_media.ts` `restoreHere`, `remake`), with the waste the import's cuts no longer have.
 - **Two fetch paths where one was planned**: fetch to disk first when there's room, one function with a "room here?" branch. `footageToDisk` and `footageToCloud` are still two (`script.ts`), and `cutsBetterHere` / `wholeHere` and the fallback in `driveExcerpts` remain (`cloud_media.ts`).
-- **`resume-download` doesn't compare the excerpts yet** against a clean run's (length; first, middle, last frame), and runs on Script mode's download until the editor's import fetches to disk (`scripts/bad-day/cases`).
-- **"Go on without" lives in a file on one Mac** (`missing_media.ts`, `footage-gone-without.json`); it was meant to move into the project, which needs a field on edit-core's Media.
 - **Shares read only `failure.surely`** (`reviews.ts`): an unknown failure stops a share as if it were the person's (the import half is done: it waits and is tried again, and stops as Edit's to fix after the same failure four times).
 - **The editor's import stops for a file that's really gone** (Script mode goes on without it). Needs "Use another link" to work on an edit already laid out.
 - **Left from the AVI fix**: a big upload doesn't give way to an import's downloads, and an import that keeps failing the same files doesn't lay out the rest.
@@ -41,14 +39,10 @@ Also found while checking, not from the old files: before a deleted review link 
 - **The Export dialog's fixes of Nov 22, to see in the real window** (built and tested on Linux): on a project with no channel the watermark row reads "A logo at 10%…"; a first share asks no "Where should exports go?"; after a cancel, closing and reopening shows no "Cancelled"; a second share's heading is right from the press; an edit unchanged since v1 is offered as "Share v1 again" and ends "Nothing changed, so v1 is still the link"; a share's review copy climbs piece by piece, its upload time is close to real and "a moment" doesn't show during the join; the editor's top bar says what the export is on beside its percent; a script shared while its preview goes up waits for it and carries on, and a cancelled share resumes its upload; a full disk says "Your disk is full: free about N GB. Edit goes on by itself once there's room." with no Retry; the Mac's log names VideoToolbox as the encoder (that line compiles on macOS only). Still as it was: Approve and Delete link sit behind the link row's menu because the Exports page has no row for a review link.
 - **Through an HTTPS proxy an upload's percent is wrong and a slow one is aborted** (the MacBook Air, Nov 22, with a line proxy; some VPNs do the same): Bun takes a whole part of the upload at once through such a proxy, so Edit's count reads 100% within seconds, sees no new bytes for 60 s, and ends every part as "Operation too slow" (`cloud.ts`'s stall check): a 53 MB share at 2 Mbit/s failed after 8 min. Directly, Bun stays 1 to 2 MB ahead of the receiver. Edits' uploads go the same way.
 - **Two shares still upload twice**: one that follows a plain export already running, and one of an export archived earlier (the cloud has no copy-in-place).
-- **Voice-overs made before Nov 21 on a channel project keep the style's voice** until their words change (`voice.ts` `forProject` reuses one made from the same words).
-- **A share's review copy isn't uploaded ahead of the share**, and it's still 3 Mbit/s (`reviews.ts`).
 - **One encoder lease with priorities** (export > share copy > playback > made ahead > proxies): `encoder.ts` only counts users. Done so far: a person's Export takes the encoder from smooth playback's render.
 - **A real export doesn't use fewer encoders while something plays**, and exports made ahead have no byte quota. Whether to keep exports made ahead at all waits on a week's count of how often one is used.
 - **A joined export is checked by frame count only** (`crates/edit-engine/src/render.rs` `export_chunked`); its fallback chain (chunked, again, whole native, whole FFmpeg) hides the first cause, and Marc's "joined 33826 frames, not 33786" was never explained.
-- **The engine's own waits have no deadlines**: a dead VideoToolbox session or a lost GPU after a lid close can leave a render thread waiting for good. Edit drops such a job after a minute and starts a fresh one; the Rust side should end it itself (`wait()` settling within seconds of `cancel()`, `recv_timeout` in the stage loops, deadlines on AVAssetWriter's finish and cancel).
-- **Checked true in the Nov 21 code audit, not yet fixed**: a bad cached chunk is reused for three days (`render.rs`: check reused chunks on the second try, put the encoder in the key; half a day, and a changed key renders every kept chunk again once for everyone).
-- **Idea, needs a trial on JJ's Mac**: hardware and x264 encoding together for exports (about 1.5 to 1.8 times on the video stage when idle), HEVC speed-over-quality for previews and proxies.
+- **A reused cached export chunk is never checked** (`render.rs`): check that a kept chunk is whole before an export reuses it, and render it again when it isn't.
 
 ## Playback
 
@@ -62,7 +56,6 @@ Also found while checking, not from the old files: before a deleted review link 
 - **A drag forward in Edit.app is bound by its seek** (20 to 80 ms a position) past the 2 s a reader reads on; a reader kept ahead of a forward drag would hide it (`render.rs` `ReaderPool`, `player.rs` `hint`).
 - **The agent's own previews run at normal priority while someone watches** (`render_frame`, `look_at_media`'s decodes); only the effects' Chromes and the looks' FFmpegs are below a play (`playing.ts` `keepBelow`).
 - **A cold open on a slow line was never measured in Edit.app or the page** (JJ's took 6 s to 4 min a file); bad-day's `cold-open-play` covers the server's side only.
-- **V2: the viewer doesn't measure what it draws.** The Mac viewer should time its own drawing of an effect and play the render where the web view can't keep up; the only cost check is measured in Chrome (`effect_tools.ts`). Also never checked on a Mac: a stacked-alpha render in the native player, and an effect with moving footage.
 - **A strip the native reader refuses isn't remembered** ("No native video track"), so it falls back to FFmpeg on every read. Unconfirmed whether it still happens.
 - **Checked true in the Nov 21 code audit, not yet fixed** (the window's player): a player thread's panic skips the view's teardown; stale read-ahead opens can evict the reader that's playing; `mix_live`'s FFmpegs aren't ended on cancel.
 - **Nobody has listened to 2× speed's sound.**
@@ -71,10 +64,8 @@ Also found while checking, not from the old files: before a deleted review link 
 
 ## The server's thread, start and crashes
 
-- **Still synchronous on the thread**: a media's transcript is still parsed on the thread (it's read off it now, `captions_core.ts`); every render serialises the whole edit to start (`native/index.ts` `ExportStart.project` takes only JSON).
 - **As Edit starts it answers nothing for 3 to 8 s** on a signed-in home (Linux prod: about 10 s in, about 4.5 s of processor time, whatever route the line names). The change logs' read on the thread is gone (Nov 22; two of prod's are 185 and 168 MB); what's left needs a profile of a signed-in start.
 - **Prod Linux Edit holds about 9.5 GB while blurring two projects**, and the blur's Rust threads take the whole CPU quota; it should cap its own threads.
-- **78 of the server's 358 modules can't be the first one imported** (import rings, older than Nov 21: the server's own start order is safe, a test or script that starts elsewhere meets "Cannot access … before initialization"). Two edges were cut on Nov 21 (`semaphore.ts`, `addons.ts`'s `from` hooks); `routes.ts` still takes `Semaphore` through `media.ts`.
 - **A crash in the Rust addon takes the whole server down**: it runs inside the server's process.
 
 ## Still to prove on real Macs
@@ -91,7 +82,6 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **Making V2 the only mode** has its own file, `docs/v1-to-v2.md`: what of `agent/` is in the channels, what V2 can't do yet, and the order of steps.
 - **The teaching draft and untaught channels, built Nov 22, not yet tried in a real Edit**: a channel with nothing taught lets the agent build, place and keep effects (only the import's first message still waits for teaching); the agent keeps a hidden draft of lessons and effects with the project (`draft_teaching`, `teach_drafted`, `projects/<id>.draft.json`, synced as the chat is) and teaches from it word for word when told to. To see on a Mac: the draft surviving a quit, and coming down with the project on a second computer.
 - **The end-of-turn check** (`end_check.ts`, the `end-check` add-on) has not run in a real Edit yet: try it once in dev on a channel with it set. Known: each audit runs on the server's thread, as every change's does.
-- **V1 still compacts its conversation at 180k** (`claude.ts`; V2 uses 1M). Measure first.
 - **Text removal, from the Boyfriends edit**: the bottom ARRESTFLIX mark is never found; a short "No" in the 0.80× copy reads as no words; a subtitle under the glitch transition isn't planned. All wait on the bake-off of mark finders.
 - **Cuffed & Caught's cleanup**: a new render after the strip-stacking fix was never checked on prod.
 
@@ -104,19 +94,10 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 
 ## For Sphe to decide
 
-- **Where `tailscale serve` is on, any device on the tailnet can drive Edit** (`/mcp`, `/api/ws` and the changing routes; `apps/server/src/http/host.ts` `checkHost` checks Host and Origin only). Today that's one machine and every device on the tailnet is Sphe's. A per-install bearer would close it if that changes.
 - **The bake-off**: Edit against Claude Desktop plus Premiere on the same cases, judged blind. Never run.
-- **One record for a script** instead of Writer's script and the project's `script.blocks` (about a week).
-- **V2**: a Git mirror of the effects library; a sandboxed shell for the agent against one tool per job; a stage view while the agent makes a graphic; a graphics craft skill.
-- **Settings**: update by itself when idle? (Updates › Channel's disabled "Stable · Soon" stays: Sphe, Nov 22, "we're working towards stable anyway". The Beta › Edit V2 switch is in `docs/v1-to-v2.md`.)
 - **Akwe Pro Bold needs a bought licence** (checked Nov 22): it's a paid face by ROHH (Roch Modrzejewski; the file says "All rights reserved"), sold on Fontspring and MyFonts, and Edit's copy came from a free-download site (`crates/edit-render/fonts/AkwePro-Bold.otf`). It stays: commentary's text and graphics are set in it (Sphe, Nov 22: don't remove a font that's used). Since Nov 22 V2's effect pages have it too (`effects.ts` `FONTS`), for commentary's graphics on InternetJanitor. To buy: the Desktop licence for the Bold style, for as many people as make commentary videos (Fontspring's page shows $40; the seller's pages couldn't be read from here to confirm what it covers), and ask the seller whether a copy inside Edit on the team's Macs needs their App licence too.
 - **"COURTROOM WATCH"**: blurring the logo leaves a soft blue patch; a solid patch or a crop (`mark_blurs.ts`).
-- **Apple's on-device sound classifier** behind `listen`, to name music, sirens or shouting (about a day). And Apple's first-pass words have no pauses: Scribe in pieces for what Apple hears worst, or a wider `PAD_MS` (`kept_hearing.ts`).
-- **Looks from the team's Oct moodboard not built as features** (in V2 the agent can write each as an effect): brand sting, floor-plan reconstruction, who's-where dots, suspect card, focus blur, people as cards, picture in picture, three frames, CCTV grade, paper viewers.
 
 ## Wishes, not started
 
-- **Finds in each channel's ideas lane**: watched channels checked daily, a speed score for a video rising fast, Make it or Skip, similar finds grouped, skips teaching the scout. Only the competitor list per channel exists. With it: push an idea to the board at a set time.
-- **Speaking to the agents**: a mic button in the chat boxes, transcribed on the machine. Researched Nov 7: try Moonshine (MIT, small, runs on any CPU, words as you speak) against NVIDIA Parakeet TDT 0.6B v3 (Apache 2.0, the accurate one: FluidAudio or parakeet-mlx on a Mac, ONNX on an NVIDIA card; about 1.2 GB, downloaded on first use) with the team's own prompts; names need the project's cast (`people.ts`).
-- **A feedback link for ideas and thumbnails**, as an edit has its review link.
 - **Thumbnails: frames from YouTube**: give Claude Ideas' `scan_video` and `grab_frames` (`ideas/frames.ts`) on a thumbnail.
