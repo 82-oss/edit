@@ -13,6 +13,7 @@ import * as channels from "../src/channels.ts";
 import { effectLine, start as startPass } from "../src/house_words_pass.ts";
 import { STYLES, type Project, type Probe, type Style, type TextClip } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
+import * as localFirst from "../src/local_first.ts";
 import { Processor } from "../src/media.ts";
 import { Jobs, RESEARCH, start, timing } from "../src/script.ts";
 import * as seams from "../src/seams.ts";
@@ -122,6 +123,10 @@ const SOUNDLESS: Probe = { kind: "video", duration: 60, width: 640, height: 360,
 /** An import's world: the cloud on (its channels read as `fails` says), footage on R2 as whole-file excerpts, nothing researched yet, the voice-over made. */
 function importing(fails = false): void {
   mocked(spyOn(relay, "cloudEnabled").mockReturnValue(true));
+  // These are about a channel's add-ons, on the import as it is for every project but a new channel one: the footage's
+  // path they stand in for is today's (a new channel project's keeps its footage here: local_first.test.ts), and left
+  // to choose, a channel project's import went to Google Drive itself for the file.
+  mocked(spyOn(localFirst, "settle").mockResolvedValue(false));
   channelsRead(fails);
   mocked(spyOn(seams.research, "articles").mockReturnValue([]));
   mocked(spyOn(seams.research, "items").mockReturnValue([]));
