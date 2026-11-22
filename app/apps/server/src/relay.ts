@@ -12,7 +12,7 @@ import { Effect, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 
 import * as accounts from "./accounts.ts";
-import { messageOf } from "./diag.ts";
+import { messageOf, warn } from "./diag.ts";
 import * as mapTiles from "./map_tiles.ts";
 import * as outages from "./outages.ts";
 import { runPromise } from "./effect/runtime.ts";
@@ -311,7 +311,8 @@ export const SERVICE = "Edit's relay";
 
 /** One request to the relay; any status is answered. */
 export const ask = Effect.fn("relay.ask")(function* (method: string, route: string, body: unknown, timeoutMs: number) {
-  for (let again = false; ; again = true) {
+  const began = Date.now();
+  for (let again = false, unchecked = 0; ; ) {
     // A sign-in being restored or renewed is waited for, never asked without (accounts.tokenWhenReady).
     const used = accounts.accessToken() ?? (yield* Effect.promise(() => accounts.tokenWhenReady())) ?? envToken();
     // Still being renewed after the wait (a Mac just awake, its network coming back): the call doesn't go, said as
@@ -332,13 +333,33 @@ export const ask = Effect.fn("relay.ask")(function* (method: string, route: stri
       Effect.tapError((error) => Effect.sync(() => noteUnreachable(error.message))),
       Effect.tap(() => Effect.sync(noteAnswered)),
     );
+    // The relay couldn't check the sign-in (the accounts site's keys unread, or too slow): its moment, waited out here
+    // for every caller, never a failed turn. Sphe's prod, Nov 22: two such half-minutes (07:14, 19:02) failed an idea's
+    // chat and its repackage at once, as the relay's one 503 went straight back to them.
+    if (signInUnchecked(answer) && Date.now() - began < UNCHECKED_WAIT_MS) {
+      unchecked += 1;
+      if (unchecked === 1) warn("relay", `${route}: the relay couldn't check the sign-in; asking again for up to ${UNCHECKED_WAIT_MS / 1000} s`);
+      yield* Effect.sleep(Math.min(1000 * unchecked, 5000));
+      continue;
+    }
     // Refused with a person's token: renewed once (a cut-off refuses tokens made before it).
-    if (answer.status === 401 && !again && used !== null && used !== envToken() && (yield* Effect.promise(() => accounts.renewRefused(used)))) continue;
+    if (answer.status === 401 && !again && used !== null && used !== envToken() && (yield* Effect.promise(() => accounts.renewRefused(used)))) {
+      again = true;
+      continue;
+    }
     // Refused while the sign-in is being renewed: that moment's, never recorded as the person signed out.
     if (answer.status === 401 && used !== envToken() && accounts.renewalUnderWay()) return yield* renewing();
     return answer;
   }
 });
+
+/** How long a call waits out the relay's "couldn't check your sign-in" before passing it on. */
+const UNCHECKED_WAIT_MS = 90_000;
+
+/** The relay's own 503 for a sign-in it couldn't check (relay auth.ts `uncheckable`), not a service's behind it. */
+function signInUnchecked(answer: service.Answer): boolean {
+  return answer.status === 503 && answer.text().includes("couldn't check your sign-in");
+}
 
 /** A call that waits on the sign-in's renewal: temporary, as a relay out of reach is, so it's tried again and nothing says "Sign in". */
 const renewing = () => Effect.fail(new service.ServiceUnreachable({ service: SERVICE, message: `${UNREACHABLE}: the sign-in is being renewed` }));

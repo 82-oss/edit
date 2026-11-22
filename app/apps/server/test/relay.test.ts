@@ -89,3 +89,19 @@ test("an unreachable relay says so", async () => {
     process.env.EDIT_RELAY_URL = before;
   }
 });
+
+test("the relay's couldn't-check-your-sign-in is waited out; another 503 is passed on at once", async () => {
+  let asked = 0;
+  mock.on("POST", "/v1/unchecked", () =>
+    ++asked < 3
+      ? Response.json({ error: "The relay couldn't check your sign-in in time; Edit asks again." }, { status: 503, headers: { "retry-after": "1" } })
+      : Response.json({ ok: true }),
+  );
+  expect(await relay.json<{ ok: boolean }>("POST", "/v1/unchecked", {}, "ideas", 10)).toEqual({ ok: true });
+  expect(asked).toBe(3);
+
+  let down = 0;
+  mock.on("POST", "/v1/down", () => (down++, Response.json({ error: "the cloud is down" }, { status: 503 })));
+  await expect(relay.json("POST", "/v1/down", {}, "ideas", 10)).rejects.toThrow("the cloud is down (503)");
+  expect(down).toBe(1);
+});
