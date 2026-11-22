@@ -56,8 +56,12 @@ test("the cache loses rebuildable files of media nobody uses and old half-writte
     put(`${cache}/reviews/${p}/old.mp4`, 7);
     put(`${cache}/reviews/${p}/old.jpg`, 3);
     put(`${cache}/reviews/${p}/new.mp4`, 9, Date.now());
+    // A half-written sound excerpt a stopped cut left in the cloud copies goes after a day (Nov 4's sat for weeks); one
+    // written just now, and a whole one, stay.
+    put(`${cache}/cloud/sound/excerpts/youtube/abc/1-2.mp4.mov.partial.mov`, 31);
+    put(`${cache}/cloud/sound/excerpts/youtube/abc/3-4.mp4.mov.partial.mov`, 37, Date.now());
     const dry = cleanCache(app, true);
-    expect(dry.bytes).toBe(20 + 30 + 40 + 5 + 11 + 17 + 23 + 7);
+    expect(dry.bytes).toBe(20 + 30 + 40 + 5 + 11 + 17 + 23 + 7 + 31);
     expect(fs.existsSync(`${cache}/${gone}/preview.mp4`)).toBe(true);
     const done = cleanCache(app, false);
     expect(fs.existsSync(`${cache}/export-chunks/${p}/0123.mp4`)).toBe(false);
@@ -70,7 +74,9 @@ test("the cache loses rebuildable files of media nobody uses and old half-writte
     expect(fs.existsSync(`${cache}/reviews/${p}/new.mp4`)).toBe(true);
     expect(fs.existsSync(`${cache}/export-chunks/${p}/review/0a1b.mp4`)).toBe(false);
     expect(fs.existsSync(`${cache}/export-chunks/${p}/review/2c3d.mp4`)).toBe(true);
-    expect(done.bytes).toBe(153);
+    expect(done.bytes).toBe(153 + 31);
+    expect(fs.existsSync(`${cache}/cloud/sound/excerpts/youtube/abc/1-2.mp4.mov.partial.mov`)).toBe(false);
+    expect(fs.existsSync(`${cache}/cloud/sound/excerpts/youtube/abc/3-4.mp4.mov.partial.mov`)).toBe(true);
     expect(fs.existsSync(`${cache}/${usedKey}/preview.mp4`)).toBe(true);
     expect(fs.existsSync(`${cache}/${usedKey}/preview.partial.mp4.sb-a0dac0bf-H5wfgu`)).toBe(false);
     expect(fs.existsSync(`${cache}/${gone}/preview.mp4`)).toBe(false);

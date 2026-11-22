@@ -1013,6 +1013,24 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
       }
     }
   }
+  // Half-written cloud copies (a sound excerpt's `.partial.mov`, a proxy's `.partial`) a stopped write left under
+  // `cloud/`: eviction passes over a write that may be going, and nothing else looked there, so one from Nov 4 sat in
+  // `cloud/sound` for weeks. Gone a day after it was last written, unless something uploads it. Blocks aren't looked
+  // through (thousands of files; their own writes never leave a partial: cloud_blocks.ts `keep`).
+  {
+    const stack = [join(cache, "cloud")];
+    for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+      for (const name of yield* namesIn(at)) {
+        yield BREATH;
+        const path = join(at, name);
+        const stat = yield* lstatOf(path);
+        if (stat === null) continue;
+        if (stat.isDirectory()) {
+          if (!(at === join(cache, "cloud") && name === "blocks")) stack.push(path);
+        } else if (stat.isFile() && PARTIAL.test(name) && now - stat.mtimeMs >= DAY && !uploadingNow(path) && !pinned(path)) yield* remove(path);
+      }
+    }
+  }
   // Chunks an export left when it stopped part-way (the engine's chunks.rs):
   // a run again soon carries on from them; after a few days they go.
   const chunksDir = join(cache, "export-chunks");
