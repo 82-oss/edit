@@ -36,7 +36,7 @@ import type { App } from "./app.ts";
 import * as background from "./background.ts";
 import * as diag from "./diag.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
-import { audited, changedSpan, clipSpans, FIXABLE, scopedAudit } from "./edit_tools.ts";
+import { audited, changedSpan, clipSpans, FIXABLE, scopedAudit, WHOLE_EDIT } from "./edit_tools.ts";
 import type { Project } from "./model.ts";
 import { fps as fpsOf } from "./project.ts";
 import * as seams from "./seams.ts";
@@ -84,10 +84,16 @@ background.provide(NAME, { line: lineOf, stop });
  */
 export function found(app: App, from: Project, live: { rev: number; project: Project }): { issues: Record<string, unknown>[]; reading: number } {
   thread.note(`end check: the audit of ${live.project.id}`);
-  const audit = audited(app, live.project, live.rev);
+  const audit = hooks.audit(app, live.project, live.rev);
   const [before, after] = [clipSpans(from), clipSpans(live.project)];
   const scoped = scopedAudit(audit, changedSpan(before, after), fpsOf(live.project));
-  const issues = (scoped.issues as Record<string, unknown>[]).filter((issue) => FIXABLE.includes(String(issue.kind)));
+  const fixable = (issue: Record<string, unknown>) => FIXABLE.includes(String(issue.kind));
+  const here = (scoped.issues as Record<string, unknown>[]).filter(fixable);
+  // What's of the whole edit (no place on the timeline, or a kind that's one for all of it: an intro without its captions)
+  // is never near the change: it's said when the edit didn't have it before the turn, as the turn's own doing.
+  const whole = ((audit.issues ?? []) as Record<string, unknown>[]).filter((issue) => fixable(issue) && wholeEdit(issue) && !here.includes(issue));
+  const had = whole.length === 0 ? new Set<string>() : kindsBefore(app, from);
+  const issues = [...here, ...whole.filter((issue) => !had.has(String(issue.kind)))];
   const touched = new Set(
     live.project.clips.flatMap((clip) => {
       if (before.get(clip.id)?.[2] === after.get(clip.id)?.[2] || !("media" in clip)) return [];
@@ -99,8 +105,23 @@ export function found(app: App, from: Project, live: { rev: number; project: Pro
   return { issues, reading: new Set([...names(audit.picture_check_pending), ...names(audit.censor_check_pending)]).size };
 }
 
-/** What a check reads of the edit (a test holds it while files are read). */
-export const hooks = { found };
+/** Whether an audit's finding is of the whole edit: no place on the timeline, or a kind that's one for all of it. */
+function wholeEdit(issue: Record<string, unknown>): boolean {
+  return WHOLE_EDIT.includes(String(issue.kind)) || !["at", "start", "end", "frame"].some((key) => typeof issue[key] === "number");
+}
+
+/** The kinds of whole-edit finding the edit had when the turn began (read once a check). */
+const before = new WeakMap<Project, Set<string>>();
+function kindsBefore(app: App, from: Project): Set<string> {
+  const known = before.get(from);
+  if (known !== undefined) return known;
+  const kinds = new Set(((hooks.audit(app, from, null).issues ?? []) as Record<string, unknown>[]).filter(wholeEdit).map((issue) => String(issue.kind)));
+  before.set(from, kinds);
+  return kinds;
+}
+
+/** What a check reads of the edit (a test holds it while files are read), and the audit it reads. */
+export const hooks = { found, audit: audited };
 
 /** What the woken turn reads after Edit's event mark (never shown): what was found, and what to do. */
 export function wakeText(issues: readonly Record<string, unknown>[]): string {

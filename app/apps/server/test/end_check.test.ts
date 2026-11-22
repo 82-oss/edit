@@ -219,6 +219,35 @@ describe("on a channel that sets it", () => {
     }
   });
 
+  test("what's wrong with the whole edit (no place on the timeline) is told when the turn brought it, never when it was there before", async () => {
+    const { app, asked, turn, cleanup } = setUp("end-check-whole");
+    const audit = endCheck.hooks.audit;
+    try {
+      endCheck.timing.readsWithinMs = 0;
+      // The edit as the turn began has none; as it ends, one with no place (and the audit's own, scoped as before).
+      const underused = { kind: "windows_underused", screens: 1, at_least: 3, fix: "make a cut-in a Windows screen" };
+      let had = false;
+      endCheck.hooks.audit = ((app_: App, project: Parameters<typeof audit>[1], rev: number | null) => {
+        const real = audit(app_, project, rev);
+        const issues = (real.issues ?? []) as unknown[];
+        return { ...real, issues: rev === null ? (had ? [underused] : issues) : [...issues, underused] };
+      }) as typeof audit;
+      const id = await project(app);
+      await turn(id, "Add a short B-roll shot", () => broll(app, id, "b", 3));
+      expect(await until(() => asked.length === 2)).toBe(true);
+      expect(asked[1]).toContain('"kind":"windows_underused"');
+      // There before the turn: not the turn's, so nothing is said.
+      had = true;
+      const other = await project(app);
+      await turn(other, "Add a short B-roll shot", () => broll(app, other, "b", 3));
+      await Bun.sleep(300);
+      expect(asked).toHaveLength(3);
+    } finally {
+      endCheck.hooks.audit = audit;
+      cleanup();
+    }
+  });
+
   test("Stop: the line goes and nobody is woken", async () => {
     const { app, agents, asked, call, turn, cleanup } = setUp("end-check-stop");
     try {

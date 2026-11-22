@@ -1978,7 +1978,7 @@ export const FIXABLE = [
 ];
 
 /** Fixable flags that come once for the whole edit: one is enough for a follow-up. */
-const WHOLE_EDIT = ["countdown_late", "end_new_picture", "intro_uncaptioned", "short_length", "short_unsubtitled", "short_no_music", "short_music_stops", "blur_off_shot", "teaser_wide", "intro_long", "intro_no_arrest", "windows_underused", "hook_unmarked", "tape_start_unmarked", "prologue_without_map", "commentary_uncovered_narration", "commentary_placeholder", "commentary_music_over_source", "commentary_text_heavy", "commentary_flash", "commentary_graphics_monotony"];
+export const WHOLE_EDIT = ["countdown_late", "end_new_picture", "intro_uncaptioned", "short_length", "short_unsubtitled", "short_no_music", "short_music_stops", "blur_off_shot", "teaser_wide", "intro_long", "intro_no_arrest", "windows_underused", "hook_unmarked", "tape_start_unmarked", "prologue_without_map", "commentary_uncovered_narration", "commentary_placeholder", "commentary_music_over_source", "commentary_text_heavy", "commentary_flash", "commentary_graphics_monotony"];
 
 /**
  * Edit's follow-up after a whole edit that left three or more fixable flags (or one of WHOLE_EDIT's)
