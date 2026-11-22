@@ -639,7 +639,13 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
     // Within a stretch the model cleans now (a strip is cut to whole frames, a few hundredths off its stretch's seconds:
     // asked to match them, a 3-frame stretch's strip was taken off as soon as it was laid, and cleaned again, round and round).
     cleaned.some((plan) => plan.media.id === media.cleans!.media && plan.spans.some(([from, to]) => media.cleans!.from >= from - 0.2 && media.cleans!.to <= to + 0.2));
-  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && !wanted(media);
+  // Cleaned again since: a later strip of the same seconds of the same file (the older one, sorted first by where it
+  // starts, was the one laid; one of Nov 19 was an empty file and failed every export).
+  const made = (media: Media): number => Number(media.id.slice(1));
+  const texts = live.project.media.filter((media) => media.cleans != null && (media.cleans.what ?? "text") === "text");
+  const again = (media: Media): boolean =>
+    texts.some((later) => made(later) > made(media) && later.cleans!.media === media.cleans!.media && later.cleans!.from <= media.cleans!.from + 0.2 && later.cleans!.to >= media.cleans!.to - 0.2);
+  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && (!wanted(media) || again(media));
   const count = live.project.media.filter(stale).length;
   if (count === 0) return;
   await app.store.update(id, "text removal", (project) => {
