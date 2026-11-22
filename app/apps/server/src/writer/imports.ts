@@ -714,10 +714,12 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
     return script;
   }
   const error = ran.failure;
-  // Waited out only when it's surely trouble that passes (a dropped line, the relay busy, credit, a full disk): the
-  // import's own refusals ("A compilation needs new footage") are plain errors nothing recognises, and stop as before.
+  // What nothing recognises is waited out as passing, as the editor's import does (failure.ts `kindOf`); the same
+  // failure four times in a row then stops it as Edit's to fix. Until Nov 22 it stopped at once as the person's, with
+  // "The import stopped" for a cause nobody had named. The import's own refusals the person answers say so
+  // (`NeedsPerson`: "A compilation needs new footage").
   const known = failure.surely(error);
-  const kind: failure.Kind = known ?? "person";
+  const kind: failure.Kind = known ?? "passing";
   const key = durableJobs.keyOf("script", script.id);
   const spent = stageTimes(script.id);
   // Trouble that passes (a dropped line, the relay busy, a full disk, the plan out of credit, Drive's day): the
@@ -725,8 +727,8 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   // import stopped" goes out. Before, Script mode read an error it didn't know as the person's and stopped (JJ's
   // imports on the night of Nov 18, the same dropped line the editor's import waited out).
   // The same failure four times in a row is Edit's to fix (jobs.ts `postpone`): its row is failed, and the import stops.
-  const repeated = known !== null && failure.waitsByItself(known) && (durableJobs.wait(app.store.home, key, error), durableJobs.get(app.store.home, key)?.state === "failed");
-  if (known !== null && failure.waitsByItself(known) && !repeated) {
+  const repeated = failure.waitsByItself(kind) && (durableJobs.wait(app.store.home, key, error), durableJobs.get(app.store.home, key)?.state === "failed");
+  if (failure.waitsByItself(kind) && !repeated) {
     // What it waits on, in the words the diagnostics and the waking read (`waiting_on`), and where it had got to and
     // when it last moved: the page reads its wait from this row (`progress`), so a restart doesn't lose it.
     const last = latest.get(script.id);
@@ -1162,7 +1164,7 @@ export async function fetchVideo(app: App, url: string, dest: string, onPercent:
   const folder = dest.replace(/\.[^./]+$/, ".recordings");
   const manifest = join(folder, "manifest.json");
   const recordings: drive.Recording[] = link.kind === "folder" && isFile(manifest) ? (JSON.parse(fs.readFileSync(manifest, "utf8")) as drive.Recording[]) : (await drive.recordings(token, link))[1];
-  if (recordings.length === 0) throw new Error("That Drive link has no recordings.");
+  if (recordings.length === 0) throw new failure.NeedsPerson("That Drive link has no recordings.");
   if (link.kind === "file") {
     const size = Math.max(recordings[0]!.size, 1);
     return drive.download(token, recordings[0]!, dest, (bytes) => onPercent(Math.floor((Math.min(bytes, size) * 100) / size), null), signal);
@@ -1273,7 +1275,7 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   }
   // Every recording, those still missing too: each run tries them again.
   const wanted = parts.wanted(manifest, true);
-  if (wanted.length === 0) throw new Error("No recordings are left to import from this folder.");
+  if (wanted.length === 0) throw new failure.NeedsPerson("No recordings are left to import from this folder.");
   // Streamed, only the preview takes room here; downloaded, the recordings too.
   const stream = streamed.on();
   const needed = wanted.reduce((sum, [index, recording]) => {
@@ -1830,7 +1832,7 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
   }
   // Every video, those still missing too: each run tries them again.
   const wanted = parts.keptVideos(videos, true);
-  if (wanted.length === 0 || (!script.compilation && wanted.length < 2)) throw new Error(script.compilation ? "A compilation needs new footage." : "A case across videos needs at least two of them.");
+  if (wanted.length === 0 || (!script.compilation && wanted.length < 2)) throw new failure.NeedsPerson(script.compilation ? "A compilation needs new footage." : "A case across videos needs at least two of them.");
   await compilationRoom(dir, folder, wanted);
   // Up to three come down together, each tied to its place in the order.
   const percents = wanted.map(() => 0);
