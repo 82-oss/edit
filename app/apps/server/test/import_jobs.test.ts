@@ -948,6 +948,22 @@ test("going on without them all blacks only the person's files, never one waitin
   }
 });
 
+test("an import waiting for room says the room it waits for and no time (JJ, Nov 22: the time passed and nothing happened)", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-room-line", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    cloudFootage(SOUNDLESS, () => new failure.NoRoom(1e9));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const asked = await settled(scripts, id);
+    expect(asked.error).toMatch(/^Needs about \d+\.\d GB free on this computer to bring in the footage\. Edit goes on by itself once there's room\.$/u);
+    expect(caseJob(fixture.home, id)!.args.room_bytes).toBeLessThan(2.5e9);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 /** A project with a script of five footage files, one range each, a cut-in after the first. */
 async function fiveFiles(fixture: Fixture): Promise<string> {
   const id = fixture.store.create("import", { width: 640, height: 360, fps: 30 }).project.id;

@@ -650,8 +650,13 @@ function due(job: Job, now: number): boolean {
   if (job.until === "encoder" && encoder.busy()) return false;
   if (!(job.retry_at === undefined || job.retry_at <= now)) return false;
   const bytes = job.args.room_bytes;
-  return typeof bytes !== "number" || bytes <= 0 || roomCheck.has(bytes);
+  if (typeof bytes !== "number" || bytes <= 0) return true;
+  // The room is an estimate and the try itself looks at the disk before it writes: a wrong number only ever delays it.
+  return (job.retry_at !== undefined && now - job.retry_at >= ROOM_TRY_ANYWAY_MS.value) || roomCheck.has(bytes);
 }
+
+/** How long past its time work waiting for room is held by the number it asked for (JJ's 88.6 GB, Nov 22, held it for good). */
+export const ROOM_TRY_ANYWAY_MS = { value: 30 * 60_000 };
 
 /** How many bytes a `NoRoom` failure (or its cause) says it needs; 0 when it doesn't say. */
 function roomNeeded(error: unknown): number {

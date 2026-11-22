@@ -2371,7 +2371,7 @@ function joinBytes(chunks: Uint8Array[]): Uint8Array {
 }
 
 /** Excerpts of one file made at once from a file here (from the cloud's address, one at a time: `excerptsOf`). */
-const EXCERPTS_AT_ONCE = 3;
+export const EXCERPTS_AT_ONCE = 3;
 /**
  * Files at least this long (seconds) get a pieced proxy when read from R2 (a Drive file's) or put up by the backfill;
  * a shorter one's whole proxy is made instead. A disk's file an import answers is pieced whatever its length

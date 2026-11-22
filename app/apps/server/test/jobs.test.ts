@@ -524,6 +524,32 @@ test("work waiting for room starts again only once there's room for what it need
   }
 });
 
+test("a room estimate that's too high only delays the work: it's tried anyway in the end (JJ's 88.6 GB, Nov 22)", async () => {
+  const dir = home();
+  const was = jobs.roomCheck.has;
+  const waits = failure.ROOM_EVERY_MS.value;
+  const anyway = jobs.ROOM_TRY_ANYWAY_MS.value;
+  failure.ROOM_EVERY_MS.value = 0;
+  try {
+    const key = jobs.begin(dir, "script", "s1", { waiting_on: "import" }, "", "importing");
+    jobs.wait(dir, key, new failure.NoRoom(88.6e9, "Needs 88.6 GB free."));
+    const started: string[] = [];
+    jobs.useResumers(dir, { script: (job) => void started.push(job.key) });
+    jobs.roomCheck.has = () => false;
+    await Bun.sleep(5);
+    await jobs.wake(dir);
+    expect(started).toEqual([]);
+    jobs.ROOM_TRY_ANYWAY_MS.value = 0;
+    await jobs.wake(dir);
+    expect(started).toEqual([key]);
+  } finally {
+    jobs.roomCheck.has = was;
+    failure.ROOM_EVERY_MS.value = waits;
+    jobs.ROOM_TRY_ANYWAY_MS.value = anyway;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a wait due sooner than the table's next look goes when it's due, not at the next 30-second look", async () => {
   const dir = home();
   try {

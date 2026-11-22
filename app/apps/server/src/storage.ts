@@ -284,6 +284,22 @@ export function roomFor(dir: string, bytes: number): boolean {
   return free() >= target;
 }
 
+/**
+ * Whether work waiting for room can go on: looked at every 30 seconds while it waits (jobs.ts `due`), by `admit`'s rule
+ * for starting but gentler on what's kept. With the room there, nothing is given up (the work's own start asks as it
+ * needs); short, the cleaner is asked for only what's missing, every few minutes, and not at all when even everything
+ * it could take wouldn't do (JJ, Nov 22: `admit` on each look cleared about 4 GB of his copies for room he'd never reach).
+ */
+export function roomToGoOn(dir: string, bytes: number, now = Date.now()): boolean {
+  if (!(bytes > 0) || !Number.isFinite(freeBytes(dir))) return true;
+  const left = () => spare(dir, bytes, WORK_FLOOR_BYTES);
+  if (left() >= 0) return true;
+  const most = mayGoOn(dir);
+  if (most !== null && left() + most < 0) return false;
+  askForRoom(freeBytes(dir) - left(), now);
+  return left() >= 0;
+}
+
 /** For tests. */
 export function resetRoom(): void {
   claims.clear();

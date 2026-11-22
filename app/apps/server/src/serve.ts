@@ -602,8 +602,8 @@ function optional(area: string, work: () => void): void {
  */
 function wakeAfterTrouble(app: App): void {
   // Work waiting for room starts again only once there's room for what it needs (jobs.ts `due`).
-  // The same rule as the line it said ("needs about N GB free": storage.admit), so doing what it says is enough.
-  jobs.roomCheck.has = (bytes) => storage.admit(app.store.cacheDir(), bytes, "This work") === null;
+  // The same rule as the line it said ("needs about N GB free"), so doing what it says is enough.
+  jobs.roomCheck.has = (bytes) => storage.roomToGoOn(app.store.cacheDir(), bytes);
   wake.onWake((sleptMs) => {
     // Nothing that fell due is woken until the sign-in is back (its first tries can fail: the network comes back
     // seconds after a wake), up to two minutes; the table's own timer holds meanwhile (jobs.holdWaking).

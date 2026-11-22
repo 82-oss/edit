@@ -119,6 +119,15 @@ test("the editor's import keeps the most room its files said they need, so the t
   expect(roomFor([new Error("could not reach Edit's relay")])).toBe(0);
 });
 
+test("the room an import waits for is what it cuts at once, never its largest excerpt times all its ranges (JJ, Nov 22)", async () => {
+  const { roomForCuts } = await import("../src/script.ts");
+  const jj = roomForCuts([{ most: 443e6, ranges: 66 }, { most: 449e6, ranges: 60 }, { most: 80e6, ranges: 40 }]);
+  expect(jj).toBeGreaterThan(3.4e9);
+  expect(jj).toBeLessThan(3.6e9);
+  // A file of one excerpt needs room for that one.
+  expect(roomForCuts([{ most: 100e6, ranges: 1 }])).toBeLessThan(121e6);
+});
+
 test("Edit's own import queue is passing, known (never counted as the same failure), and tried again in a minute (Nov 20)", () => {
   for (const words of ["3 imports are already running. Try again when one finishes.", "Wait for this project's current job to finish before retrying its import."]) {
     expect(failure.surely(new Error(words))).toBe("passing");

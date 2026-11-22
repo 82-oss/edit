@@ -93,6 +93,39 @@ test("work that couldn't fit even with every copy the cleaner could take gone is
   }
 });
 
+test("work waiting for room gives up nothing while it fits or can't fit, and asks only for what's missing, every few minutes (JJ, Nov 22)", () => {
+  const floor = storage.WORK_FLOOR_BYTES;
+  let asked: number[] = [];
+  onDisk({ free: () => 56 * GB, total: 494 * GB, makeRoom: (wanted) => (asked.push(wanted), 0) }, () => {
+    expect(storage.roomToGoOn("/x", 3.5 * GB)).toBe(true);
+  });
+  expect(asked).toEqual([]);
+  let free = floor;
+  onDisk({ free: () => free, total: 494 * GB, makeRoom: (wanted) => (asked.push(wanted), (free = wanted), 0) }, () => {
+    expect(storage.roomToGoOn("/x", GB, 10 * 60_000)).toBe(true);
+    expect(asked).toEqual([GB + floor]);
+    free = floor;
+    expect(storage.roomToGoOn("/x", GB, 10 * 60_000 + 30_000)).toBe(false);
+    expect(asked.length).toBe(1);
+  });
+  const { dir, cleanup } = fixtureHome("room-to-go-on");
+  const real = storage.ledger.all();
+  try {
+    const disk = fs.statSync(dir).dev;
+    storage.ledger.useRoots([{ dir, classify: () => ({ kind: "proxy", project: null, evictable: true }) }]);
+    storage.ledger.replace([{ path: `${dir}/a.mp4`, bytes: 2 * GB, file: "1:1", disk, kind: "proxy", at: 0, project: null, evictable: true, owners: [] }]);
+    asked = [];
+    onDisk({ free: () => 56 * GB, total: 494 * GB, makeRoom: (wanted) => (asked.push(wanted), 0) }, () => {
+      expect(storage.roomToGoOn(dir, 88.6 * GB)).toBe(false);
+    });
+    expect(asked).toEqual([]);
+  } finally {
+    storage.ledger.replace(real, 0);
+    storage.ledger.useRoots([]);
+    cleanup();
+  }
+});
+
 test("work asked for evicts to keep what Edit keeps free, and is refused only past the writes' floor, in one line with the numbers", () => {
   // Room to spare: nothing asked of the cleaner.
   let asked: number[] = [];

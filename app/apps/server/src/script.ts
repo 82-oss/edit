@@ -48,6 +48,7 @@ import * as steps from "./import_steps.ts";
 import * as keyframeIndex from "./keyframe_index.ts";
 import * as localFirst from "./local_first.ts";
 import * as cloudMediaModule from "./cloud_media.ts";
+import { WORK_FLOOR_BYTES } from "./storage.ts";
 import * as cloud from "./cloud.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
@@ -2963,7 +2964,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
           if (at !== null && at !== undefined) entry.retry_at = at;
           else delete entry.retry_at;
         }
-        if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt, missing.map((index) => errors[index]));
+        if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt, roomNeeded(app, id, files, missing, errors));
         else job.error = `${asked} of ${files.length} footage files couldn't be downloaded`;
         if (retryAt !== null) job.retry_at = retryAt;
         else delete job.retry_at;
@@ -3063,14 +3064,19 @@ class CreditWait extends Error {}
 
 /** The import's line while it waits by itself. */
 /**
- * The room an editor import waits for: each file's `NoRoom` speaks for one excerpt, and a file's excerpts are cut a few
- * at once, so it's that times the file's ranges, summed over the files, with a fifth more for the disk's own overhead
- * (bad-day no-room, Nov 20: 12 MB said, 12 MB free, two excerpts cut at once into it every five minutes).
+ * The room an editor import waits for: each file's `NoRoom` speaks for one excerpt, and a file cuts at most
+ * `EXCERPTS_AT_ONCE` at a time, so it's that many of its largest, summed over the files, with a fifth more for the
+ * disk's own overhead (bad-day no-room, Nov 20: 12 MB said, 12 MB free, two excerpts cut at once into it every five
+ * minutes). Never the largest times all its ranges: JJ's three files, 972 MB between them, waited for 88.6 GB with 56 GB
+ * free and never woke, the cleaner clearing his copies for it all the while (Nov 22). Short again later, it waits again.
  */
+export function roomForCuts(files: { most: number; ranges: number }[]): number {
+  return Math.ceil(files.reduce((sum, one) => sum + one.most * Math.min(Math.max(one.ranges, 1), cloudMediaModule.EXCERPTS_AT_ONCE), 0) * 1.2);
+}
+
 function roomNeeded(app: App, id: string, files: string[], missing: number[], errors: unknown[]): number {
   const project = app.store.get(id)?.project;
-  const total = missing.reduce((sum, index) => sum + roomFor([errors[index]]) * Math.max(1, project === undefined ? 1 : fileRanges(project, files[index]!).length), 0);
-  return Math.ceil(total * 1.2);
+  return roomForCuts(missing.map((index) => ({ most: roomFor([errors[index]]), ranges: project === undefined ? 1 : fileRanges(project, files[index]!).length })));
 }
 
 /** The most room any of these failures says it needs (a `NoRoom`, or one it caused), in bytes; 0 when none says. */
@@ -3084,7 +3090,7 @@ export function roomFor(errors: unknown[]): number {
   return most;
 }
 
-function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null, errors: unknown[] = []): string {
+function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null, room = 0): string {
   const files = `${missing} of ${total} footage files`;
   if (whys.includes("quota")) return `The transcription plan is out of credit: ${files} wait for it${retryAt === null ? "" : `; Edit tries again at ${clockTime(retryAt)}`}.`;
   if (whys.includes("limit")) {
@@ -3093,9 +3099,9 @@ function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt:
   }
   if (whys.includes("encoder")) return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
   if (whys.includes("room")) {
-    // The room asked for, when a cut said it ("Needs about 85 MB free on this computer…").
-    const needs = errors.map((error) => (error instanceof failure.NoRoom && error.needBytes > 0 ? error.message : null)).find((said) => said !== null);
-    return `${needs ?? "This computer is out of room."} ${files} wait, and Edit tries again by itself once there's room${retryAt === null ? "" : ` (next at ${clockTime(retryAt)})`}.`;
+    // The number the wait ends on (storage.ts `roomToGoOn`), so freeing what it says is enough, and no time: room ends it.
+    const needs = room > 0 ? `Needs about ${((room + WORK_FLOOR_BYTES) / 1e9).toFixed(1)} GB free on this computer to bring in the footage.` : "This computer is out of room to bring in the footage.";
+    return `${needs} Edit goes on by itself once there's room.`;
   }
   // Whatever passes (a dropped connection, a busy Google): tried again by itself, nothing for the person to do.
   return `Trying ${missing === 1 ? "a file" : `${missing} files`} again${retryAt === null ? "" : ` at ${clockTime(retryAt)}`}`;
