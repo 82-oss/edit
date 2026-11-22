@@ -19,6 +19,10 @@
 //   process tree, never anything else, frozen and killed (edit.ts). No cgroup:
 //   Edit's tree is ended past 4 GB (edit.ts) and it won't start with under
 //   2.5 GB free.
+// - A run that passes removes its folder; a failed one is kept, and of the
+//   failed ones only the last five (Nov 22: 88 runs, 38 GB, had filled
+//   mandalorian's disk to 99%). `--keep` keeps this run's folder whatever
+//   happens, and it's never pruned for a later failure (only by the week).
 // - `--at <ref>` runs Edit's server as it was at that commit: the ref is
 //   exported with `git archive` into ~/.cache/edit-bad-day/at-<sha>/ and given
 //   this checkout's node_modules and native addon by symlink, read-only. The
@@ -110,11 +114,17 @@ function exportAt(ref: string): string {
 
 const args = process.argv.slice(2);
 let at: string | null = null;
+let keep = false;
 const rest: string[] = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--at") at = args[++i] ?? fail("--at needs a ref");
+  else if (args[i] === "--keep") keep = true;
   else rest.push(args[i]!);
 }
+/** Failed runs kept at most, the newest; older ones go when another fails. */
+const FAILED_KEPT = 5;
+/** A run kept with `--keep`: never pruned for a later failure. */
+const KEPT_MARK = ".kept";
 
 if (rest.includes("--list")) {
   const { cases } = await import("./cases/index.ts");
@@ -154,6 +164,7 @@ const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const RUN = join(ROOT, "runs", `${stamp}${at === null ? "" : `-at-${git(["rev-parse", "--short=8", at])}`}`);
 fs.mkdirSync(join(RUN, "tmp"), { recursive: true });
 fs.mkdirSync(join(RUN, "small-disk"), { recursive: true });
+if (keep) fs.writeFileSync(join(RUN, KEPT_MARK), "kept with --keep\n");
 // Old runs go after a week; the footage and exports stay.
 for (const old of fs.existsSync(join(ROOT, "runs")) ? fs.readdirSync(join(ROOT, "runs")) : []) {
   const path = join(ROOT, "runs", old);
@@ -289,5 +300,17 @@ const peak = (() => {
     return "unknown";
   }
 })();
-console.log(`bad-day: ${Math.round((Date.now() - started) / 1000)} s, peak memory ${peak}; logs in ${RUN}`);
+const runs = join(ROOT, "runs");
+if (status === 0 && !keep) {
+  // Passed: nothing in it anyone needs.
+  fs.rmSync(RUN, { recursive: true, force: true });
+  console.log(`bad-day: passed in ${Math.round((Date.now() - started) / 1000)} s, peak memory ${peak}; its run folder removed (--keep keeps it)`);
+} else {
+  console.log(`bad-day: ${Math.round((Date.now() - started) / 1000)} s, peak memory ${peak}; logs in ${RUN}`);
+  // The failed runs kept: this one and the four before it (by their names, which are their times), never one --keep kept.
+  const failed = fs.readdirSync(runs).filter((name) => name !== RUN.slice(runs.length + 1) && !fs.existsSync(join(runs, name, KEPT_MARK))).sort();
+  const drop = failed.slice(0, Math.max(0, failed.length - (keep ? FAILED_KEPT : FAILED_KEPT - 1)));
+  for (const name of drop) fs.rmSync(join(runs, name), { recursive: true, force: true });
+  if (drop.length > 0) console.log(`bad-day: removed ${drop.length} older failed ${drop.length === 1 ? "run" : "runs"}, the last ${FAILED_KEPT} kept`);
+}
 process.exit(status);

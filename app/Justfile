@@ -172,7 +172,8 @@ trial-server *args:
 # The bad-day tests (scripts/bad-day, final.md section 3): a real Edit from source against stand-ins,
 # through a bad line, frozen and killed on cue, in a sandbox capped at 6 GB with no network of its own.
 # `just bad-day` runs every case, `just bad-day slow-cut` one, `just bad-day --at 7b59f4e2 slow-cut`
-# runs Edit as it was at that commit (exported with git archive into ~/.cache/edit-bad-day).
+# runs Edit as it was at that commit (exported with git archive into ~/.cache/edit-bad-day). A run that
+# passes removes its folder, only the last five failed ones are kept; `--keep` keeps this run's.
 bad-day *args:
     bun scripts/bad-day/run.ts "$@"
 
