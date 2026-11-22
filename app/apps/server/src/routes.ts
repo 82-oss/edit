@@ -1109,18 +1109,25 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
   effects.noteWait(app, id);
   // In the Exports queue from now, with its graphics' steps, until it starts.
   const held = exportSteps.waitBegins(id, expected);
+  // Its Cancel, or another Export of the project taking its place, ends the wait at once.
   const wait = (limit: number) =>
-    seams.broll.waitForMaps(app, id, limit).catch((error: unknown) => {
+    seams.broll.waitForMaps(app, id, limit, held.stop.signal).catch((error: unknown) => {
       if (!seams.isUnavailable(error)) throw error;
     });
   let waiting = false;
   try {
     await wait(READY_QUICK_MS);
   } catch (error) {
+    // Cancelled, or another Export took its place, in its first seconds: nothing to start.
+    if (held.cancelled) {
+      exportSteps.waitEnds(id, held);
+      exportSteps.waitDone(home, id, held);
+      return json({ path: expected, cancelled: true });
+    }
     // Only what's still being made is waited for; a render that failed says why at once.
     if (!/still rendering|waiting behind/.test(diag.messageOf(error))) {
       exportSteps.waitEnds(id, held);
-      exportSteps.waitDone(home, id);
+      exportSteps.waitDone(home, id, held);
       throw bad(diag.messageOf(error));
     }
     waiting = true;
@@ -1129,7 +1136,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
     try {
       // Cancelled in its first seconds: nothing to start.
       if (held.cancelled) {
-        exportSteps.waitDone(home, id);
+        exportSteps.waitDone(home, id, held);
         return json({ path: expected, cancelled: true });
       }
       const path = await go();
@@ -1142,7 +1149,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
       return json({ path });
     } catch (error) {
       // Carried on after a restart, it was written down: crossed off as it fails (its start never took the row).
-      exportSteps.waitDone(home, id);
+      exportSteps.waitDone(home, id, held);
       throw bad(diag.messageOf(error));
     } finally {
       exportSteps.waitEnds(id, held);
@@ -1174,7 +1181,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
       clearInterval(ticking);
       // Cancelled while it waited: nothing to start.
       if (held.cancelled) {
-        exportSteps.waitDone(home, id);
+        exportSteps.waitDone(home, id, held);
         return;
       }
       await go();
@@ -1184,7 +1191,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
     } catch (error) {
       clearInterval(ticking);
       exportSteps.waitEnds(id, held);
-      exportSteps.waitDone(home, id);
+      exportSteps.waitDone(home, id, held);
       if (held.cancelled) return;
       const said = diag.messageOf(error);
       diag.warn("export", `${id}: ${said}`);

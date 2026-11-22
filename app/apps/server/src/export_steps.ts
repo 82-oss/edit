@@ -34,12 +34,26 @@ interface Wait {
   since: number;
   output: string;
   cancelled: boolean;
+  /** Its waits end on this (a Cancel, or another Export asked for the project). */
+  stop: AbortController;
+  /** Another Export of the project took its place: what it does as it ends is no longer the project's. */
+  replaced: boolean;
 }
 const waits = new Map<string, Wait>();
 
-/** An export of `project` waits for what it shows to be ready before it starts (its row is in the queue meanwhile). */
+/**
+ * An export of `project` waits for what it shows to be ready before it starts (its row is in the queue meanwhile). A
+ * second Export pressed while one waits takes its place (the Nov 21 audit: the first went on waiting, orphaned, out of
+ * Cancel's reach, and started by itself as its graphics came in): the first is stopped, and leaves the row alone.
+ */
 export function waitBegins(project: string, output: string): Wait {
-  const wait = { since: clock.now(), output, cancelled: false };
+  const was = waits.get(project);
+  if (was !== undefined) {
+    was.cancelled = true;
+    was.replaced = true;
+    was.stop.abort();
+  }
+  const wait = { since: clock.now(), output, cancelled: false, stop: new AbortController(), replaced: false };
   waits.set(project, wait);
   return wait;
 }
@@ -56,6 +70,7 @@ export function cancelWait(project: string, home: string | null = null): boolean
   if (written) jobs.end(home, jobs.keyOf("export", project));
   if (wait === undefined) return written;
   wait.cancelled = true;
+  wait.stop.abort();
   waits.delete(project);
   return true;
 }
@@ -103,8 +118,9 @@ export function waitMoved(home: string | null, project: string): void {
   jobs.beat(home, jobs.keyOf("export", project));
 }
 
-/** It started (its row is the export's now), failed or was cancelled: its row as a wait is crossed off. */
-export function waitDone(home: string | null, project: string): void {
+/** It started (its row is the export's now), failed or was cancelled: its row as a wait is crossed off (not by one another Export replaced: the row is that one's). */
+export function waitDone(home: string | null, project: string, wait?: Wait): void {
+  if (wait?.replaced === true) return;
   if (graphicsRow(home, project) !== undefined) jobs.end(home, jobs.keyOf("export", project));
 }
 

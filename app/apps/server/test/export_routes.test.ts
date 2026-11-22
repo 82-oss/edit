@@ -163,3 +163,42 @@ test("an Export written down waiting for its graphics is cancelled from its row 
     cleanup();
   }
 });
+
+// The Nov 21 audit: a second Export pressed while one waited for its graphics left the first waiting, out of Cancel's
+// reach, to start by itself once they came in: two exports of one press.
+test("a second Export while one waits for its graphics takes its place: one export starts, and Cancel reaches it", async () => {
+  const broll = await import("../src/broll.ts");
+  const { dir, app, store, home, cleanup } = fixtureHome("route-graphics-twice", { services: { exports: new ExportRegistry() } });
+  let rendered!: () => void;
+  const done = new Promise<void>((resolve) => (rendered = resolve));
+  const signals: AbortSignal[] = [];
+  const wait = spyOn(broll, "waitForMaps").mockImplementation(async (_app, _id, limit, signal) => {
+    if (signal !== undefined) signals.push(signal);
+    if (limit <= 5000) throw new Error("The board effect is still rendering (12 of 60 frames): export again in a minute or two.");
+    await Promise.race([done, new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("cancelled while waiting for its graphics")), { once: true }))]);
+  });
+  const started: string[] = [];
+  const start = spyOn(app.exports as ExportRegistry, "start").mockImplementation(async (_store, _library, _project, _options, output) => {
+    started.push(output);
+    return output;
+  });
+  try {
+    const id = store.create("Graphics", { width: 64, height: 36, fps: 30 }).project.id;
+    const ask = async (name: string) => (await client(app).post(`/api/projects/${id}/export`, { path: `${dir}/${name}.mp4`, keepLocal: true, options: { format: "h264", quality: "high" } })).json();
+    expect(await ask("first")).toMatchObject({ started: true });
+    expect(await ask("second")).toMatchObject({ started: true });
+    // The first's wait was told to stop; its row is the second's.
+    expect(signals[0]!.aborted).toBe(true);
+    await Bun.sleep(20);
+    expect(jobs.get(home, jobs.keyOf("export", id))).toMatchObject({ args: { output: `${dir}/second.mp4` } });
+    rendered();
+    for (let tries = 0; started.length === 0 && tries < 200; tries++) await Bun.sleep(5);
+    await Bun.sleep(30);
+    expect(started).toEqual([`${dir}/second.mp4`]);
+  } finally {
+    start.mockRestore();
+    wait.mockRestore();
+    exportSteps.reset();
+    cleanup();
+  }
+});
