@@ -1556,8 +1556,9 @@ impl Sound {
 /// The mixer's thread: `parts` mixed as the export mixes them, a window at a
 /// time, each made `rate` times as fast with its pitch kept (`Tempo`; at 1×
 /// it goes through as it is) and written to the speaker, held back while
-/// it's full. A part that won't decode is logged and the rest is silence, so
-/// the clock never holds on a broken file. `span` is the timeline's seconds
+/// it's full. A part that won't decode is logged and silent, the rest
+/// mixed as before (`mix::mix_live`); a mix that fails whole is silence to
+/// its end, so the clock never holds on a broken file. `span` is the timeline's seconds
 /// the mix starts at and its frames; what the speaker gets is that ÷ the
 /// speed. Joining sound that's playing (a change of speed), nothing is
 /// written until `Feed::join` says where this sound takes over.
@@ -1644,7 +1645,19 @@ fn mix_into(
         }
         write(&sped)
     };
-    let mixed = mix::mix_live(&parts, total, window, cancel, &mut push);
+    // A part that won't open or decode is silent and the rest plays on; the page hears why at its next ask.
+    let broken = |part: &Part, error: &str| {
+        crate::log::warn(
+            "preview",
+            format!(
+                "the player's sound of {} at {:.2} s: {error}; that part is silent",
+                part.path.display(),
+                part.segment.source_in
+            ),
+        );
+        feed.problem.lock().get_or_insert_with(|| error.to_owned());
+    };
+    let mixed = mix::mix_live(&parts, total, window, cancel, &mut push, broken);
     match mixed {
         Ok(()) => {
             let mut rest = Vec::new();

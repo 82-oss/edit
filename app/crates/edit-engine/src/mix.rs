@@ -487,25 +487,34 @@ pub fn mix(
 
 /// The mix for playing (Edit.app's player, `crate::player`): `window` frames
 /// at a time to `sink`, which holds the mixer back while the speaker is full,
-/// nothing logged. A seek or a stop sets `cancel`, and the mix ends.
+/// nothing logged. A seek or a stop sets `cancel`, and the mix ends: its
+/// FFmpegs are killed then, as an export's are (`util::killed_on_cancel`),
+/// since one waiting on a stream held the mix in its read past the cancel,
+/// reading on beside the play that replaced it (the Nov 21 audit). A part
+/// that won't open or decode is told to `broken` and is silent, and the rest
+/// plays on: one file gone from this Mac silenced the whole play after it (the
+/// Nov 20 audit). An export still fails on it (`mix`).
 pub fn mix_live(
     parts: &[Part],
     total: usize,
     window: usize,
     cancel: &AtomicBool,
     sink: impl FnMut(&[f32]) -> Result<(), String>,
+    mut broken: impl FnMut(&Part, &str),
 ) -> Result<(), String> {
     let native = std::env::var_os("EDIT_FFMPEG_AUDIO").is_none();
-    mix_windows(
-        Sources::new(native),
-        parts,
-        total,
-        window.max(RATE / 100),
-        cancel,
-        |_| {},
-        sink,
-        false,
-    )
+    crate::util::killed_on_cancel(cancel, || {
+        mix_windows(
+            Sources::new(native),
+            parts,
+            total,
+            window.max(RATE / 100),
+            cancel,
+            |_| {},
+            sink,
+            Some(&mut broken),
+        )
+    })
     .map_err(|error| {
         if cancel.load(Ordering::Acquire) {
             "cancelled".to_owned()
@@ -527,7 +536,7 @@ fn mix_with(
     progress: impl FnMut(f32),
     sink: impl FnMut(&[f32]) -> Result<(), String>,
 ) -> Result<(), String> {
-    mix_windows(sources, parts, total, WINDOW, cancel, progress, sink, true).map_err(|error| {
+    mix_windows(sources, parts, total, WINDOW, cancel, progress, sink, None).map_err(|error| {
         if cancel.load(Ordering::Acquire) {
             "cancelled".to_owned()
         } else {
@@ -535,6 +544,9 @@ fn mix_with(
         }
     })
 }
+
+/// What a play is told of a part that won't open or decode (`mix_live`).
+type Broken<'a> = dyn FnMut(&Part, &str) + 'a;
 
 #[allow(clippy::too_many_arguments)]
 fn mix_windows(
@@ -545,8 +557,10 @@ fn mix_windows(
     cancel: &AtomicBool,
     mut progress: impl FnMut(f32),
     mut sink: impl FnMut(&[f32]) -> Result<(), String>,
-    log: bool,
+    // Playing: a part that fails is told here and left silent (and nothing is logged). An export: None, and it fails.
+    mut broken: Option<&mut Broken>,
 ) -> Result<(), String> {
+    let log = broken.is_none();
     let frame_of = |seconds: f64| ((seconds * RATE as f64).round().max(0.0) as usize).min(total);
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by(|a, b| {
@@ -577,7 +591,14 @@ fn mix_windows(
             let end = frame_of(part.segment.start + part.segment.duration);
             if end > first {
                 let started = Instant::now();
-                let source = sources.open(part)?;
+                let source = match (sources.open(part), broken.as_mut()) {
+                    (Ok(source), _) => source,
+                    (Err(error), Some(broken)) if !cancel.load(Ordering::Acquire) => {
+                        broken(part, &error);
+                        continue;
+                    }
+                    (Err(error), _) => return Err(error),
+                };
                 opening += started.elapsed();
                 opened += 1;
                 active.push(Active {
@@ -603,10 +624,22 @@ fn mix_windows(
             let buffer = scratch.get_mut(..wanted * 2).unwrap_or_default();
             let mut got = 0;
             let started = Instant::now();
+            let mut failed = false;
             while got < wanted {
-                let n = sound
-                    .source
-                    .read(buffer.get_mut(got * 2..).unwrap_or_default())?;
+                let n = match (
+                    sound
+                        .source
+                        .read(buffer.get_mut(got * 2..).unwrap_or_default()),
+                    broken.as_mut(),
+                ) {
+                    (Ok(n), _) => n,
+                    (Err(error), Some(broken)) if !cancel.load(Ordering::Acquire) => {
+                        broken(part, &error);
+                        failed = true;
+                        0
+                    }
+                    (Err(error), _) => return Err(error),
+                };
                 if n == 0 {
                     break;
                 }
@@ -636,7 +669,8 @@ fn mix_windows(
                     *value += sample * gain;
                 }
             }
-            sound.next = stop;
+            // A part that failed mid-read is silent from there: what it gave is mixed, and it's let go.
+            sound.next = if failed { sound.end } else { stop };
         }
         active.retain(|sound| sound.next < sound.end);
         sink(out)?;
@@ -1548,6 +1582,88 @@ mod tests {
             elapsed: 0.0,
             original,
         }
+    }
+
+    fn mixed_live(
+        parts: &[Part],
+        total: usize,
+        cancel: &AtomicBool,
+    ) -> (Result<(), String>, Vec<f32>, Vec<String>) {
+        let mut out = Vec::new();
+        let mut broken = Vec::new();
+        let result = mix_live(
+            parts,
+            total,
+            RATE / 4,
+            cancel,
+            |window| {
+                out.extend_from_slice(window);
+                Ok(())
+            },
+            |part, error| broken.push(format!("{}: {error}", part.path.display())),
+        );
+        (result, out, broken)
+    }
+
+    #[test]
+    fn a_sound_that_wont_decode_is_silent_while_playing_and_the_rest_plays_on() {
+        let dir = temp_dir("broken");
+        let path = ramp(&dir, "ramp.wav");
+        let gone = dir.join("gone.wav");
+        // A file gone from this Mac first, then one that's here.
+        let parts = [
+            part(&gone, segment(0.0, 1.0, 0.0)),
+            part(&path, segment(0.5, 1.0, 2.0)),
+        ];
+        let (result, out, broken) = mixed_live(&parts, RATE * 2, &AtomicBool::new(false));
+        assert_eq!(result, Ok(()));
+        assert_eq!(out.len(), RATE * 2 * 2);
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert!(broken[0].contains("gone.wav"), "{broken:?}");
+        // The one here is heard where it plays: source 2.5 s at 1 s.
+        assert!((left(&out, 1.0) - 0.25).abs() < 2e-4, "{}", left(&out, 1.0));
+        // An export still fails on it.
+        let failed = mix_with(
+            Sources::new(true),
+            &parts,
+            RATE * 2,
+            &AtomicBool::new(false),
+            |_| {},
+            |_| Ok(()),
+        );
+        assert!(failed.is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_play_mixing_from_a_quiet_stream_ends_at_once_on_cancel_and_its_ffmpeg_with_it() {
+        // A server that takes the connection and never answers: FFmpeg waits inside its read.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            drop(socket);
+        });
+        let url = PathBuf::from(format!("http://127.0.0.1:{port}/api/cloud/preview?key=k"));
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = std::sync::Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            stop.store(true, Ordering::Release);
+        });
+        let began = Instant::now();
+        let (result, _, broken) =
+            mixed_live(&[part(&url, segment(0.0, 5.0, 0.0))], RATE * 5, &cancel);
+        let took = began.elapsed();
+        assert_eq!(result, Err("cancelled".to_owned()));
+        // A cancel isn't a broken sound.
+        assert!(broken.is_empty(), "{broken:?}");
+        assert!(
+            took < std::time::Duration::from_secs(3),
+            "the mix waited {took:?} on its FFmpeg past the cancel"
+        );
+        held.join().unwrap();
     }
 
     #[test]
