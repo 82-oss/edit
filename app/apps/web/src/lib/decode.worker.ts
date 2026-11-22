@@ -256,10 +256,14 @@ async function decodeAudio(job: Extract<DecodeJob, { type: "audio" }>, file: Fil
     readStart: Math.max(0, chunk * AUDIO_CHUNK_SECONDS - context),
     readEnd: (chunk + 1) * AUDIO_CHUNK_SECONDS + context, pcm: null as PcmChunk | null }));
   if (!buffers.length) return;
+  // A chunk no sample reaches (the sound ends before the picture, or starts after it, or has a gap) is silence, in
+  // the track's own format: thrown, the preview paused, waited 4 s and asked for it again, for good (Nov 21 audit, P6).
+  const track = await file.input.getPrimaryAudioTrack();
+  let format = { sampleRate: track?.sampleRate || 48_000, channels: track?.numberOfChannels || 2 };
   let next = 0;
   const emit = (buffer: typeof buffers[number]) => {
-    const pcm = buffer.pcm;
-    if (!pcm) throw new Error("No audio samples at the requested source time");
+    const pcm = buffer.pcm ??= { start: buffer.start, sampleRate: format.sampleRate,
+      channels: Array.from({ length: format.channels }, () => new Float32Array(Math.round((buffer.readEnd - buffer.readStart) * format.sampleRate))) };
     const channels = stretchAudio(pcm.channels, pcm.sampleRate, job.speed);
     const from = Math.round((buffer.start - buffer.readStart) / job.speed * pcm.sampleRate);
     const count = Math.round(AUDIO_CHUNK_SECONDS / job.speed * pcm.sampleRate);
@@ -275,6 +279,7 @@ async function decodeAudio(job: Extract<DecodeJob, { type: "audio" }>, file: Fil
         const buffer = buffers[i];
         if (buffer.readStart >= sampleEnd) break;
         if (buffer.readEnd <= sample.timestamp) continue;
+        format = { sampleRate: sample.sampleRate, channels: sample.numberOfChannels };
         const pcm = buffer.pcm ??= { start: buffer.start, sampleRate: sample.sampleRate,
           channels: Array.from({ length: sample.numberOfChannels },
             () => new Float32Array(Math.round((buffer.readEnd - buffer.readStart) * sample.sampleRate))) };

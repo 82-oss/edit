@@ -5,6 +5,8 @@ const decoding = vi.hoisted(() => ({
   gate: null as Promise<void> | null,
   /** Opens that fail before one succeeds. */
   failOpens: 0,
+  /** Where the sound's samples end (seconds; the picture goes on). */
+  audioEnd: Infinity,
   closed: vi.fn(), pictureClosed: vi.fn(), disposed: vi.fn(), iteratorClosed: vi.fn(), audioRanges: vi.fn(), videoOpened: vi.fn(), scrubbed: vi.fn(), keyed: vi.fn(), sampled: vi.fn(),
 }));
 /** A decoded picture: on Windows Chrome it holds one of the hardware decoder's few surfaces until closed. */
@@ -21,7 +23,7 @@ vi.mock("mediabunny", () => ({
       if (decoding.failOpens > 0) { decoding.failOpens--; throw new Error("the connection dropped"); }
       return { canDecode: async () => true, getFirstTimestamp: async () => 0 };
     }
-    async getPrimaryAudioTrack() { return { canDecode: async () => true }; }
+    async getPrimaryAudioTrack() { return { canDecode: async () => true, sampleRate: 1000, numberOfChannels: 2 }; }
   },
   EncodedPacketSink: class {
     // Keyframes every half second.
@@ -58,7 +60,7 @@ vi.mock("mediabunny", () => ({
   AudioSampleSink: class {
     async *samples(start: number, end: number) {
       decoding.audioRanges(start, end);
-      for (let timestamp = Math.floor(start / 0.04) * 0.04; timestamp < end; timestamp += 0.04) {
+      for (let timestamp = Math.floor(start / 0.04) * 0.04; timestamp < Math.min(end, decoding.audioEnd); timestamp += 0.04) {
         yield { timestamp, duration: 0.04, numberOfFrames: 40, numberOfChannels: 2, sampleRate: 1000,
           close: () => decoding.closed(timestamp),
           copyTo: (destination: Float32Array, options: { planeIndex: number; frameOffset: number }) => {
@@ -74,7 +76,7 @@ describe("decoder worker scheduling and PCM boundaries", () => {
   let scope: { onmessage: ((event: MessageEvent<DecodeRequest>) => void) | null; postMessage: (data: DecodeResponse) => void };
   const send = (data: DecodeRequest) => scope.onmessage!({ data } as MessageEvent<DecodeRequest>);
   beforeEach(async () => {
-    vi.resetModules(); vi.clearAllMocks(); decoding.gate = null; decoding.failOpens = 0; messages = [];
+    vi.resetModules(); vi.clearAllMocks(); decoding.gate = null; decoding.failOpens = 0; decoding.audioEnd = Infinity; messages = [];
     scope = { onmessage: null, postMessage: (data) => messages.push(data) };
     vi.stubGlobal("self", scope);
     await import("./decode.worker");
@@ -193,6 +195,24 @@ describe("decoder worker scheduling and PCM boundaries", () => {
       expect(response.pcm.channels[0][499]).toBe((response.chunk + 1) * 500 - 1);
     }
   });
+  it("gives silence for a chunk past where the sound ends, never an error the preview waits on and asks again", async () => {
+    // The sound stops at 1.2 s; the picture (and so the chunks asked) goes on to 2.5 s.
+    decoding.audioEnd = 1.2;
+    send({ type: "audio", id: 1, key: "file", url: "/file", lane: "a:clip", chunks: [2, 3, 4], speed: 1 });
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "done")).toBe(true));
+    expect(messages.filter((m) => m.type === "error")).toEqual([]);
+    const pcm = messages.filter((m) => m.type === "audio");
+    expect(pcm.map((m) => m.chunk)).toEqual([2, 3, 4]);
+    // Chunk 2 has its sound up to 1.2 s, then silence; 3 and 4 are silence, in the track's format, a chunk long.
+    expect(pcm[0]!.pcm.channels[0][0]).toBe(1000);
+    expect(pcm[0]!.pcm.channels[0][300]).toBe(0);
+    for (const response of pcm.slice(1)) {
+      expect(response.pcm.sampleRate).toBe(1000);
+      expect(response.pcm.channels).toHaveLength(2);
+      expect(response.pcm.channels[0]).toHaveLength(500);
+      expect(response.pcm.channels.every((channel) => channel.every((value) => value === 0))).toBe(true);
+    }
+  });
 
 });
 
@@ -201,7 +221,7 @@ describe("decoder worker on Windows", () => {
   let scope: { onmessage: ((event: MessageEvent<DecodeRequest>) => void) | null; postMessage: (data: DecodeResponse) => void };
   class Copy { constructor(public data: unknown, public init: { timestamp: number }) {} get timestamp() { return this.init.timestamp; } }
   beforeEach(async () => {
-    vi.resetModules(); vi.clearAllMocks(); decoding.gate = null; decoding.failOpens = 0; messages = [];
+    vi.resetModules(); vi.clearAllMocks(); decoding.gate = null; decoding.failOpens = 0; decoding.audioEnd = Infinity; messages = [];
     scope = { onmessage: null, postMessage: (data) => messages.push(data) };
     vi.stubGlobal("self", scope);
     vi.stubGlobal("VideoFrame", Copy);
