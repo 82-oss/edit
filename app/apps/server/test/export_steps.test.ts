@@ -301,3 +301,71 @@ test("a pace learnt wrong never puts the percent ahead of the video: it goes by 
     cleanup();
   }
 });
+
+// Nov 22, the same Mac, the re-check: a plain save was believable, a share was not. While the video rendered, the
+// review copy's and the upload's guessed times were counted down with the clock, so by the video's end they read
+// nothing and the whole said 99% "almost done" for 16 of the share's 30 s.
+test("a share's review copy and upload keep their time until their turn, so the whole isn't almost done when its video ends", async () => {
+  const jobs = await import("../src/jobs.ts");
+  const { app, home, store, cleanup } = fixtureHome("export-steps-share");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // This Mac: a minute's video in 18 s, its review copy in 8 s.
+    speeds.noteExport(home, 1800, 18);
+    speeds.noteCopy(home, 60, 8);
+    const t0 = 9_000_000;
+    const key = jobs.begin(home, "share", id, {}, "", "exporting");
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0, updated_ms: t0, started_ms: t0, seconds: 60, share: true };
+    const left = (given: ExportSteps, kind: string) => given.steps.find((one) => one.kind === kind)!.left_s;
+    const first = steps.stepsOf(app, id, job, t0)!;
+    expect(first.steps.map((one) => one.kind)).toEqual(["video", "copy", "upload"]);
+    const copyGuess = left(first, "copy")!;
+    expect(copyGuess).toBeGreaterThan(5);
+    // The video renders for 18 s, looked at every second, as the dialog does.
+    let last = first;
+    for (let s = 1; s <= 18; s++) last = steps.stepsOf(app, id, { ...job, progress: s / 18.5 }, t0 + s * 1000)!;
+    // Still to come, so still its whole time: not run down by the clock.
+    expect(left(last, "copy")).toBe(copyGuess);
+    // The video's done and the copy begins: most of the copy and all of the upload are ahead, and the percent says so.
+    jobs.step(home, key, "review copy");
+    const copying = steps.stepsOf(app, id, undefined, t0 + 19_000)!;
+    expect(copying.steps.find((one) => one.kind === "video")!.state).toBe("done");
+    expect(copying.steps.find((one) => one.kind === "copy")!.state).toBe("current");
+    expect(copying.progress).toBeLessThan(0.9);
+    expect(left(copying, "copy")!).toBeGreaterThan(4);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the video's time isn't said for the whole until the engine's own pace is heard, and an export begun again after a cancel starts from nothing", async () => {
+  const { app, home, store, cleanup } = fixtureHome("export-steps-again");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // A pace learnt wrong, far too fast (Nov 22: "0% almost done" with 17 s to go).
+    speeds.noteExport(home, 2400, 1.6);
+    const t0 = 11_000_000;
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0, updated_ms: t0, started_ms: t0, seconds: 60 };
+    expect(steps.stepsOf(app, id, job, t0)!.left_s).toBeNull();
+    expect(steps.stepsOf(app, id, { ...job, progress: 0.2 }, t0 + 3_000)!.left_s).toBeNull();
+    // Heard (over 5 s of the engine's frames): a time, from its own pace.
+    steps.stepsOf(app, id, { ...job, progress: 0.4 }, t0 + 6_000);
+    const heard = steps.stepsOf(app, id, { ...job, progress: 0.55 }, t0 + 9_000)!;
+    expect(heard.left_s).not.toBeNull();
+    expect(heard.left_s!).toBeGreaterThan(3);
+    // Cancelled at 55%, and exported again four seconds later: the new run's percent and time are its own (the old
+    // one's start and samples read "about 40 s left" with 11 to go, and held the percent at 35% while the video passed it).
+    app.exports.activity = () => [{ ...job, state: "cancelled" as const, progress: 0.55, updated_ms: t0 + 10_000 }];
+    steps.activity(app, new Set([id]), t0 + 10_000);
+    const t1 = t0 + 14_000;
+    const again = { ...job, started_ms: t1, updated_ms: t1 };
+    const fresh = steps.stepsOf(app, id, again, t1)!;
+    expect(fresh.progress).toBe(0);
+    expect(fresh.elapsed_s).toBe(0);
+    const early = steps.stepsOf(app, id, { ...again, progress: 0.3 }, t1 + 4_000)!;
+    expect(early.progress).toBeLessThanOrEqual(0.3);
+    expect(early.elapsed_s).toBe(4);
+  } finally {
+    cleanup();
+  }
+});
