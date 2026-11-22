@@ -868,6 +868,15 @@ pub struct Writer {
 unsafe impl Send for Writer {}
 
 impl Writer {
+    /// The encoder its video is made with, for the export's log (Nov 22: it named none, "native video").
+    pub fn encoder(hevc: bool) -> &'static str {
+        if hevc {
+            "VideoToolbox HEVC (AVAssetWriter)"
+        } else {
+            "VideoToolbox H.264 (AVAssetWriter)"
+        }
+    }
+
     pub fn open(
         path: &Path,
         width: u32,

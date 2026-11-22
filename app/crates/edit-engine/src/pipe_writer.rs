@@ -46,6 +46,16 @@ fn rate(fps: f64) -> String {
 }
 
 impl Writer {
+    /// The encoder its chunks are made with, for the export's log (Nov 22: it named none, "native video").
+    pub fn encoder(hevc: bool) -> &'static str {
+        match (crate::export::encoders().nvenc, hevc) {
+            (true, false) => "h264_nvenc",
+            (true, true) => "hevc_nvenc",
+            (false, false) => "libx264",
+            (false, true) => "libx265",
+        }
+    }
+
     pub fn open(
         path: &Path,
         width: u32,
@@ -238,5 +248,24 @@ impl Drop for Writer {
             let _ = self.child.kill();
         }
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The export's log names the encoder its video is made with (Nov 22: "native video", none named).
+    #[test]
+    fn the_encoder_is_named_as_ffmpeg_knows_it() {
+        let nvenc = crate::export::encoders().nvenc;
+        assert_eq!(
+            Writer::encoder(false),
+            if nvenc { "h264_nvenc" } else { "libx264" }
+        );
+        assert_eq!(
+            Writer::encoder(true),
+            if nvenc { "hevc_nvenc" } else { "libx265" }
+        );
     }
 }

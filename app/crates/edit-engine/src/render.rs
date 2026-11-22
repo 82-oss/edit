@@ -2456,7 +2456,7 @@ fn export_chunked(
     crate::log::info(
         "export",
         format!(
-            "export: {} of {} chunks ({} of {} frames) already made; the sound {}",
+            "export: {} of {} chunks ({} of {} frames) already made; the sound {}; the video on {}",
             list.len() - todo.len(),
             list.len(),
             copied,
@@ -2465,7 +2465,8 @@ fn export_chunked(
                 (None, _) => "isn't needed",
                 (Some(_), Some(_)) => "is the last export's",
                 (Some(_), None) => "is mixed again",
-            }
+            },
+            ChunkWriter::encoder(settings.hevc)
         ),
     );
     let rendering = todo.iter().map(|chunk| chunk.frames()).sum::<i64>() as f32;
@@ -3063,6 +3064,13 @@ fn render_picture(
         .transpose()?
         .flatten()
     {
+        crate::log::info(
+            "export",
+            format!(
+                "export: the video in one piece on {}",
+                crate::mac_media::Writer::encoder(options.format == Format::Hevc)
+            ),
+        );
         return crate::log::time_on("export", "export: native video", &project.id, || {
             render_frames(
                 project,
