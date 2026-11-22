@@ -297,7 +297,7 @@ export class Processor {
     // Only thumbnails and a waveform to make (a project opened: a cloud file's are made from its stream): they
     // start once nothing plays here and no footage is waited on (playing.ts), file by file, never pulling the link and the CPU from a play someone watches
     // (kenobi, Nov 17). A preview copy an import needs before it plays at all starts at once.
-    const copying = probe.kind === "video" && !whole && this.status(source).proxy !== "ready";
+    const copying = probe.kind === "video" && !whole && playbackKey(source) === null && this.status(source).proxy !== "ready";
     const start = (): Promise<void> => slots.with(() => this.process(source, probe, paths, whole));
     void (copying || playing.isIdle() ? start() : playing.whenIdle().then(start))
       .catch((error: unknown) => {
@@ -399,6 +399,11 @@ export class Processor {
       this.set(source, (s) => {
         s.proxy = "skipped";
       });
+    } else if (playbackKey(source) !== null) {
+      // Streamed from the cloud: its preview is the cloud's, ready while its key is there (`statusFromDisk`), and
+      // never copied here. One the cloud no longer had (an effect's older render, Sphe's prod Nov 19 to 22) was taken
+      // as a copy to make: FFmpeg, which reads only files for one, refused the stream's address ("Invalid argument"),
+      // and its words replaced what was really wrong.
     } else if (status.proxy !== "ready") {
       this.set(source, (s) => {
         s.proxy = "working";

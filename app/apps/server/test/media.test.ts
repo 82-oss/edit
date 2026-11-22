@@ -199,7 +199,7 @@ test.skipIf(ffmpeg === null)("the transcription plan out of credit: the file wai
     failure.QUOTA_EVERY_MS.value = every;
     cleanup();
   }
-}, 30_000);
+});
 
 test("a failed step says why and the rest go on", async () => {
   const { dir, app, store, cleanup } = fixtureHome("media-failure");
@@ -443,6 +443,47 @@ test("a file called missing is playable at the next look once its key is known t
     cleanup();
   }
 });
+
+// Sphe's prod Linux Edit, Nov 19 to 22: "media: preview copy failed …: proxy: Error opening input files: Invalid
+// argument" 70 times, each a coded effect's render streamed from the cloud. An effect keeps only its last two renders
+// there, so an older one a project still lists reads "not in the cloud"; opened again, the project asked for its
+// work again, and the failed proxy was taken as one to make here: FFmpeg was handed the stream's address (it reads
+// only files for a copy) and its words took the place of what was wrong.
+test("a streamed file the cloud doesn't have is never given a preview copy here, and keeps saying why it can't play", async () => {
+  const { mediaHooks, MISSING_IN_CLOUD } = await import("../src/media.ts");
+  const { store, cleanup } = fixtureHome("media-streamed-no-copy");
+  const was = mediaHooks.keyAnswers;
+  const source = `http://127.0.0.1:7731/api/cloud/preview?key=${encodeURIComponent("edit/exports/p1-2/effect-file-viewers-f9f2299e997b.mp4")}`;
+  try {
+    mediaHooks.keyAnswers = async () => false;
+    const media = new Processor(store);
+    // Its thumbnails and waveform made already (from the stream, on an earlier open).
+    const paths = media.paths(source);
+    fs.mkdirSync(paths.thumbs.slice(0, paths.thumbs.lastIndexOf("/")), { recursive: true });
+    fs.mkdirSync(paths.peaks.slice(0, paths.peaks.lastIndexOf("/")), { recursive: true });
+    fs.writeFileSync(paths.thumbs, "jpeg");
+    fs.writeFileSync(paths.thumbsMeta, JSON.stringify({ count: 1 }));
+    fs.writeFileSync(paths.peaks, "peaks");
+    const shownAs: MediaStatus[] = [];
+    const stop = store.subscribe((event) => {
+      if (event.type === "media" && event.path === source) shownAs.push(event.status as MediaStatus);
+    });
+    // Looked at (the editor's missing footage), the cloud answers it isn't there.
+    media.status(source);
+    await Bun.sleep(20);
+    expect(media.status(source)).toMatchObject({ proxy: "failed", error: MISSING_IN_CLOUD });
+    // The project opened (again): its media's work asked for (run here as its turn comes: the slots it waits on are
+    // shared with the tests before).
+    await (media as unknown as { process(source: string, probe: unknown, paths: CachePaths, whole: boolean): Promise<void> }).process(source, VIDEO, paths, false);
+    stop();
+    expect(shownAs.filter((status) => status.proxy === "working")).toEqual([]);
+    expect(media.status(source)).toMatchObject({ proxy: "failed", error: MISSING_IN_CLOUD });
+    expect(fs.existsSync(paths.proxy)).toBe(false);
+  } finally {
+    mediaHooks.keyAnswers = was;
+    cleanup();
+  }
+}, 30_000);
 
 test("a \"not there\" asked before its upload ended and answered after doesn't fail a file that is there", async () => {
   const { mediaHooks, keyIsThere } = await import("../src/media.ts");
