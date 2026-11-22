@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 
 import * as fs from "node:fs";
 
+import * as encoder from "../src/encoder.ts";
 import { isImagePath, isLocalCopy, isMediaPath, makeThumbs, Processor, Semaphore } from "../src/media.ts";
 import type { MediaStatus } from "../src/media.ts";
 import type { CachePaths } from "../src/native/index.ts";
@@ -69,6 +70,10 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
   const playing = await import("../src/playing.ts");
   const { dir, app, cleanup } = fixtureHome("media-plays");
   playing.reset();
+  // The encoder is one for the whole run: an encode another file's test left going (its fake FFmpeg never ends) still
+  // held it here on the Check's Mac, and this clip's preview copy waited its turn behind it past the 5 s below.
+  const left = encoder.others();
+  encoder.reset();
   const poll = playing.hooks.pollMs;
   playing.hooks.pollMs = 5;
   try {
@@ -81,7 +86,7 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
     app.media.ensure(clip, { kind: "video", duration: 5, width: 640, height: 360, fps: 30, has_audio: false } as never);
     // The import's preview copy is under way beside the play (once the shared slot is free); the picture's thumbnails wait.
     for (let waited = 0; app.media.status(clip).thumbs === "pending" && waited < 5_000; waited += 10) await Bun.sleep(10);
-    expect(app.media.status(clip).thumbs).not.toBe("pending");
+    expect([app.media.status(clip).thumbs, encoder.others(), left]).not.toEqual(["pending", encoder.others(), left]);
     await Bun.sleep(20);
     expect(app.media.status(picture).thumbs).toBe("pending");
     playing.note("p", false);
