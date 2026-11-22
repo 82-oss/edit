@@ -85,6 +85,39 @@ test("a try that made a piece is getting further: its wait starts again from a m
   }
 });
 
+// Nov 21 audit: a piece already made whose upload kept failing waited only a minute each time, the piece before it
+// (up already) counted as getting further at every try.
+test("a piece made whose upload keeps failing waits longer each time, the pieces up already not counting as further", async () => {
+  const source = "hash:pieces-behind-up-fails";
+  const { home, cache } = withLayout(source);
+  const base = pieces.baseKey(source);
+  for (const n of [0, 1]) {
+    const piece = cloudMedia.localPath(cache, `${base}/video/${n}.m4s`);
+    fs.mkdirSync(join(piece, ".."), { recursive: true });
+    fs.writeFileSync(piece, "made");
+  }
+  const up = new Set<string>();
+  const head = spyOn(cloud, "head").mockImplementation(async (key: string) => (up.has(key) ? ({ size: 4 } as never) : null));
+  const sending = spyOn(cloud, "uploadFile").mockImplementation(async (_path: string, key: string) => {
+    if (key.endsWith("/1.m4s")) throw new Error("The socket connection was closed unexpectedly");
+    up.add(key);
+  });
+  try {
+    cloudMedia.fillHooks.fill = async () => 0;
+    const key = jobs.keyOf("upload", "-", `${source}#pieces`);
+    const waits: number[] = [];
+    for (let n = 0; n < 3; n++) {
+      await cloudMedia.piecesBehind(home, cache, source);
+      waits.push(minutesOff(jobs.get(home, key)));
+    }
+    expect(waits).toEqual([1, 5, 15]);
+  } finally {
+    head.mockRestore();
+    sending.mockRestore();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // Nov 21 (audit I14.e): an upload's row was noted only at its first reports, so an hour's upload was listed as
 // "running, nothing noted for N min" in the log and in each Mac's report, which misled anyone reading it from afar.
 test("an upload's row is noted as it goes, every report, not only at its first", async () => {

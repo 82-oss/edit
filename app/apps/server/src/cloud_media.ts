@@ -1079,9 +1079,12 @@ async function makeEveryPiece(home: string, key: string, cache: string, source: 
   const left = pieces.missingHere(context, base, layout);
   if (left.length > 0) throw new Error(`piece${left.length === 1 ? "" : "s"} ${left.join(", ")} of ${layout.pieces} weren't made (the log says why)`);
   // Up as its whole proxy went up, one file at a time; each one's share under way is waited on, never sent twice.
+  // Further only for a piece this try sent: the ones up already counted too, so a piece whose upload kept failing
+  // waited a minute every time (Nov 21 audit).
   for (let n = 0; n < layout.pieces; n++) {
-    for (const one of pieces.pieceKeys(base, layout, n)) await pieces.upNow(context, one);
-    jobs.progressed(home, key);
+    let sent = false;
+    for (const one of pieces.pieceKeys(base, layout, n)) if (await pieces.upNow(context, one)) sent = true;
+    if (sent) jobs.progressed(home, key);
   }
 }
 

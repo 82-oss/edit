@@ -333,11 +333,13 @@ export function missingHere(context: Context, base: string, layout: Layout): num
  * R2 has it (another Mac's stays). A short import's pieces behind it (cloud_media `piecesBehind`, Nov 21) end only once
  * they're up, as its whole proxy's upload did, so a restart in between sends what didn't go.
  */
-export async function upNow(context: Context, key: string): Promise<void> {
+export async function upNow(context: Context, key: string): Promise<boolean> {
+  // True when this sent it (one up already, or sent by a share under way, is no further for its caller).
   const going = sharing.get(key);
-  if (going !== undefined && (await going)) return;
-  if ((await context.head(key).catch(() => null)) !== null) return;
+  if (going !== undefined && (await going)) return false;
+  if ((await context.head(key).catch(() => null)) !== null) return false;
   await context.upload(context.local(key), key);
+  return true;
 }
 
 /** A layout's key in R2 (`layoutOf` reads it): whether a pieced proxy is there at all. */
