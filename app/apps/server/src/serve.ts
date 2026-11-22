@@ -33,7 +33,7 @@ import * as outages from "./outages.ts";
 import * as relay from "./relay.ts";
 import * as storage from "./storage.ts";
 import * as wake from "./wake.ts";
-import type { ExportOptions } from "./model.ts";
+import type { ExportOptions, Project } from "./model.ts";
 import { listen } from "./http/server.ts";
 import { registerEffectTools } from "./effect_tools.ts";
 import { registerChannelTools } from "./channel_tools.ts";
@@ -634,6 +634,41 @@ function wakeAfterTrouble(app: App): void {
 }
 
 /**
+ * An export a restart cut short, carried on (the job table's `export` row): an Export waiting for its graphics or a
+ * batch of stretches as asked, a share's from its share, else the export again from the timeline it was started with.
+ */
+export async function resumeExport(app: App, job: jobs.Job, project: (id: string) => Project): Promise<void> {
+  // An Export that was waiting for its graphics, or a batch of marked stretches, when Edit stopped: carried on as it
+  // was asked (routes.ts; Nov 21: both lived in memory, and after an update the export someone asked for was gone).
+  if (await carryOnAsked(app, job)) return;
+  const { options, output, drive, keepLocal, share, note, watermark, replace } = job.args as unknown as { options: ExportOptions; output: string } & StartExtra;
+  // The timeline it was started with, not edits made since.
+  const current = project(job.project);
+  const kept = resumeSnapshot(app.store.home, job.project, job.args);
+  // Its kept timeline unreadable: made from the edit as it is now, and said so, never swapped silently.
+  const asNow = kept === null ? "Exported as the edit is now: the timeline it was started with couldn't be read after the restart." : null;
+  if (asNow !== null) diag.warn("export", `${job.project} (key ${job.key}): ${asNow}`);
+  const asked = kept ?? current;
+  const said = asNow === null ? note : note === undefined ? asNow : `${note} · ${asNow}`;
+  // A share's export is its share's: the share job carries it on (and starts it again under this key).
+  if (share === true) {
+    const owner = jobs.get(app.store.home, jobs.keyOf("share", job.project));
+    if (owner !== undefined && jobs.live(owner)) {
+      // Its kept timeline goes with it (the share keeps its own), where it stayed in jobs/ for good.
+      dropLeftSnapshot(app.store.home, job.project, job.args);
+      throw new jobs.Gone("its share carries it on");
+    }
+    // From a build before shares were jobs: listed as a share now, at its export.
+    void reviews
+      // Its note as said, "Exported as the edit is now" among it when the timeline couldn't be read (it was lost here).
+      .resumeShare(app, job.project, asked, options, { ...(replace === true ? { replace } : {}), ...(said === undefined ? {} : { note: said }), ...(watermark === undefined ? {} : { watermark }) })
+      .catch((error: unknown) => diag.warn("review", `sharing ${job.project} after the restart (key ${job.key}): ${diag.messageOf(error)}`));
+    return;
+  }
+  await app.exports.start(app.store, app.library, asked, options, output, { drive, ...(keepLocal === true ? { keepLocal } : {}), ...(said === undefined ? {} : { note: said }), ...(watermark === undefined ? {} : { watermark }) });
+}
+
+/**
  * Starts again everything a restart cut short (jobs.ts), from the one table:
  * exports, archives, shares, fixes, agent turns, Ideas and Thumbnails runs,
  * uploads, smoothing, watches and map renders.
@@ -678,35 +713,7 @@ async function resumeJobs(app: App): Promise<void> {
       const did = seams.script.carryOn(app, job.project);
       if (did === "finished" || did === "nothing") throw new jobs.Gone("its import has nothing left to do");
     },
-    export: async (job) => {
-      // An Export that was waiting for its graphics, or a batch of marked stretches, when Edit stopped: carried on as it
-      // was asked (routes.ts; Nov 21: both lived in memory, and after an update the export someone asked for was gone).
-      if (await carryOnAsked(app, job)) return;
-      const { options, output, drive, keepLocal, share, note, watermark, replace } = job.args as unknown as { options: ExportOptions; output: string } & StartExtra;
-      // The timeline it was started with, not edits made since.
-      const current = project(job.project);
-      const kept = resumeSnapshot(app.store.home, job.project, job.args);
-      // Its kept timeline unreadable: made from the edit as it is now, and said so, never swapped silently.
-      const asNow = kept === null ? "Exported as the edit is now: the timeline it was started with couldn't be read after the restart." : null;
-      if (asNow !== null) diag.warn("export", `${job.project} (key ${job.key}): ${asNow}`);
-      const asked = kept ?? current;
-      const said = asNow === null ? note : note === undefined ? asNow : `${note} · ${asNow}`;
-      // A share's export is its share's: the share job carries it on (and starts it again under this key).
-      if (share === true) {
-        const owner = jobs.get(app.store.home, jobs.keyOf("share", job.project));
-        if (owner !== undefined && jobs.live(owner)) {
-          // Its kept timeline goes with it (the share keeps its own), where it stayed in jobs/ for good.
-          dropLeftSnapshot(app.store.home, job.project, job.args);
-          throw new jobs.Gone("its share carries it on");
-        }
-        // From a build before shares were jobs: listed as a share now, at its export.
-        void reviews
-          .resumeShare(app, job.project, asked, options, { ...(replace === true ? { replace } : {}), ...(note === undefined ? {} : { note }), ...(watermark === undefined ? {} : { watermark }) })
-          .catch((error: unknown) => diag.warn("review", `sharing ${job.project} after the restart (key ${job.key}): ${diag.messageOf(error)}`));
-        return;
-      }
-      await app.exports.start(app.store, app.library, asked, options, output, { drive, ...(keepLocal === true ? { keepLocal } : {}), ...(said === undefined ? {} : { note: said }), ...(watermark === undefined ? {} : { watermark }) });
-    },
+    export: (job) => resumeExport(app, job, project),
     archive: async (job) => {
       // The export finished before the restart: only its upload is done again.
       const { output, key, record } = job.args as { output: string; key: string; record: ExportRecord };
