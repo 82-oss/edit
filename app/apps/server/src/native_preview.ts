@@ -50,6 +50,7 @@ import { fetchWhole, onLanded, previewBytes } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
+import * as localFirst from "./local_first.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
@@ -78,6 +79,10 @@ let landedApp: App | null = null;
 onLanded((key) => {
   for (const [id, keys] of streaming) if (keys.delete(key)) tell(id);
 });
+// A local-first working copy made here replaced its stand-in: each window handed the original reads the copy instead.
+localFirst.hooks.landed = (_cache, original) => {
+  if (landedApp !== null) evicted(landedApp, original);
+};
 
 /** Project `id`'s pages hear that something the window reads landed (`native-sources`), at most once in `LANDED_GAP_MS`. */
 function tell(id: string): void {
@@ -434,8 +439,11 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
     if (key !== null) {
       const local = cloudMedia.localPath(cache, key);
       const base = pieces.baseOf(key);
+      // A local-first working copy not made yet: the original's own path, so the made copy is read once it lands (local_first.ts).
+      const standing = localFirst.windowReads(cache, media);
       let source: string;
-      if (base === null && isFile(local)) source = local;
+      if (standing !== null) source = standing;
+      else if (base === null && isFile(local)) source = local;
       else if (isFile(media.path)) source = media.path;
       else {
         const url = `http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(key)}`;

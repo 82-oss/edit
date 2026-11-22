@@ -109,6 +109,11 @@ export function onLanded(listener: (key: string) => void): () => void {
   return () => landedListeners.delete(listener);
 }
 
+/** A whole preview landed here another way (a local-first working copy made here: local_first.ts): its listeners told. */
+export function landed(key: string): void {
+  for (const listener of landedListeners) listener(key);
+}
+
 /** About how big `one` is: its exact size once a first block has said it (read once), else its guess. */
 function sizeOf(one: Waiting): number {
   const exact = sizes.get(one.key);
@@ -233,7 +238,9 @@ function start(next: Waiting, need: number): void {
       }
       // What waits on it now (the censor check) reads the stream; the copy itself comes once the line's back.
       for (const listener of failedListeners) listener(next.key, diag.messageOf(error));
-      if (!lasting(error)) {
+      // A local-first working copy not up yet is on its way from the computer that made it (local_first.ts): asked
+      // again as one that failed in passing, so it comes within a minute of landing, never ten.
+      if (!lasting(error) || cloudMedia.isWorkingKey(next.key)) {
         askAgain(next, error);
         return;
       }

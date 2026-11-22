@@ -16,6 +16,7 @@ import { fileName, join } from "./paths.ts";
 import { duration, fps, freshId, mediaOf } from "./project.ts";
 import { bitrateFor } from "./proxy_pieces.ts";
 import { cloudEnabled } from "./relay.ts";
+import * as localFirst from "./local_first.ts";
 import * as seams from "./seams.ts";
 import * as storage from "./storage.ts";
 import * as uploads from "./uploads.ts";
@@ -27,6 +28,8 @@ export type { Made } from "./seams.ts";
 export const hooks = {
   importLocal: (cache: string, path: string, probe: media.Probe, name: string): Promise<seams.Made> =>
     seams.cloudMedia.importLocal(cache, path, probe, name),
+  /** A local-first project's video (local_first.ts `importFile`). */
+  importHere: (home: string, cache: string, path: string, probe: media.Probe, name: string): Promise<seams.Made> => localFirst.importFile(home, cache, path, probe, name),
 };
 
 /**
@@ -156,10 +159,20 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
     if (short !== null) throw new NoRoom(proxiesBytes(probed.map(([, probe]) => probe)), short);
   }
   const items: seams.Made[] = [];
+  // Footage local while the project is in work (local_first.ts): chosen at its first import, its videos kept here.
+  const local = cloudEnabled() && probed.some(([, probe]) => probe.kind === "video") && (await localFirst.settle(app, id));
   for (const [path, probe] of probed) {
     const name = nameOf(path);
     if (!cloudEnabled()) {
       items.push({ path, name, probe, cloud: null });
+      continue;
+    }
+    if (local && probe.kind === "video") {
+      try {
+        items.push(await diag.timeOnAsync("cloud", "cloud: import here", path, () => hooks.importHere(app.store.home, app.store.cacheDir(), path, probe, name)));
+      } catch (error) {
+        fail(givenAs.get(path) ?? path, error, `${name} couldn't be imported: ${diag.messageOf(error)}`);
+      }
       continue;
     }
     // Cloud mode: the original goes to R2 and footage is edited from its

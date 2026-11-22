@@ -60,6 +60,7 @@ import * as http from "node:http";
 
 import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
+import * as localFirst from "./local_first.ts";
 import * as localPreviews from "./local_previews.ts";
 import * as playing from "./playing.ts";
 import * as storage from "./storage.ts";
@@ -236,6 +237,10 @@ const ANALYSIS_AT_ONCE = 8;
 const ANALYSIS_REST_MAX_MS = 60_000;
 const playbackPorts = new Map<string, number>();
 const previewPath = (cache: string, key: string) => playbackPath(key, playbackPorts.get(cache) ?? 7700);
+/** Whether `key` is a local-first working copy's (local_first.ts). */
+export const isWorkingKey = (key: string): boolean => localFirst.isWorkingKey(key);
+/** A cloud media's `path` here: this server's loopback address of `key` (local_first.ts). */
+export const previewOf = previewPath;
 
 /** Install before the store loads projects: native tools read the same cloud ranges as the browser. */
 /** Where cloud previews' blocks are kept (cloud_blocks.ts), once playback is configured. */
@@ -473,6 +478,8 @@ export async function listRecords(sources: string[]): Promise<Record_[]> {
 async function putRecord(fields: Record<string, unknown>): Promise<void> {
   await cloud.mutation("edit:putMedia", fields);
 }
+
+
 
 // ---------------------------------------------------------------------------
 // Sources, keys and local copies.
@@ -827,6 +834,11 @@ export interface Upload {
   local: string | null;
   /** `file` is Edit's own copy (a browser upload): removed once it's all up, never before. */
   removeAfter?: boolean;
+  /**
+   * The original's name, when the import didn't ask the registry (a local-first import: local_first.ts): told with
+   * its key once it's up, unless the registry knows the source under another key.
+   */
+  name?: string;
 }
 
 /** Uploads imports left running, by the file imported: whether they all went up. */
@@ -983,13 +995,22 @@ async function runUpload(upload: Upload, progressed: () => void, moving: () => v
         before = sent;
       });
     }
-    await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
+    if (upload.name === undefined) await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
+    else {
+      // A local-first import didn't ask the registry (local_first.ts): told now that it's up, unless it knows this
+      // source under another key (imported on another computer meanwhile), whose record is left as it is.
+      const record = await getRecord(upload.source);
+      if (record === null) await putRecord({ source: upload.source, name: upload.name, originalKey: upload.originalKey, originalReady: true, size: upload.size, duration: upload.duration });
+      else if (record.originalKey === upload.originalKey) await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
+    }
   }
   if (upload.proxy !== null && upload.local !== null) {
     await cloud.uploadFile(upload.local, upload.proxy, moving);
     // There now, said without asking: a look at its status mid-upload isn't answered "not in the cloud" (media.ts).
     keyIsThere(upload.proxy);
-    await putRecord({ source: upload.source, proxyKey: upload.proxy, proxyReady: true });
+    // A local-first working copy is its project's media's own key, never the registry's proxy: the registry's is shared
+    // by every project on today's path, which would then play the 720p copy instead of making its own (local_first.ts).
+    if (!localFirst.isWorkingKey(upload.proxy)) await putRecord({ source: upload.source, proxyKey: upload.proxy, proxyReady: true });
     // The proxy stays here once it's up: it's this Mac's whole copy, what the
     // native player and the agent's renders read (local_previews.ts), and the
     // cache's budget lets it go like any other (cache_cleanup.ts). Removed,
@@ -1002,6 +1023,11 @@ export function resumeUpload(home: string, args: Record<string, unknown>): void 
   // A short import's pieces behind it (`piecesBehind`): the ones not made or not up yet.
   if (typeof args.pieces === "string" && typeof args.cache === "string") {
     void piecesBehind(home, args.cache, args.pieces);
+    return;
+  }
+  // A local-first working copy being made behind its import (local_first.ts).
+  if (typeof args.working === "string") {
+    localFirst.resume(home, args);
     return;
   }
   const upload = args as unknown as Upload;

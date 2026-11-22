@@ -45,6 +45,9 @@ import * as durableJobs from "./jobs.ts";
 import * as failure from "./failure.ts";
 import * as steps from "./import_steps.ts";
 import * as keyframeIndex from "./keyframe_index.ts";
+import * as localFirst from "./local_first.ts";
+import * as cloudMediaModule from "./cloud_media.ts";
+import * as cloud from "./cloud.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
 export type { DriveHead, Excerpt, Parsed } from "./seams.ts";
@@ -2810,6 +2813,8 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
   const work = async () => {
     // As tokio::spawn: the job runs after the caller has answered with it (files still queued).
     await Promise.resolve();
+    // Where its footage lives, chosen at its first import and kept (local_first.ts).
+    if (cloudEnabled()) await localFirst.settle(app, id);
     const began = timing.now();
     const title = app.store.get(id)?.project.name ?? id;
     const fresh = fetched.filter((one) => one === undefined).length;
@@ -3375,6 +3380,8 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
     const cut = await seams.cloudMedia.youtubeExcerpts(app.store.home, app.store.cacheDir(), file, fileRanges(live.project, file), progress);
     return [cut.reduce((n, one) => n + (one.cloud?.cloud?.size ?? 0), 0), cut[0]?.cloud?.name ?? file, cut];
   }
+  // Footage local while the project is in work: the original kept here whole, one working copy (local_first.ts).
+  if (live !== null && live !== undefined && localFirst.chosen(live.project) && localFirstSource(file) !== null) return localFootage(app, id, index, file, letGo);
   const scratch = seams.cloudMedia.scratchDir(app.store.cacheDir());
   const shared = file.startsWith("sha256:");
   const expectedKey = live?.project.script?.blocks.find((block) => block.kind === "footage" && block.file === file)?.notes?.find((note) => note.startsWith("Shared original: "))?.slice("Shared original: ".length);
@@ -3430,6 +3437,129 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
 }
 
 type Original = Awaited<ReturnType<typeof seams.cloudMedia.driveOriginal>>;
+
+/** The registry's source of a footage file a local-first project brings here whole: a YouTube video, a Drive file, a shared master; else null (posts and finished videos go as before). */
+function localFirstSource(file: string): string | null {
+  if (youtube.idOf(file) !== null) return file;
+  if (/^sha256:[a-fA-F0-9]{64}$/u.test(file)) return file;
+  return !file.includes(":") && /^[A-Za-z0-9_-]{10,200}$/u.test(file) ? `drive:${file}` : null;
+}
+
+/** The longest the registry is waited on before a local-first import goes on without it (the relay down: local_first.ts). */
+export const REGISTRY_WAIT_MS = { value: 15_000 };
+
+/** The footage registry's record of `source`, or null when it has none or doesn't answer soon (nothing here waits on the cloud for long). */
+async function recordSoon(source: string): Promise<Awaited<ReturnType<typeof cloudMediaModule.getRecord>> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), REGISTRY_WAIT_MS.value)));
+  try {
+    return await Promise.race([
+      cloudMediaModule.getRecord(source).catch((error: unknown) => {
+        diag.warn("script", `${source}: the footage registry didn't answer (${diag.scrub(diag.messageOf(error))}); it's told once the original is up`);
+        return null;
+      }),
+      late,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A local-first project's footage file (local_first.ts): its original brought here whole once and kept at its key's
+ * place (from R2 when the registry has it, so YouTube is never asked twice; else from YouTube or Drive, or Script
+ * mode's copy here linked in), its upload and its working copy behind, and the whole source one media the script's
+ * ranges play from.
+ */
+async function localFootage(app: App, id: string, index: number, file: string, letGo: () => void): Promise<Fetched> {
+  const progress = fileProgress(app, id, index);
+  const cache = app.store.cacheDir();
+  const source = localFirstSource(file)!;
+  const scratch = seams.cloudMedia.scratchDir(cache);
+  const held = youtube.idOf(file) !== null ? null : await scriptModeCopy(file, progress, letGo);
+  let here: localFirst.Here;
+  try {
+    here = await diag.timeOnAsync("script", "script: footage here", file, () => originalHere(app, file, source, cache, scratch, held, progress));
+  } finally {
+    held?.release();
+  }
+  letGo();
+  const made = await localFirst.media(app.store.home, cache, here);
+  return [here.size, here.name, [{ path: made.path, from: 0, to: made.probe.duration, cloud: made }]];
+}
+
+/** `file`'s original at its key's place here (`localFirst.Here`), brought or linked as `localFootage` says. */
+async function originalHere(
+  app: App,
+  file: string,
+  source: string,
+  cache: string,
+  scratch: string,
+  held: { path: string; key: string; name: string; size: number } | null,
+  progress: (bytes: number, total: number | null, name: string) => void,
+): Promise<localFirst.Here> {
+  const place = (key: string) => cloudMediaModule.localPath(cache, key);
+  if (held !== null) {
+    const at = place(held.key);
+    if (!fs.existsSync(at)) {
+      fs.mkdirSync(parent(at)!, { recursive: true });
+      try {
+        fs.linkSync(held.path, at);
+      } catch {
+        // Another disk: Script mode's own copy is read where it is (it keeps it until the cloud has it).
+        progress(held.size, held.size, held.name);
+        return { source, key: held.key, name: held.name, path: held.path, size: held.size, upload: false };
+      }
+    }
+    progress(held.size, held.size, held.name);
+    return { source, key: held.key, name: held.name, path: at, size: held.size, upload: false };
+  }
+  const record = await recordSoon(source);
+  const ready = cloudMediaModule.readyOriginal(record);
+  if (record !== null && ready !== null) {
+    // In the cloud already (another project's import): brought from there, never from YouTube or Drive again.
+    const at = place(ready);
+    const name = record.name;
+    const size = Math.max(Math.trunc(record.size), 0);
+    if (!isFileHere(at)) await diag.timeOnAsync("script", "script: original from the cloud", ready, () => cloud.download(ready, at, (bytes) => progress(bytes, size, name)));
+    progress(size, size, name);
+    return { source, key: ready, name, path: at, size: fs.statSync(at).size, upload: false };
+  }
+  if (source.startsWith("sha256:")) {
+    // A shared master is only ever in the cloud.
+    const original = await seams.cloudMedia.registeredOriginal(source);
+    const at = place(original.key);
+    if (!isFileHere(at)) await cloud.download(original.key, at, (bytes) => progress(bytes, original.size, original.name));
+    return { source, key: original.key, name: original.name, path: at, size: fs.statSync(at).size, upload: false };
+  }
+  const video = youtube.idOf(file);
+  const dir = join(scratch, video !== null ? `youtube-${video}` : `drive-${file}`);
+  const got =
+    video !== null
+      ? await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress))
+      : await diag.timeOnAsync("script", "script: drive download", file, async () => {
+          const path = await download(dir, file, progress);
+          return { path, name: fileName(path) ?? `${file}.mp4`, size: fs.statSync(path).size };
+        });
+  const name = safeName(got.name);
+  const segment = cloudMediaModule.segment(name);
+  const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/${video !== null ? `youtube/${video}` : `drive/${file}`}/${segment}`;
+  const at = place(key);
+  fs.mkdirSync(parent(at)!, { recursive: true });
+  // The same video imported twice at once shares one download (youtube.ts): the first to get here moved it.
+  if (isFileHere(got.path) || !isFileHere(at)) fs.renameSync(got.path, at);
+  fs.rmSync(dir, { recursive: true, force: true });
+  // The registry is told by the upload behind, once the original is up (cloud_media `runUpload`).
+  return { source, key, name, path: at, size: got.size, upload: true };
+}
+
+const isFileHere = (path: string): boolean => {
+  try {
+    return fs.statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
 
 /** The registry's source for a footage file: a YouTube video or a shared master by its own name, a Drive file by its id. */
 const sourceOf = (file: string): string => (youtube.idOf(file) !== null || file.startsWith("sha256:") ? file : `drive:${file}`);
