@@ -1281,6 +1281,46 @@ export function archiveAgain(home: string, id: string, path: string, send: (outp
   return key;
 }
 
+/**
+ * Project `id`'s export at `path` as its own archive in the cloud (`edit/exports/<id>/…`), once an upload of it going
+ * now has ended (`moving` heard meanwhile, every 20 s): what a share's full-quality file is copied from inside the
+ * cloud instead of being sent from here again (Nov 22: a share that followed a plain export sent the same gigabytes
+ * up beside its archive, and one of an export archived earlier sent them a second time). Null when it has none.
+ */
+export async function ownArchive(home: string, id: string, path: string, moving?: () => void): Promise<{ key: string; bytes: number | null } | null> {
+  const going = archiving.get(path);
+  if (going !== undefined) {
+    diag.info("export", `${id}: ${path} is going up to the cloud now: its review's copy waits for it and is copied there`);
+    const beat = setInterval(() => moving?.(), 20_000);
+    try {
+      await going.done;
+    } finally {
+      clearInterval(beat);
+    }
+  }
+  const record = (readRecords(home)[id] ?? []).find((one) => one.path === path);
+  return record?.cloudKey?.startsWith(`edit/exports/${id}/`) === true ? { key: record.cloudKey, bytes: record.bytes } : null;
+}
+
+/**
+ * Project `id`'s export at `path`, kept in the cloud only as a review link's download, copied back inside the cloud to
+ * its own archive (a link being deleted, reviews.ts `removeLink`): its record names that copy, nothing sent from here.
+ * The archive's key, or null when the relay can't copy (older than Nov 22) and the caller does as before.
+ */
+export async function copiedBack(home: string, id: string, path: string, copy: (from: string, to: string) => Promise<number | null> = cloud.copy): Promise<string | null> {
+  const record = (readRecords(home)[id] ?? []).find((one) => one.path === path);
+  if (record?.cloudKey === undefined) return null;
+  const key = exportCloudKey(id, fileName(path) ?? "export.mp4");
+  const size = await copy(record.cloudKey, key);
+  if (size === null || (record.bytes !== null && size !== record.bytes)) return null;
+  const now = readRecords(home);
+  const fresh = (now[id] ?? []).find((one) => one.path === path);
+  if (fresh === undefined) return null;
+  fresh.cloudKey = key;
+  writeRecords(home, now);
+  return key;
+}
+
 /** The review's copy an export's file already is in the cloud, when it is (`heldByReview`). */
 function reviewCopyOf(home: string, id: string, path: string, size: number): string | null {
   const record = (readRecords(home)[id] ?? []).find((one) => one.path === path);

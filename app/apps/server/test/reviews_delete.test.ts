@@ -124,7 +124,39 @@ test("a review link that is an export's only copy anywhere (not on this computer
     await expect(reviews.removeLink(app, id)).rejects.toThrow('This link is the only copy in the cloud of the export "Judge.mp4", which isn\'t on this computer any more. Delete that export first if it isn\'t needed, then delete the link.');
     expect(calls).toEqual([]);
     expect([...objects]).toEqual([full]);
+    // A relay older than Nov 22 doesn't know the copy: asked, and the delete refused as before.
+    expect(mock.calls("/v1/cloud/r2/copy").filter((call) => call.json<{ from: string }>().from === full)).toHaveLength(1);
     expect((reviews.view(app, id) as { review: unknown }).review).not.toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
+test("with a relay that copies (Nov 22), an export held only by the link is copied back to its own archive in the cloud and the link goes, here or not", async () => {
+  const { app, home, cleanup } = fixtureHome("review-delete-copied-back");
+  const id = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 }).project.id;
+  try {
+    const full = `edit/reviews/${id}/t/full.mp4`;
+    const record = { path: "/gone/Judge.mp4", name: "Judge.mp4", finished_ms: 1, seconds: 1, bytes: 10, frames: 300, whole: true, start: 0, format: "h264", timeline: "t", cloudKey: full };
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ [id]: [record] }));
+    const version = { n: 1, timeline: "t", path: "/gone/Judge.mp4", fps: 30, durationMs: 10_000, clips: [] };
+    fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: { reviewId: "r1", url: "https://feedback.test/r/x", versions: [version] } } }));
+    const objects = new Set([full]);
+    const copies: { from: string; to: string }[] = [];
+    mock.on("POST", "/v1/cloud/r2/copy", (request) => {
+      const body = request.json<{ from: string; to: string }>();
+      copies.push(body);
+      objects.add(body.to);
+      return Response.json({ ok: true, size: 10 });
+    }, 1);
+    const calls = relay("/v1/cloud", { "reviews:remove": () => ({ removed: true, versions: 1, notes: 0, keys: [full] }) }, objects);
+    await reviews.removeLink(app, id);
+    const archive = `edit/exports/${id}/Judge.mp4`;
+    expect(copies).toEqual([{ from: full, to: archive }]);
+    expect(calls.map((call) => call.path)).toEqual(["reviews:remove"]);
+    expect([...objects]).toEqual([archive]);
+    expect(JSON.parse(fs.readFileSync(`${home}/exports.json`, "utf8"))[id][0].cloudKey).toBe(archive);
+    expect((reviews.view(app, id) as { review: unknown }).review).toBeNull();
   } finally {
     cleanup();
   }

@@ -245,6 +245,27 @@ export async function remove(keys: string[]): Promise<void> {
   });
 }
 
+/**
+ * `from` copied to `to` inside the cloud (the relay's `r2/copy`: one project's exports and review files, within it),
+ * nothing sent from here: its size. Null when the relay can't (one older than Nov 22 doesn't know the route, or
+ * refused it), so the caller sends the file itself as before; a failure on the way (offline) throws, as an upload's.
+ */
+export async function copy(from: string, to: string): Promise<number | null> {
+  checkKey(from);
+  checkKey(to);
+  let answer: Record<string, unknown>;
+  try {
+    // A server-side copy of a few GB takes R2 a while; the relay answers once it's whole.
+    answer = await relay.json<Record<string, unknown>>("POST", "/v1/cloud/r2/copy", { from, to }, "cloud storage", 600);
+  } catch (error) {
+    if (error instanceof service.ServiceRefused && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) return null;
+    throw error;
+  }
+  const size = asU64(answer.size);
+  if (answer.ok !== true || size === null) throw lacking("the relay's copy said no size");
+  return size;
+}
+
 // ---------------------------------------------------------------------------
 // Uploads
 

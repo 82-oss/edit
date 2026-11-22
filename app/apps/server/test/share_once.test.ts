@@ -26,6 +26,13 @@ interface StandIn {
   most: number;
   /** The relay refuses to tell a version its full-quality file is up. */
   refuseTell: boolean;
+  /** The relay copies inside the cloud (from Nov 22); each copy made, from and to. */
+  copies: boolean;
+  copied: { from: string; to: string }[];
+  /** Each file fetched back from the cloud, by key. */
+  fetched: string[];
+  /** Each upload waits for this before it ends, when set. */
+  gate: Promise<void> | null;
 }
 
 const spies: { mockRestore(): void }[] = [];
@@ -48,12 +55,13 @@ afterEach(() => {
 });
 
 function standIn(): StandIn {
-  const it: StandIn = { objects: new Map(), sent: [], going: 0, most: 0, refuseTell: false };
+  const it: StandIn = { objects: new Map(), sent: [], going: 0, most: 0, refuseTell: false, copies: false, copied: [], fetched: [], gate: null };
   const send = async (path: string, key: string) => {
     it.going += 1;
     it.most = Math.max(it.most, it.going);
     try {
       await Bun.sleep(5);
+      await it.gate;
       const bytes = fs.statSync(path).size;
       it.sent.push({ key, bytes });
       it.objects.set(key, bytes);
@@ -76,6 +84,17 @@ function standIn(): StandIn {
       return null as never;
     }),
     spyOn(cloud, "remove").mockImplementation(async (keys: string[]) => void keys.forEach((key) => it.objects.delete(key))),
+    spyOn(cloud, "download").mockImplementation(async (key: string, dest: string) => {
+      if (!it.objects.has(key)) throw new Error("nothing there");
+      it.fetched.push(key);
+      fs.writeFileSync(dest, Buffer.alloc(it.objects.get(key)!));
+    }),
+    spyOn(cloud, "copy").mockImplementation(async (from: string, to: string) => {
+      if (!it.copies || !it.objects.has(from)) return null;
+      it.copied.push({ from, to });
+      it.objects.set(to, it.objects.get(from)!);
+      return it.objects.get(from)!;
+    }),
   );
   return it;
 }
@@ -304,5 +323,70 @@ test("the full-quality file up but its version not told: the export's record sti
   await fullBehind(t.home, id, id, output, fullKey, 1);
   await until("its archive to be crossed off", () => archives(t.home).length === 0);
   expect(up.sent).toEqual([{ key: fullKey, bytes: BYTES }]);
+  expect(listExports(t.home, id)).toEqual([expect.objectContaining({ cloudKey: fullKey })]);
+}, 30_000);
+
+// Nov 22: a share of an export archived earlier, or one that followed a plain export still going up, sent the same
+// bytes up a second time; the relay now copies inside the cloud.
+test("a share of an export archived earlier copies its archive inside the cloud: nothing sent a second time", async () => {
+  const up = standIn();
+  up.copies = true;
+  const { t, registry } = setUp();
+  const { id, output } = await exported(t, registry, "Earlier", false);
+  await until("its archive to go up", () => archives(t.home).length === 0);
+  const archive = `edit/exports/${id}/Earlier.mp4`;
+  const fullKey = `edit/reviews/${id}/t1/full.mp4`;
+  await fullBehind(t.home, id, id, output, fullKey, 1);
+  expect(up.sent).toEqual([{ key: archive, bytes: BYTES }]);
+  expect(up.copied).toEqual([{ from: archive, to: fullKey }]);
+  // Kept once in the cloud, as the review's copy, as when it went up as that.
+  expect(listExports(t.home, id)).toEqual([expect.objectContaining({ cloudKey: fullKey })]);
+  expect([...up.objects.keys()]).toEqual([fullKey]);
+}, 30_000);
+
+test("a share of an archived export no longer on this computer is copied in the cloud, not fetched back and sent", async () => {
+  const up = standIn();
+  up.copies = true;
+  const { t, registry } = setUp();
+  const { id, output } = await exported(t, registry, "Away", false);
+  await until("its archive to go up", () => archives(t.home).length === 0);
+  // Gone from here (the disk short, or deleted).
+  fs.rmSync(output, { force: true });
+  const fullKey = `edit/reviews/${id}/t1/full.mp4`;
+  await fullBehind(t.home, id, id, output, fullKey, 1);
+  expect(up.fetched).toEqual([]);
+  expect(up.sent.map((one) => one.key)).toEqual([`edit/exports/${id}/Away.mp4`]);
+  expect(up.objects.get(fullKey)).toBe(BYTES);
+}, 30_000);
+
+test("a relay that can't copy (older than Nov 22): the share sends its file as before", async () => {
+  const up = standIn();
+  const { t, registry } = setUp();
+  const { id, output } = await exported(t, registry, "Older", false);
+  await until("its archive to go up", () => archives(t.home).length === 0);
+  const fullKey = `edit/reviews/${id}/t1/full.mp4`;
+  await fullBehind(t.home, id, id, output, fullKey, 1);
+  expect(up.sent).toEqual([{ key: `edit/exports/${id}/Older.mp4`, bytes: BYTES }, { key: fullKey, bytes: BYTES }]);
+  expect(listExports(t.home, id)).toEqual([expect.objectContaining({ cloudKey: fullKey })]);
+}, 30_000);
+
+test("a share that follows a plain export still going up waits for that upload, then copies it: one upload", async () => {
+  const up = standIn();
+  up.copies = true;
+  let open = () => {};
+  up.gate = new Promise((resolve) => (open = resolve));
+  const { t, registry } = setUp();
+  const { id, output } = await exported(t, registry, "Riding", false);
+  await until("its archive to be going up", () => up.going === 1);
+  const fullKey = `edit/reviews/${id}/t1/full.mp4`;
+  const full = fullBehind(t.home, id, id, output, fullKey, 1);
+  await Bun.sleep(200);
+  // Nothing beside the archive's upload while it goes.
+  expect(up.most).toBe(1);
+  expect(up.copied).toEqual([]);
+  open();
+  await full;
+  expect(up.sent).toEqual([{ key: `edit/exports/${id}/Riding.mp4`, bytes: BYTES }]);
+  expect(up.copied).toEqual([{ from: `edit/exports/${id}/Riding.mp4`, to: fullKey }]);
   expect(listExports(t.home, id)).toEqual([expect.objectContaining({ cloudKey: fullKey })]);
 }, 30_000);

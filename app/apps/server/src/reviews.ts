@@ -43,7 +43,7 @@ import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
-import { archiveAgain, archiveGoing, chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, heldUnder, lastChunks, listExports, mapFile, optionsKey, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
+import { archiveAgain, archiveGoing, chunkFolder, copiedBack, clipMap, cloudKeyFor, deleteExport, heldByReview, heldUnder, lastChunks, listExports, mapFile, optionsKey, ownArchive, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effects from "./effects.ts";
@@ -575,10 +575,24 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
       // Said at once, before a part's gone (a run that carries on a restart says how far it is with its first part).
       if (attempt === 1) void tell({ fullUpload: { ...last, at: Date.now(), since: Date.now(), from: last.sent } }).catch(() => undefined);
       try {
+        // The export's own archive, up already or going up now (a plain export this share followed, one archived
+        // earlier): copied inside the cloud once that upload ends, never sent from here a second time (Nov 22: on
+        // JJ's 2 Mbit/s up a 5 GB file is hours a copy). A relay that can't copy (older than Nov 22) leaves it to the
+        // upload below, as before.
+        const own = await ownArchive(home, projectId, path, () => jobs.beat(home, job));
+        const copied = own === null ? null : await cloud.copy(own.key, key).catch((error: unknown) => {
+          diag.warn("review", `${name}: copying its export's archive in the cloud: ${diag.messageOf(error)}; sending the file instead`);
+          return null;
+        });
+        const inCloud = copied !== null && (own?.bytes ?? copied) === copied;
+        if (inCloud) {
+          diag.info("review", `${name}: the full-quality file is the export's archive, copied in the cloud (${(copied / 1e9).toFixed(2)} GB, nothing sent from here)`);
+          last = { sent: copied, total: copied };
+        }
         // Not on this computer any more (its cloud copy went up and the disk was short, before this was carried on):
         // fetched back from that copy, the same bytes, rather than tried twenty times as a file that isn't there
         // (Nov 21). With no copy in the cloud either there's nothing to send, and that's said once.
-        if (!fs.existsSync(path)) {
+        else if (!fs.existsSync(path)) {
           const nowhere = async () => {
             diag.warn("review", `${name}: the full-quality file isn't on this computer or in the cloud any more, so the review has no Download; export and share again for one`);
             await tell({ fullUpload: { ...last, at: Date.now(), failed: "The export isn't on this computer any more. Share again for a download." } }).catch(() => undefined);
@@ -598,8 +612,8 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         }
         // Up already (a restart came after its last part, before the cloud was told): straight to telling it, not sent
         // again (Sphe, Nov 10: an update goes through at any time, and nothing it cuts is uploaded twice).
-        const there = attempt === 1 ? await cloud.head(key).catch(() => null) : null;
-        if (there === null || there.size !== last.total || last.total === 0) {
+        const there = attempt === 1 && !inCloud ? await cloud.head(key).catch(() => null) : null;
+        if (!inCloud && (there === null || there.size !== last.total || last.total === 0)) {
           // Behind a share on its way to its link (cloud.first): the Download button's file is waited for by nobody yet.
           await cloud.uploadFile(path, key, (sent, total) => {
             // Parts going up this run: the restarts before don't count against it.
@@ -2021,8 +2035,16 @@ export async function removeLink(app: App, projectId: string): Promise<{ removed
   const prefix = `edit/reviews/${projectId}/`;
   // An export kept in the cloud only as this link's download (exports.ts `heldByReview`: its own archive was removed
   // as the same bytes) would lose its one copy with it, and every file the link names is deleted (here, and by the
-  // cleanup Repack queues). One still on this computer goes up again as its own first; one that isn't keeps the link
-  // until the person says it isn't needed.
+  // cleanup Repack queues). It's copied back to its own archive inside the cloud first (Nov 22), wherever it is now.
+  // A relay that can't copy (older than Nov 22): one still on this computer goes up again as its own; one that isn't
+  // keeps the link until the person says it isn't needed.
+  for (const record of heldUnder(home, projectId, prefix)) {
+    const key = await copiedBack(home, projectId, record.path).catch((error: unknown) => {
+      diag.warn("review", `${projectId}: copying ${record.cloudKey} back to its export's own archive: ${diag.messageOf(error)}`);
+      return null;
+    });
+    if (key !== null) diag.info("review", `${projectId}: ${record.path} was kept in the cloud only as the link's ${record.cloudKey}: copied there to ${key}`);
+  }
   const held = heldUnder(home, projectId, prefix);
   const away = held.filter((record) => !fs.existsSync(record.path));
   if (away.length > 0) {
