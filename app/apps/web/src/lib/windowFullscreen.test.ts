@@ -46,6 +46,19 @@ describe("Edit.app's window full screen", () => {
     expect(classes.has("viewer-full")).toBe(false);
   });
 
+  it("an older ask the window refuses late doesn't undo a newer one: in, out and in again while the first was still asked left the viewer out with the window full screen", async () => {
+    const { nativePreview } = await import("./nativePreview");
+    let refuse: (error: Error) => void = () => {};
+    vi.mocked(nativePreview.fullscreen).mockImplementationOnce(() => new Promise<void>((_, reject) => { refuse = reject; }));
+    const first = fs.set(true);
+    await fs.set(false);
+    await fs.set(true);
+    refuse(new Error("not allowed"));
+    await first;
+    expect(fs.get()).toBe(true);
+    expect(classes.has("viewer-full")).toBe(true);
+  });
+
   it("stays out when the window refuses, and says so in the log", async () => {
     window.refuse = true;
     await fs.set(true);

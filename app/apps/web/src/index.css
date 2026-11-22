@@ -196,8 +196,10 @@ html.native-preview .editor-root {
 html.viewer-full body * {
   visibility: hidden;
 }
+/* Not what the viewer itself keeps out of sight (`invisible`: its render's video while the picture is drawn live),
+   which this rule had shown again over the picture. */
 html.viewer-full [data-viewer-full],
-html.viewer-full [data-viewer-full] * {
+html.viewer-full [data-viewer-full] *:not(.invisible, .invisible *) {
   visibility: visible;
 }
 

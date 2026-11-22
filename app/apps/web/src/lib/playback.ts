@@ -266,6 +266,9 @@ class Preview {
   private nativeLeft = 0;
   private nativeOpenedAt = 0;
   private nativeBack: ReturnType<typeof setTimeout> | null = null;
+  /** The window's player stopped here and is being opened again (`leaveNative`), and how many of those opens it has refused running. */
+  private nativeDown = false;
+  private nativeUnopened = 0;
   /** The key (`nativeKey`) the sources in hand were asked for: the edit waits while newer ones are on their way. */
   private nativeSourcesKey = "";
   /** Answers running that named media otherwise than the page's edit (`of`): asked again soon a few times, then as `coming` is. */
@@ -992,8 +995,14 @@ class Preview {
       await this.openNative(generation);
       if (generation !== this.generation) return;
       this.setBuffering(false);
+      // The window couldn't open its player here (`attachWindow`, `openFailed`): what it said over the picture goes, and
+      // a play pressed while it was tried goes on in the page's.
+      if (this.stopped === WINDOW_DOWN) this.clearStopped();
+      const waiting = this.playWhenOpen && !this.native;
+      if (!this.native) this.playWhenOpen = false;
       this.notify();
       this.invalidate();
+      if (waiting) this.play();
     } catch (error) {
       if (generation !== this.generation) return;
       this.error = `Preview failed to start: ${error}`; note("error", "preview", this.error);
@@ -1020,6 +1029,8 @@ class Preview {
       this.retire();
       this.rules?.free();
       this.rules = new Rules();
+      this.nativeDown = false;
+      this.nativeUnopened = 0;
       this.engineStale = true;
       this.syncEngine();
       await this.openNative(generation);
@@ -1060,8 +1071,7 @@ class Preview {
       const opened = await nativePreview.open();
       if (generation !== this.generation) return;
       if (!opened) {
-        this.nativeRefused = true;
-        this.nativeOff("refused open", "the window can't draw it on this Mac");
+        this.openFailed("the window can't draw it on this Mac");
         return;
       }
       // A play pressed while the window was opening (a cold open's Play at once) goes on there, as `leaveNative` hands
@@ -1078,6 +1088,8 @@ class Preview {
       this.nativeHas = null;
       this.nativeDrawn = null;
       this.nativeFailures = 0;
+      this.nativeDown = false;
+      this.nativeUnopened = 0;
       this.nativeStats.off = null;
       this.framed = false;
       this.setSmooth(null);
@@ -1089,12 +1101,31 @@ class Preview {
       this.playWhenOpen = false;
       if (playing || waiting) this.play();
     } catch (error) {
-      this.nativeRefused = true;
+      if (generation !== this.generation) return;
       // Where the page was and what it was, for a refusal by the window's permissions (Nov 16: one on the M4 that a
       // nightly-75 window elsewhere never gave): an origin they don't name, or a page in a frame.
       const where = typeof location === "undefined" ? "" : ` (page at ${location.origin}${window.top !== window ? ", in a frame" : ""})`;
-      this.nativeOff("refused open", `the window's own preview didn't open: ${error}${where}`);
+      this.openFailed(`the window's own preview didn't open: ${error}${where}`);
     }
+  }
+
+  /**
+   * The window's player didn't open. One that had been drawing here and stopped (`leaveNative`) is asked again (after 2,
+   * 4, 8… s, `NATIVE_COMEBACKS` times running): a refusal straight after a failure can pass, and one had left the
+   * picture down for good, "Edit is opening it again" over it and Play doing nothing (the pull request's review, Nov
+   * 21). At the first open, or with those spent, the window can't here: the page's own player is the last resort.
+   */
+  private openFailed(detail: string) {
+    if (this.nativeDown && this.rules !== null && ++this.nativeUnopened <= NATIVE_COMEBACKS) {
+      note("warn", "preview", `${detail}: asking again`);
+      this.nativeAgainIn(Math.min(NATIVE_BACK_MOST_MS, NATIVE_BACK_MS * 2 ** (this.nativeUnopened - 1)));
+      return;
+    }
+    const down = this.nativeDown && this.rules !== null;
+    this.nativeDown = false;
+    this.nativeRefused = true;
+    this.nativeOff("refused open", detail);
+    if (down && this.canvas !== null) void this.attach(this.canvas);
   }
 
   /** Why the window stopped drawing (or never did), for the reports: a `ui:` timing per reason, and a warning with the detail. */
@@ -1138,6 +1169,7 @@ class Preview {
       this.nativeLeft++;
       this.nativeAgainIn(Math.min(NATIVE_BACK_MOST_MS, NATIVE_BACK_MS * 2 ** (this.nativeLeft - 1)));
       this.stopped = WINDOW_DOWN;
+      this.nativeDown = true;
       this.playWhenOpen ||= playing && resume;
       resume = false;
     } else if (refuse !== null) {
@@ -2013,7 +2045,8 @@ class Preview {
   setOutPoint(frame: number | null | undefined) {
     this.outPoint = frame;
   }
-  toggle() { if (playhead.playing) this.pause(); else this.play(); }
+  /** A play kept for the window's player while it opens counts as playing: the second press takes it back. */
+  toggle() { if (playhead.playing || this.playWhenOpen) this.pause(); else this.play(); }
 
   play() {
     if (!this.project || playhead.playing || this.duration <= 0) return;

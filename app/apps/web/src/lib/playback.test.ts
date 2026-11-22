@@ -1319,6 +1319,90 @@ describe("preview seeks and lifetime", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("a window that refuses to open its player again is asked again, and the play goes on there once it does: it had left the picture down for good (the pull request's review, Nov 21)", async () => {
+    let failing = false;
+    let refusing = false;
+    const sent = await inWindow((command) => (failing && command === "preview_position" ? "hang" : refusing && command === "preview_open" ? "the window is busy" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      decoding.requestVideo.mockClear();
+      preview.play(); await tick();
+      failing = true;
+      refusing = true;
+      for (let n = 0; n < 40 && preview.native; n++) await tick(1000);
+      expect(preview.native).toBe(false);
+      failing = false;
+      // Two opens refused (after 2 s, then 2 s more): still the window's to play, nothing else takes over.
+      const opens = sent("preview_open").length;
+      await tick(2000); await tick(2000); await tick();
+      expect(sent("preview_open").length).toBeGreaterThan(opens);
+      expect(preview.native).toBe(false);
+      expect(preview.nativeHere).toBe(true);
+      expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+      expect(playhead.playing).toBe(false);
+      refusing = false;
+      for (let n = 0; n < 10 && !preview.native; n++) await tick(1000);
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      await tick(); await tick();
+      expect(sent("preview_play")).toHaveLength(2);
+      expect(playhead.playing).toBe(true);
+      expect(decoding.requestVideo).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a window that keeps refusing to open its player again hands the picture to the page's own player, the last resort, with the play kept for it", async () => {
+    let failing = false;
+    const sent = await inWindow((command) => (failing && (command === "preview_position" || command === "preview_open") ? (command === "preview_open" ? "the window can't" : "hang") : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      preview.play(); await tick();
+      failing = true;
+      for (let n = 0; n < 40 && preview.native; n++) await tick(1000);
+      expect(preview.native).toBe(false);
+      const opens = sent("preview_open").length;
+      // The first open again, then five more (2, 4, 8, 16, 30 s): then it's the page's.
+      for (let n = 0; n < 80 && preview.nativeHere; n++) await tick(1000);
+      expect(preview.nativeHere).toBe(false);
+      expect(sent("preview_open").length - opens).toBe(6);
+      for (let n = 0; n < 5; n++) await tick(50);
+      expect(preview.stopped).toBeNull();
+      expect(playhead.playing).toBe(true);
+    } finally { preview.pause(); vi.useRealTimers(); }
+  });
+
+  it("a second press of Play while the window's player is still opening takes the first back: it played by itself once the window opened (the pull request's review, Nov 21)", async () => {
+    let opened: (value: boolean) => void = () => {};
+    const calls: string[] = [];
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      calls.push(command);
+      if (command === "preview_open") return new Promise<boolean>((resolve) => { opened = resolve; });
+      if (command === "preview_project" || command === "preview_patch") return args.revision;
+      if (command === "preview_frame") return { revision: 0, drawn: true, skipped: false, ms: 4, decode: 3, composite: 0.5, present: 0.3, opens: 0, seeks: 0, ffmpeg: 0 };
+      if (command === "preview_position") return { frame: 0, playing: false, ended: false, drawn: 0, skipped: 0, slow: 0, draws: [], starved: 0 };
+      return null;
+    });
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    const attached = preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    await settle();
+    preview.setProject(fixture(), {}); await settle();
+    preview.toggle();
+    expect(preview.buffering).toBe(true);
+    preview.toggle();
+    expect(preview.buffering).toBe(false);
+    opened(true);
+    await attached; await settle(); draw(); await settle();
+    expect(preview.native).toBe(true);
+    expect(playhead.playing).toBe(false);
+    expect(calls).not.toContain("preview_play");
+  });
+
   it("a hold on a cold open asks the window to read ahead only once it has the edit: before it, the window held nothing and read nothing (the Nov 21 audit, P11b)", async () => {
     let opened: (value: boolean) => void = () => {};
     const calls: [string, Record<string, unknown>][] = [];

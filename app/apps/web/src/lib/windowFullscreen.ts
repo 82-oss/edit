@@ -12,6 +12,8 @@ let full = false;
 /** When it last went full screen: the window's answer is ignored while its animation runs. */
 let since = 0;
 const SETTLE_MS = 1500;
+/** Each ask of the window, counted: an older one's refusal doesn't undo a newer one. */
+let asked = 0;
 const listeners = new Set<() => void>();
 
 function tell() {
@@ -30,6 +32,7 @@ export const windowFullscreen = {
   /** In or out; the viewer fills the window at once, the window follows (macOS animates it). */
   async set(on: boolean): Promise<void> {
     if (on === full) return;
+    const ask = ++asked;
     full = on;
     since = Date.now();
     tell();
@@ -37,7 +40,7 @@ export const windowFullscreen = {
       await nativePreview.fullscreen(on);
     } catch (error) {
       note("warn", "preview", `the window didn't ${on ? "go" : "leave"} full screen: ${error}`);
-      if (!on) return;
+      if (!on || ask !== asked) return;
       full = false;
       tell();
     }

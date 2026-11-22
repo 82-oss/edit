@@ -68,6 +68,8 @@ export class EitherPlayer implements Player {
   private down: string | null = null;
   /** The window's player stopped this many times running (the wait before it's opened again doubles). */
   private lostRunning = 0;
+  /** While it's down: asks that didn't go through (the server's, the window's open), running. */
+  private triedDown = 0;
   /** When the window's player was last taken on: one that drew a minute starts the count again. */
   private windowSince = 0;
   private listeners = new Set<() => void>();
@@ -144,7 +146,7 @@ export class EitherPlayer implements Player {
     void this.decide()
       .catch((error: unknown) => {
         note("warn", "preview", `choosing the script's player: ${error}`);
-        this.usePage();
+        if (!this.retryDown()) this.usePage();
       })
       .finally(() => {
         this.choosing = false;
@@ -193,6 +195,7 @@ export class EitherPlayer implements Player {
       return;
     }
     if (!opened) {
+      if (this.retryDown()) return;
       this.refused = true;
       this.usePage();
       return;
@@ -200,6 +203,19 @@ export class EitherPlayer implements Player {
     recordTiming("script preview: window", 0);
     const player = new WindowPlayer(this.clips, this.playhead, found.sources, found.cache, (why) => this.windowLost(why));
     this.use(player, player);
+  }
+
+  /**
+   * The window's player is down and what would bring it back didn't go through now (the server didn't answer where the
+   * recordings are, the window didn't open): tried again (after 2, 4, 8, 16, 30 s), since one such miss had started
+   * the page's player and played on there for the rest of the session (the pull request's review, Nov 21). False
+   * when it isn't down, or after five running: then the page's player is the last resort.
+   */
+  private retryDown(): boolean {
+    if (this.down === null || ++this.triedDown > 5) return false;
+    clearTimeout(this.again);
+    this.again = setTimeout(() => this.choose(true), Math.min(30_000, 2_000 * 2 ** (this.triedDown - 1)));
+    return true;
   }
 
   private usePage() {
@@ -245,6 +261,7 @@ export class EitherPlayer implements Player {
     this.inner = next;
     this.window = window;
     this.down = null;
+    this.triedDown = 0;
     if (window !== null) this.windowSince = Date.now();
     this.off = next.onStatus(() => this.emit());
     next.setSource(this.src, this.mediaMs);

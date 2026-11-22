@@ -176,6 +176,34 @@ describe("the script's player, chosen where it runs", () => {
     expect(page.fake.last("preview_play")).toEqual({ frame: 150 });
   });
 
+  it("while the window's player is down, a server that doesn't say where the recordings are is asked again: one miss had started the page's player for the rest of the session (the pull request's review, Nov 21)", async () => {
+    const { player } = opened();
+    await page.settle();
+    player.play(0);
+    await page.settle();
+    page.fake.frame = 150;
+    await page.frames();
+    page.fake.refuse = (command) => (command === "preview_close" || command === "preview_place" ? null : "the preview stopped");
+    for (let turn = 0; turn < 3 && player.drawnBy === "window"; turn++) {
+      await page.frames();
+      await vi.advanceTimersByTimeAsync(300);
+      await page.settle();
+    }
+    expect(player.drawnBy).toBe("choosing");
+    // The window is fine again, but the server doesn't answer the first ask.
+    page.fake.refuse = () => null;
+    sources.ask.mockRejectedValueOnce(new Error("Edit didn't answer"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    await page.settle();
+    expect(player.drawnBy).toBe("choosing");
+    expect(player.error).toBe("The player stopped. Edit is opening it again.");
+    await vi.advanceTimersByTimeAsync(2_000);
+    await page.settle();
+    expect(player.drawnBy).toBe("window");
+    expect(player.error).toBeNull();
+    expect(page.fake.last("preview_play")).toEqual({ frame: 150 });
+  });
+
   it("a player nobody sees asks for nothing: no canvas, no question to the server, no window", async () => {
     const player = players.newPlayer(clips, new playback.Playhead(), SRC, 600_000) as InstanceType<typeof players.EitherPlayer>;
     player.update(clips);

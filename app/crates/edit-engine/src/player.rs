@@ -1312,7 +1312,18 @@ impl Player {
                 self.speaker_still = None;
                 self.sound.disarm();
                 self.sound.feed = None;
-                if self.play(frame).is_err() {
+                let played = self.play(frame).is_ok();
+                // The new speaker didn't open either (the device isn't there yet): stopped here, and the next play
+                // tries again. Kept as `refused`, the play ran on without sound, and so did every play after it.
+                if self.sound.refused {
+                    crate::log::warn(
+                        "preview",
+                        "the player's new speaker didn't open: stopped, the next play tries again"
+                            .to_string(),
+                    );
+                    self.sound.refused = false;
+                }
+                if !played || self.sound.feed.is_none() {
                     self.pause();
                 }
             }
