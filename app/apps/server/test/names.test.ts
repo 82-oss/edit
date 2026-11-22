@@ -97,3 +97,26 @@ test.skipIf(ffmpeg === null)("footage heard without the case's names is heard ag
     cleanup();
   }
 });
+
+// Nov 21 audit: a media's whole transcript (megabytes for hours of footage) was read with readFileSync whenever the
+// watch or the subtitles asked for it, every other request held meanwhile.
+test.skipIf(ffmpeg === null)("a transcript is read off the server's thread", async () => {
+  const { spyOn } = await import("bun:test");
+  const { app, dir, cleanup } = fixtureHome("transcript-async");
+  try {
+    const source = `${dir}/tape.wav`;
+    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", source]).exitCode).toBe(0);
+    const media: Media = { id: "m", name: "tape", path: source, kind: "audio", duration: 1, width: 0, height: 0, fps: 0, has_audio: true } as Media;
+    const path = app.media.paths(source).transcript;
+    write(path, serialize({ model: "scribe_v2", language: "eng", words: [{ text: "Hello", start: 0, end: 0.5 }] }));
+    const synced = spyOn(fs, "readFileSync");
+    try {
+      expect((await transcriptOf(app, media)).words[0]!.text).toBe("Hello");
+      expect(synced.mock.calls.some(([file]) => file === path)).toBe(false);
+    } finally {
+      synced.mockRestore();
+    }
+  } finally {
+    cleanup();
+  }
+});

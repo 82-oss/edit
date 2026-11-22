@@ -50,7 +50,8 @@ export async function transcriptOf(app: App, media: Media, project?: Project, re
       case "ready": {
         let text: string;
         try {
-          text = fs.readFileSync(app.media.paths(path).transcript, "utf8");
+          // Off the server's thread: megabytes for hours of footage, read whenever the watch or the subtitles ask (Nov 21 audit).
+          text = await fs.promises.readFile(app.media.paths(path).transcript, "utf8");
         } catch (error) {
           throw new Error(ioMessage(error));
         }
