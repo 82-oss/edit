@@ -73,9 +73,11 @@ test("a stalled render the engine never ends is given up on: the export fails as
     const stuck = await t.project("Stuck");
     const next = await t.project("Next");
     const options = t.native.exportDefaults();
+    // Told it's in line to go again by itself, never "failed" with a Retry to press (the Nov 21 audit).
     const failed: string[] = [];
     t.store.subscribe((event) => {
       if (event.type === "export" && event.id === stuck.id && event.state === "failed") failed.push(String(event.error));
+      if (event.type === "export" && event.id === stuck.id && event.state === "queued") failed.push(String(event.waiting));
     });
     await t.registry.start(t.store, t.app.library, stuck, options, `${t.dir}/stuck.mp4`, { drive: false, keepLocal: true });
     await t.registry.start(t.store, t.app.library, next, options, `${t.dir}/next.mp4`, { drive: false, keepLocal: true });
@@ -83,6 +85,7 @@ test("a stalled render the engine never ends is given up on: the export fails as
     // Within the stall (40 ms), its stop and the time it's given (60 ms): over, said as trouble that passes.
     expect(await t.until(() => failed.length > 0)).toBe(true);
     expect(t.cancels).toEqual(["Stuck"]);
+    expect(failed[0]).toStartWith("waiting to start again by itself (");
     expect(failed[0]).toContain("Edit tries again by itself");
     // A share following it (reviews.ts exportOnce) waits on this, and on the event above.
     expect(t.registry.runningFor(stuck.id)).toBeNull();
@@ -105,7 +108,7 @@ test("a second engine job given up on in one run says to quit and reopen Edit, a
     const options = t.native.exportDefaults();
     const one = await t.project("One");
     await t.registry.start(t.store, t.app.library, one, options, `${t.dir}/one.mp4`, { drive: false, keepLocal: true });
-    expect(await t.until(() => t.registry.activity().find((row) => row.id === one.id)?.state === "failed")).toBe(true);
+    expect(await t.until(() => t.registry.activity().find((row) => row.id === one.id)?.state === "queued")).toBe(true);
     const two = await t.project("Two");
     await t.registry.start(t.store, t.app.library, two, options, `${t.dir}/two.mp4`, { drive: false, keepLocal: true });
     expect(await t.until(() => t.registry.activity().find((row) => row.id === two.id)?.state === "failed")).toBe(true);
@@ -231,8 +234,9 @@ test("an effect's render that takes too long to make again ends the export as a 
   const t = await remaking("remake-limit");
   try {
     await t.registry.start(t.store, t.app.library, t.project, t.native.exportDefaults(), `${t.dir}/remade.mp4`, { drive: false, keepLocal: true });
-    expect(await t.until(() => t.registry.activity().find((one) => one.id === t.id)?.state === "failed")).toBe(true);
-    expect(t.registry.activity().find((one) => one.id === t.id)?.error).toBe("making the fx effect's render again took more than 0 s and was stopped");
+    // In line to go again by itself, said so, never "failed" with a Retry to press while it waits (the Nov 21 audit).
+    expect(await t.until(() => t.registry.activity().find((one) => one.id === t.id)?.state === "queued")).toBe(true);
+    expect(t.registry.activity().find((one) => one.id === t.id)?.waiting).toBe("waiting to start again by itself (making the fx effect's render again took more than 0 s and was stopped)");
     expect(jobs.list(t.home, "export").find((one) => one.project === t.id)).toMatchObject({ state: "waiting" });
   } finally {
     REMAKE_MS.value = limit;
@@ -264,6 +268,12 @@ test("an export the connection dropped under waits and goes again by itself; one
     for (let waited = 0; waited < 5000 && (rowOf(id)?.state ?? "running") === "running"; waited += 10) await Bun.sleep(10);
     return rowOf(id);
   };
+  // What the page is told, project by project: the last `export` event.
+  const told = new Map<string, string>();
+  const stop = t.store.subscribe((event) => {
+    const one = event as { type?: string; id?: string; state?: string };
+    if (one.type === "export" && one.id !== undefined && one.state !== undefined) told.set(one.id, one.state);
+  });
   try {
     const options = t.native.exportDefaults();
     const dropped = await make("Dropped");
@@ -272,11 +282,15 @@ test("an export the connection dropped under waits and goes again by itself; one
     expect(waiting).toMatchObject({ state: "waiting" });
     expect(waiting?.retry_at).toBeGreaterThan(Date.now());
     expect(String(waiting?.why)).toContain("the connection dropped");
+    // The page is told it's in line to go again, not that it failed (the Nov 21 audit).
+    expect(told.get(dropped.id)).toBe("queued");
     // Its own failure (nothing failure.ts knows as trouble that passes): failed, as before, for a person or the next build.
     const broken = await make("Broken");
     await registry.start(t.store, t.app.library, broken, options, `${t.dir}/broken.mp4`, { drive: false, keepLocal: true });
     expect(await settled(broken.id)).toMatchObject({ state: "failed" });
+    expect(told.get(broken.id)).toBe("failed");
   } finally {
+    stop();
     render.mockRestore();
     archive.mockRestore();
     plan.mockRestore();

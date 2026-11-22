@@ -2268,7 +2268,6 @@ export class ExportRegistry implements seams.Exports {
       emit("cancelled", 0, { error: result.error });
     } else {
       diag.record("export", "export", took, `${project.name}: ${result.error}`);
-      emit("failed", 0, { error: result.error });
       // The engine never ended a job it was told to stop, or an effect's render took too long to make again: it waits
       // and goes again by itself, a fresh job (jobs.ts `wait`, the export resumer), as trouble that passes.
       if (failedWith instanceof EngineAbandoned || failedWith instanceof RemakeTimedOut) jobs.wait(this.home, running.key, failedWith);
@@ -2283,6 +2282,13 @@ export class ExportRegistry implements seams.Exports {
       }
       // Kept, failed, for the next build to try again (retry_after_update.ts).
       else jobs.settle(this.home, running.key, "failed", { error: result.error, build: BUILD, args: { name: project.name, ...(upload ? { drive: true } : {}) } });
+      // Said as it stands: one that waits to go again by itself is in line, not failed with a Retry to press (the Nov 21
+      // audit: the page was told "failed" while its row waited). A share's export says it failed: the share waits itself.
+      const listed = jobs.get(this.home, running.key);
+      if (running.share !== true && listed?.state === "waiting") {
+        running.waiting = `waiting to start again by itself${listed.why ? ` (${listed.why.replace(/\.$/u, "")})` : ""}`;
+        emit("queued", 0);
+      } else emit("failed", 0, { error: result.error });
     }
     this.jobs.delete(id);
     if (!(result.ok === false && !running.cancelled)) jobs.end(this.home, running.key);
