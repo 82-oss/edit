@@ -250,10 +250,25 @@ export function admit(dir: string, bytes: number, what: string, then?: string): 
   const free = () => freeBytes(dir) - claimedBytes();
   if (!Number.isFinite(freeBytes(dir))) return null;
   const target = bytes + keepFreeBytes(dir);
+  // Past what even every file the cleaner could take would make room for: refused now, nothing given up for it (Nov 21:
+  // an import too big for the disk gave up the kept copies, and was refused all the same).
+  const most = free() < target ? mayGoOn(dir) : null;
+  if (most !== null && free() + most - bytes < WORK_FLOOR_BYTES) return roomLine(what, bytes + WORK_FLOOR_BYTES, free(), then);
   if (free() < target) makeRoomNow(freeBytes(dir) + target - free());
   const has = free();
   if (has - bytes >= WORK_FLOOR_BYTES) return null;
   return roomLine(what, bytes + WORK_FLOOR_BYTES, has, then);
+}
+
+/** The most the cleaner could free on the disk holding `dir` (ledger.ts `mayGo`); null when that isn't known. */
+function mayGoOn(dir: string): number | null {
+  let disk: number;
+  try {
+    disk = fs.statSync(dir).dev;
+  } catch {
+    return null;
+  }
+  return ledger.mayGo(disk);
 }
 
 /**

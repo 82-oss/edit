@@ -375,6 +375,30 @@ export class Ledger {
     for (const key of this.entries.keys()) if (key.startsWith(under)) this.entries.delete(key);
   }
 
+  /**
+   * The most the cleaner could free on disk `disk`: every file kept there that may go, each once. Null when nothing
+   * is known of that disk (never built, or no root on it), so nothing can be said of it.
+   */
+  mayGo(disk: number): number | null {
+    if (this.builtAt === 0) return null;
+    const ours = this.roots.some((root) => {
+      try {
+        return fs.statSync(root.dir).dev === disk;
+      } catch {
+        return false;
+      }
+    });
+    if (!ours) return null;
+    const seen = new Set<string>();
+    let bytes = 0;
+    for (const entry of this.entries.values()) {
+      if (!entry.evictable || entry.disk !== disk || seen.has(entry.file)) continue;
+      seen.add(entry.file);
+      bytes += entry.bytes;
+    }
+    return bytes;
+  }
+
   /** Each disk's bytes, each file once however many names it has. */
   disks(): Map<number, Totals> {
     const out = new Map<number, Totals>();

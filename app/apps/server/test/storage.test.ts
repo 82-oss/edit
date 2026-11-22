@@ -68,6 +68,31 @@ test("the disk's room: what's free less every write's claim and a new one's need
   expect(asked).toEqual([4 * GB, 4 * GB]);
 });
 
+// Nov 21: an import too big for the disk had the cleaner give up the kept copies, and was refused all the same.
+test("work that couldn't fit even with every copy the cleaner could take gone is refused without giving any up", () => {
+  const { dir, cleanup } = fixtureHome("admit-hopeless");
+  const real = storage.ledger.all();
+  try {
+    const disk = fs.statSync(dir).dev;
+    storage.ledger.useRoots([{ dir, classify: () => ({ kind: "proxy", project: null, evictable: true }) }]);
+    // 2 GB the cleaner could take on this disk.
+    storage.ledger.replace([{ path: `${dir}/a.mp4`, bytes: 2 * GB, file: "1:1", disk, kind: "proxy", at: 0, project: null, evictable: true, owners: [] }]);
+    const asked: number[] = [];
+    onDisk({ free: () => 6 * GB, total: 128 * GB, makeRoom: (wanted) => (asked.push(wanted), 0) }, () => {
+      // 40 GB: past the 6 GB free and the 2 GB that could go.
+      expect(storage.admit(dir, 40 * GB, "This import")).not.toBeNull();
+      expect(asked).toEqual([]);
+      // 3 GB: it would fit once the cleaner made room, so it's asked.
+      storage.admit(dir, 3 * GB, "This import");
+      expect(asked.length).toBe(1);
+    });
+  } finally {
+    storage.ledger.replace(real, 0);
+    storage.ledger.useRoots([]);
+    cleanup();
+  }
+});
+
 test("work asked for evicts to keep what Edit keeps free, and is refused only past the writes' floor, in one line with the numbers", () => {
   // Room to spare: nothing asked of the cleaner.
   let asked: number[] = [];
