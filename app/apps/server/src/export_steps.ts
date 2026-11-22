@@ -403,10 +403,10 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
 
   const ahead = steps.filter((step) => step.state !== "done");
   let left = ahead.every((step) => step.left_s !== null) ? ahead.reduce((sum, step) => sum + step.left_s!, 0) : null;
-  // The video under way with its own pace not heard yet: no time is said for the whole. Its guess is another run's
-  // pace, and a wrong one read "almost done" at 0% with a quarter of a minute to go (Nov 22); a few seconds without a
-  // time, then a true one.
-  if (stage === 2 && !queued && !grounded) left = null;
+  // The video, the review copy or the upload under way with its own pace not heard yet: no time is said for the
+  // whole. Its guess is another run's pace, and a wrong one read "almost done" at 0% with a quarter of a minute to go,
+  // and again as the review copy began with 15 s to go (Nov 22, twice); a few seconds without a time, then a true one.
+  if (stage >= 2 && !queued && !grounded) left = null;
   const elapsed = queued ? 0 : Math.max(0, (now - run.since) / 1000);
   // Carried on (a restart, a stall): the video made before is time already spent, at this run's pace (Nov 21: an
   // export carried on with 6 of 26 chunks made read 1% here, its time counted from the restart alone).

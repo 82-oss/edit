@@ -2254,6 +2254,12 @@ export async function settledForTests(most = 10_000): Promise<void> {
 }
 
 /** Tests: forget what earlier check-ins learnt. */
+/** For tests: a share's line as it's said while it runs (export_steps.ts reads its stage and the review copy's percent from it); null takes it away. */
+export function sharingForTests(projectId: string, line: string | null): void {
+  if (line === null) sharing.delete(projectId);
+  else sharing.set(projectId, line);
+}
+
 export function resetCheckInForTests(): void {
   asked = false;
   answered.clear();

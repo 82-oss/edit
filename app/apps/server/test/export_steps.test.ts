@@ -313,7 +313,15 @@ test("a share's review copy and upload keep their time until their turn, so the 
     // This Mac: a minute's video in 18 s, its review copy in 8 s.
     speeds.noteExport(home, 1800, 18);
     speeds.noteCopy(home, 60, 8);
-    const t0 = 9_000_000;
+    // And its line carries a megabyte a second (an upload of another project's, measured).
+    const real = speeds.clock.now;
+    speeds.clock.now = () => 1_000;
+    speeds.uploadTick(home, "another", 0, 6_000_000);
+    speeds.clock.now = () => 7_000;
+    speeds.uploadTick(home, "another", 6_000_000, 6_000_000);
+    speeds.clock.now = real;
+    // The share's row is begun on the real clock: the looks are counted from it.
+    const t0 = Date.now();
     const key = jobs.begin(home, "share", id, {}, "", "exporting");
     const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0, updated_ms: t0, started_ms: t0, seconds: 60, share: true };
     const left = (given: ExportSteps, kind: string) => given.steps.find((one) => one.kind === kind)!.left_s;
@@ -328,11 +336,22 @@ test("a share's review copy and upload keep their time until their turn, so the 
     expect(left(last, "copy")).toBe(copyGuess);
     // The video's done and the copy begins: most of the copy and all of the upload are ahead, and the percent says so.
     jobs.step(home, key, "review copy");
-    const copying = steps.stepsOf(app, id, undefined, t0 + 19_000)!;
+    const exported = { ...job, state: "done" as const, progress: 1 };
+    const copying = steps.stepsOf(app, id, exported, t0 + 19_000)!;
     expect(copying.steps.find((one) => one.kind === "video")!.state).toBe("done");
     expect(copying.steps.find((one) => one.kind === "copy")!.state).toBe("current");
     expect(copying.progress).toBeLessThan(0.9);
     expect(left(copying, "copy")!).toBeGreaterThan(4);
+    // The copy hasn't said its own percent yet: no time for the whole on a guess (it read "almost done" with 15 s to go).
+    expect(copying.left_s).toBeNull();
+    // It says 50% after 4 s of it: now a time, from its own pace (4 s more) and the upload still to come.
+    const { sharingForTests } = await import("../src/reviews.ts");
+    sharingForTests(id, "making the review copy 50%");
+    const half = steps.stepsOf(app, id, exported, t0 + 23_000)!;
+    sharingForTests(id, null);
+    // Its own 4 s more, and the upload still whole (a minute's review copy at a megabyte a second).
+    expect(half.left_s).not.toBeNull();
+    expect(half.left_s!).toBeGreaterThan(15);
   } finally {
     cleanup();
   }
