@@ -11,7 +11,6 @@ import { change7Cases } from "./change7.ts";
 import { coldCases } from "./cold.ts";
 import { cutCases } from "./cuts.ts";
 import { handoffCases } from "./handoff.ts";
-import { stubs } from "./stubs.ts";
 
 export type Verdict = "pass" | "fail" | "stub";
 
@@ -142,4 +141,4 @@ function answering(one: Case): Case {
   };
 }
 
-export const cases: Case[] = [...scriptCases, ...cutCases, ...change7Cases, ...coldCases, ...handoffCases, ...stubs].map(answering);
+export const cases: Case[] = [...scriptCases, ...cutCases, ...change7Cases, ...coldCases, ...handoffCases].map(answering);

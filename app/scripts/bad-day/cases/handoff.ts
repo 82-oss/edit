@@ -4,7 +4,12 @@
 // the line (an 8 Mbit/s line: hours). The copies now stay as the local originals while there's room (writer/streamed.ts),
 // and Start the edit cuts from them.
 
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import { join } from "node:path";
+
 import type { Case, Context } from "./index.ts";
+import { restart } from "./work.ts";
 
 const FOLDER = "1BadDayHandoffFolder0000001";
 const IDS = ["1BadDayHandoffRecordingAA1", "1BadDayHandoffRecordingAA2", "1BadDayHandoffRecordingAA3"];
@@ -105,7 +110,113 @@ async function laidOut(context: Context, project: string, ms: number): Promise<J
   );
 }
 
+const RESUME_FOLDER = "1BadDayResumeFolder0000001";
+const RESUME_ID = "1BadDayResumeRecording0001";
+const KBIT = 1000 / 8;
+
+/** Every file named `name` under `dir`, however deep. */
+function filesNamed(dir: string, name: string): string[] {
+  const out: string[] = [];
+  const stack = [dir];
+  for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+    let names: fs.Dirent[] = [];
+    try {
+      names = fs.readdirSync(at, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const one of names) {
+      if (one.isDirectory()) stack.push(join(at, one.name));
+      else if (one.name === name) out.push(join(at, one.name));
+    }
+  }
+  return out;
+}
+
+function md5Of(path: string): string {
+  const hash = createHash("md5");
+  const fd = fs.openSync(path, "r");
+  const buffer = Buffer.alloc(1 << 20);
+  for (;;) {
+    const n = fs.readSync(fd, buffer, 0, buffer.length, null);
+    if (n === 0) break;
+    hash.update(buffer.subarray(0, n));
+  }
+  fs.closeSync(fd);
+  return hash.digest("hex");
+}
+
+/**
+ * `resume-download` (change 8): a 150 MB recording comes down to this Mac at 8 Mbit/s in Script mode (writer/streamed.ts
+ * `driveHere`), the line cut five times and Edit killed once as it comes. Each cut and the kill should cost only what
+ * was in flight, never the file again.
+ */
+const resumeDownload: Case = {
+  name: "resume-download",
+  change: "8",
+  spec:
+    "A 150 MB recording in a Drive folder, imported in Script mode at 8 Mbit/s; the line cut five times (3 s each, at 15, 30, 45, 90 and 105 MB) and Edit killed once (at 60 MB) as it comes down. " +
+    "Checks: the case comes in whole; bytes fetched from Drive are at most the file plus 8 MB for each cut and the kill; the copy on this Mac has the file's checksum. " +
+    "(Not yet: the excerpts against a clean run's, by length and by first, middle and last frame.)",
+  paidAtMost: { hearings: 2 },
+  async run(context) {
+    const { cloud, edit, footage, line } = context;
+    const clip = footage.axon;
+    cloud.addFile(RESUME_FOLDER, RESUME_ID, clip);
+    line.reshape({ down: 8000 * KBIT });
+    const fromDrive = () => line.sent(`/www.googleapis.com/drive/v3/files/${RESUME_ID}`);
+    const started = await edit.api<{ id?: string }>("POST", "/api/writer/scripts/drive", { url: `https://drive.google.com/drive/folders/${RESUME_FOLDER}` });
+    if (started.status !== 200 || typeof started.body?.id !== "string") throw new Error(`starting the import answered ${started.status}: ${started.text.slice(0, 300)}`);
+    const id = started.body.id;
+    context.log(`import started: script ${id}`);
+    // The cuts and the kill, each once the line has carried that much of the recording.
+    const steps: [number, "cut" | "kill"][] = [[15e6, "cut"], [30e6, "cut"], [45e6, "cut"], [60e6, "kill"], [90e6, "cut"], [105e6, "cut"]];
+    const done: string[] = [];
+    for (const [bytes, what] of steps) {
+      const reached = await context.waitFor(`${(bytes / 1e6).toFixed(0)} MB of the recording down`, () => fromDrive() >= bytes || null, 600_000);
+      if (reached === null) {
+        context.log(`never got to ${(bytes / 1e6).toFixed(0)} MB (${(fromDrive() / 1e6).toFixed(1)} MB came)`);
+        break;
+      }
+      if (what === "kill") await restart(context, `the recording coming down, ${(fromDrive() / 1e6).toFixed(1)} MB in`);
+      else {
+        context.log(`the line cut for 3 s, ${(fromDrive() / 1e6).toFixed(1)} MB in`);
+        line.set("down");
+        await context.sleep(3_000);
+        line.set("up");
+      }
+      done.push(what);
+    }
+    context.check("the line was cut five times and Edit killed once as it came down", done.length === steps.length, done.join(", ") || "none");
+    const ready = await context.waitFor(
+      "the case whole",
+      async () => {
+        const one = await script(context, id);
+        if (one.status === "error" || one.status === "needs_choice") return one;
+        return one.status === "ready" && (one.missing ?? []).length === 0 ? one : null;
+      },
+      900_000,
+    );
+    const last = ready ?? (await script(context, id));
+    context.check("the case came in whole", ready !== null && ready.status === "ready", describe(last));
+    const allowed = clip.size + steps.length * 8e6;
+    context.check(
+      "bytes fetched are at most the file plus a little for each cut",
+      fromDrive() <= allowed,
+      `${(fromDrive() / 1e6).toFixed(1)} MB came from Drive for a ${(clip.size / 1e6).toFixed(1)} MB file (at most ${(allowed / 1e6).toFixed(1)} MB)`,
+    );
+    const copies = filesNamed(join(context.home, "writer", "scripts", id), clip.name);
+    const sums = copies.map(md5Of);
+    context.check(
+      "the copy on this Mac has the file's checksum",
+      sums.length > 0 && sums.every((sum) => sum === clip.md5),
+      copies.length === 0 ? "no copy of the recording on this Mac" : copies.map((path, n) => `${path.slice(context.home.length + 1)}: ${sums[n] === clip.md5 ? "right" : `md5 ${sums[n]}, not ${clip.md5}`}`).join("; "),
+    );
+  },
+};
+
 export const handoffCases: Case[] = [
+  resumeDownload,
   {
     name: "handoff-no-refetch",
     change: "8",
