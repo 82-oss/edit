@@ -112,9 +112,46 @@ def clean(job):
             pass
 
 
+# The model whole in fp16 with a stretch's frames beside it (measured Nov 19: 12.9 GB at its peak).
+NEEDS_GB = 14
+
+
+def unfit():
+    """Why this card can't be trusted with a stretch, or None: asked once, before the first stretch is taken (Nov 20: a
+    card with too little memory free and one that answered every call with a CUDA error each failed stretch after
+    stretch, both tries of each, before anything said so)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "no CUDA device"
+        free, _total = torch.cuda.mem_get_info()
+        if free < NEEDS_GB * 2**30:
+            return f"{free / 2**30:.1f} GB of its memory free, {NEEDS_GB} needed"
+        # That much really taken and given back, and a sum done on the card agreeing with the same sum done off it.
+        held = torch.empty(int((NEEDS_GB - 2) * 2**30), dtype=torch.uint8, device="cuda")
+        del held
+        torch.cuda.empty_cache()
+        a = torch.randn(1024, 1024, generator=torch.Generator().manual_seed(7))
+        there = (a.cuda() @ a.cuda()).cpu()
+        here = a @ a
+        if not torch.allclose(there, here, rtol=1e-3, atol=1e-2):
+            return "its arithmetic is off"
+        return None
+    except Exception as error:  # noqa: BLE001 — whatever it is, the card isn't to be used
+        return f"{type(error).__name__}: {error}"[:200]
+
+
 def main():
     idle_since = time.time()
     log(f"up as {POD}")
+    why = unfit()
+    if why is not None:
+        # Nothing was taken, so nothing is lost: the relay stops this pod and rents another for what waits.
+        log(f"this card isn't fit ({why}): goodbye")
+        call("/v1/remover/pod/bye", {})
+        return
+    log("card checked: fit")
     while True:
         answer = call("/v1/remover/pod/next", {})
         job = answer.get("job")
