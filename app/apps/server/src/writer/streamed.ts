@@ -85,8 +85,9 @@ export interface InCloud {
  * behind the import (`InCloud.here`); an original the cloud has already is
  * read from there, or brought here by the caller (`readHere`).
  */
-export async function drive(dir: string, recording: Recording, onBytes: (bytes: number) => void, here = false): Promise<InCloud> {
-  if (here && cloud.enabled()) return driveHere(dir, recording, onBytes);
+export async function drive(dir: string, recording: Recording, onBytes: (bytes: number) => void, here = false, signal?: AbortSignal): Promise<InCloud> {
+  // `signal`: the import's; it stops a download here. One going to the cloud first isn't stopped: another project may wait on the same original.
+  if (here && cloud.enabled()) return driveHere(dir, recording, onBytes, signal);
   const scratch = join(dir, "scratch");
   fs.mkdirSync(scratch, { recursive: true });
   const put = await cloudMedia.driveOriginal(recording.id, scratch, (bytes) => onBytes(bytes));
@@ -95,7 +96,7 @@ export async function drive(dir: string, recording: Recording, onBytes: (bytes: 
 }
 
 /** `drive` with room here: the recording downloaded into `.originals/`, its original going up behind the import. */
-async function driveHere(dir: string, recording: Recording, onBytes: (bytes: number) => void): Promise<InCloud> {
+async function driveHere(dir: string, recording: Recording, onBytes: (bytes: number) => void, signal?: AbortSignal): Promise<InCloud> {
   const source = `drive:${recording.id}`;
   const record = await cloudMedia.getRecord(source);
   const ready = cloudMedia.readyOriginal(record);
@@ -138,9 +139,9 @@ async function driveHere(dir: string, recording: Recording, onBytes: (bytes: num
       fs.mkdirSync(join(dir, HERE, folderName(recording.id)), { recursive: true });
       const token = await driveFiles.hooks.accessToken();
       // One that comes down short is fetched again once, from where it stopped, as the import's own downloads are.
-      await driveFiles.download(token, recording, path, onBytes).catch((error: unknown) => {
+      await driveFiles.download(token, recording, path, onBytes, signal).catch((error: unknown) => {
         if (!(error instanceof driveFiles.DownloadShort)) throw error;
-        return driveFiles.download(token, recording, path, onBytes);
+        return driveFiles.download(token, recording, path, onBytes, signal);
       });
     }
   } catch (error) {

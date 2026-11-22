@@ -1358,10 +1358,13 @@ export async function fetchRecording(dir: string, script: Script, folder: string
   let problem: string | null = null;
   let inCloud: string | null = null;
   let streams: media.Streams | null = null;
+  // Ends with the import (its script deleted, Edit updating): the download stops with it rather than running on (Nov 21 audit).
+  const signal = importSignal(dir);
+  signal?.throwIfAborted();
   if (stream && !(await downloaded(dest, recording))) {
     try {
       // `here`: room to keep it on this Mac until it's up, so it comes down first and its piece is made from that copy (streamed.ts).
-      const put = await streamed.drive(dir, recording, onBytes, here);
+      const put = await streamed.drive(dir, recording, onBytes, here, signal);
       const label = `${jobs.named(script.id, script.title)} · ${recording.name}`;
       let source = put.here ?? put.url;
       let found: media.Streams | null;
@@ -1405,12 +1408,12 @@ export async function fetchRecording(dir: string, script: Script, folder: string
   } else if (!(await downloaded(dest, recording))) {
     // One that comes down short is fetched again once, from where it stopped; short twice, it is dropped so a retry starts it clean.
     try {
-      await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
+      await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes, signal);
     } catch (error) {
       problem = diag.messageOf(error);
       if (error instanceof drive.DownloadShort) {
         try {
-          await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
+          await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes, signal);
           problem = null;
         } catch (again) {
           fs.rmSync(dest, { force: true });
@@ -1419,6 +1422,8 @@ export async function fetchRecording(dir: string, script: Script, folder: string
       }
     }
   }
+  // Stopped: not a recording that didn't come in (noted as missing, tried again), the import is over.
+  signal?.throwIfAborted();
   if (problem === null && inCloud === null) {
     const found = await media.streams(dest).catch(() => null);
     if (!fits(found)) {
@@ -1872,12 +1877,14 @@ export async function fetchCompilationVideo(app: App, dir: string, script: Scrip
   const dest = join(folder, `${String(index).padStart(2, "0")}.mp4`);
   // A YouTube video or one Drive file goes to the cloud without a copy here; a Drive folder (one case, joined into a master) comes down as before.
   const link = url.includes("drive.google.com") ? drive.parse(url) : null;
+  // Ends with the import, as a folder case's recordings do (`fetchRecording`).
+  const signal = importSignal(dir);
   if (streamed.on() && !(await media.readable(dest)) && (link === null || link.kind === "file")) {
     const stop = link === null ? sayWhileParked(script, url) : () => {};
     const fromDrive = async (): Promise<streamed.InCloud> => {
       const recording = (await drive.recordings(await drive.hooks.accessToken(), link!))[1][0]!;
       // Down here first when there's room to keep it until it's up (streamed.ts), as a folder case's recordings are.
-      return streamed.drive(dir, recording, () => onPercent(0, null), room.roomFor(dir, recording.size + previewRoom([recording]) + 1_000_000_000));
+      return streamed.drive(dir, recording, () => onPercent(0, null), room.roomFor(dir, recording.size + previewRoom([recording]) + 1_000_000_000), signal);
     };
     const put = await (link !== null ? fromDrive() : streamed.fromYoutube(app, dir, url, () => onPercent(0, null))).finally(stop);
     try {
@@ -1889,7 +1896,7 @@ export async function fetchCompilationVideo(app: App, dir: string, script: Scrip
     }
     return put.url;
   }
-  await fetchVideo(app, url, dest, onPercent);
+  await fetchVideo(app, url, dest, onPercent, signal);
   if (!(await media.readable(dest))) throw new Error("Couldn't be read as video, so it was dropped.");
   // Its piece of the preview, while the other videos still come down.
   await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
