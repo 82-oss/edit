@@ -767,6 +767,7 @@ class Preview {
     this.video?.removeEventListener("playing", this.onVideoPlaying);
     this.video?.removeEventListener("seeked", this.onVideoPlaying);
     this.video?.removeEventListener("loadeddata", this.onVideoPlaying);
+    this.video?.removeEventListener("error", this.onVideoError);
     this.video = video;
     if (video) video.playbackRate = this.speed;
     this.applyVolume();
@@ -774,8 +775,31 @@ class Preview {
     video?.addEventListener("playing", this.onVideoPlaying);
     video?.addEventListener("seeked", this.onVideoPlaying);
     video?.addEventListener("loadeddata", this.onVideoPlaying);
+    video?.addEventListener("error", this.onVideoError);
     if (video && this.smooth) this.useSmooth(this.smooth);
   }
+
+  /**
+   * The rendered file failed in the element (evicted, a dropped connection, a decode error): it's let go and a play
+   * carries on live, as one `video.play()` refused does, where it stood "playing" on a frozen picture until Play was
+   * pressed again (Nov 21 audit, P14). The next render's address brings it back.
+   */
+  private onVideoError = () => {
+    const video = this.video;
+    if (video === null || this.smooth === null) return;
+    note("warn", "preview", `smooth playback stopped: the rendered video failed (${video.error?.message || `code ${video.error?.code ?? "?"}`}); drawn live`);
+    const playing = playhead.playing;
+    if (playing) this.pause();
+    this.stream?.close();
+    this.stream = null;
+    this.smooth = null;
+    this.smoothShown = false;
+    this.renderedFrame = null;
+    this.setBuffering(false);
+    this.notify();
+    this.invalidate();
+    if (playing) this.play();
+  };
 
   private onVideoWaiting = () => { if (this.smoothShown) this.setBuffering(true); };
   private onVideoPlaying = () => { if (this.smoothShown) { this.setBuffering(false); if (!this.framed) { this.framed = true; this.notify(); } } };

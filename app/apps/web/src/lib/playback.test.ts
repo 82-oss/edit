@@ -504,6 +504,34 @@ describe("preview seeks and lifetime", () => {
     expect(decoding.requestVideo).toHaveBeenCalled();
   });
 
+  it("plays on live when the rendered video fails mid-play, never left \"playing\" on a frozen picture (Nov 21 audit, P14)", async () => {
+    const listeners = new Map<string, () => void>();
+    const video = {
+      src: "", currentTime: 0, paused: true, ended: false, muted: true, error: null as { code: number; message: string } | null,
+      getAttribute(name: string) { return name === "src" ? this.src || null : null; },
+      play: vi.fn(function (this: { paused: boolean }) { this.paused = false; return Promise.resolve(); }),
+      pause: vi.fn(function (this: { paused: boolean }) { this.paused = true; }),
+      addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+      removeEventListener: (name: string) => listeners.delete(name),
+    };
+    preview.attachVideo(video as unknown as HTMLVideoElement);
+    preview.setProject(fixture(), {}); draw();
+    preview.setSmooth("/api/projects/p1/playback.mp4?v=a");
+    preview.play();
+    expect(preview.smoothShown).toBe(true);
+    video.currentTime = 1; draw();
+    // The file fails under it (evicted, a dropped connection, a decode error): the element pauses and says so.
+    video.error = { code: 2, message: "network" };
+    video.paused = true;
+    listeners.get("error")!();
+    expect(preview.smoothShown).toBe(false);
+    expect(playhead.playing).toBe(true);
+    // Live from there: the canvas draws the edit, from its footage.
+    decoding.requestVideo.mockClear();
+    draw();
+    expect(decoding.requestVideo).toHaveBeenCalled();
+  });
+
   it("at rest draws a jump's picture live where it comes in time, and the render stays hidden; Play plays the render", async () => {
     // Nov 15, mandalorian: with footage here, live lands a jump in 50 ms where the render's video took 120, and a scrub
     // shows 222 of 240 positions where the render showed 34.
