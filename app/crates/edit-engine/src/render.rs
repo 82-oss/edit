@@ -2559,13 +2559,18 @@ fn export_chunked(
         let stop = AtomicBool::new(false);
         let ended = AtomicBool::new(false);
         let (sound, picture) = std::thread::scope(|scope| {
-            struct Ended<'a>(&'a AtomicBool);
+            // However this ends, the mix is told to stop too: a panic in the picture's half ended the watch below, so
+            // the export waited out the whole mix with its Cancel never reaching it.
+            struct Ended<'a>(&'a AtomicBool, &'a AtomicBool);
             impl Drop for Ended<'_> {
                 fn drop(&mut self) {
                     self.0.store(true, Ordering::Release);
+                    if std::thread::panicking() {
+                        self.1.store(true, Ordering::Release);
+                    }
                 }
             }
-            let _ended = Ended(&ended);
+            let _ended = Ended(&ended, &stop);
             scope.spawn(|| {
                 while !ended.load(Ordering::Acquire) {
                     if cancel.load(Ordering::Acquire) {
@@ -2574,10 +2579,14 @@ fn export_chunked(
                     std::thread::sleep(Duration::from_millis(50));
                 }
             });
+            // The export's decoders, so its Cancel ends the ones the mix starts too.
+            let decoders = crate::util::decoders();
             let sound = scope.spawn(|| {
                 let run = || {
-                    mix(&stop, &mut |done| {
-                        heard.store(done.to_bits(), Ordering::Release)
+                    crate::util::with_decoders(decoders, || {
+                        mix(&stop, &mut |done| {
+                            heard.store(done.to_bits(), Ordering::Release)
+                        })
                     })
                 };
                 let mixed = if background {

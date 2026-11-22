@@ -1115,6 +1115,12 @@ struct Block {
     path: PathBuf,
 }
 
+/// For tests: each block a worker makes (its file), and the blocks folder whose workers panic.
+#[cfg(test)]
+static TEST_MADE: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_PANIC_IN: parking_lot::Mutex<Option<PathBuf>> = parking_lot::Mutex::new(None);
+
 /// `render_kept` in blocks of `block` frames (whole AAC frames).
 #[allow(clippy::too_many_arguments)]
 fn render_kept_in(
@@ -1162,7 +1168,13 @@ fn render_kept_in(
             }
         })
         .collect();
-    let todo: Vec<&Block> = plan.iter().filter(|one| !one.path.exists()).collect();
+    // Each file made once: identical minutes (silence, a looped bed) are one block, and two workers writing one
+    // `.partial` had one's rename fail under the other.
+    let mut seen = std::collections::HashSet::new();
+    let todo: Vec<&Block> = plan
+        .iter()
+        .filter(|one| !one.path.exists() && seen.insert(one.path.clone()))
+        .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let finished = std::sync::atomic::AtomicUsize::new(0);
     let failure = parking_lot::Mutex::new(None::<String>);
@@ -1170,44 +1182,62 @@ fn render_kept_in(
         .map_or(2, |count| count.get() / 3)
         .clamp(1, 4)
         .min(todo.len().max(1));
+    // The export's decoders, so its Cancel ends the ones these workers start too.
+    let decoders = crate::util::decoders();
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                if cancel.load(Ordering::Acquire) || failure.lock().is_some() {
-                    return;
-                }
-                let Some(one) = todo.get(next.fetch_add(1, Ordering::AcqRel)) else {
-                    return;
-                };
-                let result = (|| -> Result<(), String> {
-                    let mut window = Vec::with_capacity(one.window_frames * 8);
-                    mix(
-                        &one.window,
-                        one.window_frames,
-                        cancel,
-                        |_| {},
-                        |samples| {
-                            for sample in samples {
-                                window.extend_from_slice(&sample.to_le_bytes());
+            let decoders = decoders.clone();
+            scope.spawn(|| {
+                crate::util::with_decoders(decoders, || loop {
+                    if cancel.load(Ordering::Acquire) || failure.lock().is_some() {
+                        return;
+                    }
+                    let Some(one) = todo.get(next.fetch_add(1, Ordering::AcqRel)) else {
+                        return;
+                    };
+                    // A panic is this block's failure: uncaught, its worker ended without a word and the wait below,
+                    // counting finished blocks, went round for ever.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                        || -> Result<(), String> {
+                            #[cfg(test)]
+                            {
+                                TEST_MADE.lock().push(one.path.clone());
+                                if TEST_PANIC_IN.lock().as_deref() == Some(blocks) {
+                                    panic!("a worker's panic");
+                                }
                             }
-                            Ok(())
+                            let mut window = Vec::with_capacity(one.window_frames * 8);
+                            mix(
+                                &one.window,
+                                one.window_frames,
+                                cancel,
+                                |_| {},
+                                |samples| {
+                                    for sample in samples {
+                                        window.extend_from_slice(&sample.to_le_bytes());
+                                    }
+                                    Ok(())
+                                },
+                            )?;
+                            let aac =
+                                encode_block(&window, one.before, one.after, one.frames, bitrate)?;
+                            let partial = one
+                                .path
+                                .with_extension(format!("aac.{}.partial", std::process::id()));
+                            std::fs::write(&partial, aac).map_err(|error| error.to_string())?;
+                            std::fs::rename(&partial, &one.path).map_err(|error| error.to_string())
                         },
-                    )?;
-                    let aac = encode_block(&window, one.before, one.after, one.frames, bitrate)?;
-                    let partial = one
-                        .path
-                        .with_extension(format!("aac.{}.partial", std::process::id()));
-                    std::fs::write(&partial, aac).map_err(|error| error.to_string())?;
-                    std::fs::rename(&partial, &one.path).map_err(|error| error.to_string())
-                })();
-                match result {
-                    Ok(()) => {
-                        finished.fetch_add(1, Ordering::AcqRel);
+                    ))
+                    .unwrap_or_else(|_| Err("the sound's mix stopped unexpectedly".to_owned()));
+                    match result {
+                        Ok(()) => {
+                            finished.fetch_add(1, Ordering::AcqRel);
+                        }
+                        Err(error) => {
+                            failure.lock().get_or_insert(error);
+                        }
                     }
-                    Err(error) => {
-                        failure.lock().get_or_insert(error);
-                    }
-                }
+                })
             });
         }
         while finished.load(Ordering::Acquire) < todo.len()
@@ -1995,6 +2025,62 @@ mod tests {
             let frames = decoded.stdout.len() / 8;
             assert!(frames.abs_diff(RATE * 6) < 1100, "{name}: {frames} frames");
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The Nov 21 audit: identical minutes (silence here) shared one file, and two workers wrote one `.partial`; a
+    /// worker's panic left the wait counting finished blocks going round for ever.
+    #[test]
+    fn a_kept_sound_makes_each_file_once_and_a_workers_panic_is_its_failure() {
+        let dir = temp_dir("kept-same");
+        let block = 45 * AAC_FRAME;
+        let total = block * 12;
+        let cancel = AtomicBool::new(false);
+        let blocks = dir.join("blocks");
+        render_kept_in(
+            block,
+            &[],
+            total,
+            128_000,
+            &dir.join("silent.m4a"),
+            &blocks,
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        let made: Vec<PathBuf> = TEST_MADE
+            .lock()
+            .iter()
+            .filter(|path| path.starts_with(&blocks))
+            .cloned()
+            .collect();
+        let unique: std::collections::HashSet<&PathBuf> = made.iter().collect();
+        assert_eq!(made.len(), unique.len(), "{made:?}");
+        assert!(made.len() < 12, "{} made", made.len());
+        // A worker that panics: the mix fails and says so, it doesn't wait for ever.
+        let panicking = dir.join("panics");
+        *TEST_PANIC_IN.lock() = Some(panicking.clone());
+        let (said, ended) = std::sync::mpsc::channel();
+        let output = dir.join("panics.m4a");
+        std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            let _ = said.send(render_kept_in(
+                block,
+                &[],
+                total,
+                128_000,
+                &output,
+                &panicking,
+                &cancel,
+                |_| {},
+            ));
+        });
+        let result = ended.recv_timeout(Duration::from_secs(20));
+        *TEST_PANIC_IN.lock() = None;
+        assert_eq!(
+            result.expect("it ended"),
+            Err("the sound's mix stopped unexpectedly".to_owned())
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
