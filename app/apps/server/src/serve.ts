@@ -204,14 +204,29 @@ export function fail(message: string): never {
  * the old ones went on in parallel (Oct 30: a review fix's agent ran twice
  * on one project, both editing it). Nothing of this run has started yet.
  */
-export function endLeftovers(pid = process.pid): string[] {
+export function endLeftovers(pid = process.pid, port: number | null = null): string[] {
   const listed = Bun.spawnSync(["/bin/ps", "-axo", "pid=,ppid=,command="], { stdout: "pipe", stderr: "ignore" });
   const ended: string[] = [];
-  for (const line of new TextDecoder().decode(listed.stdout).split("\n")) {
+  // After a hard crash the old run's agent isn't this process's child (it went to init, or a subreaper) and went on
+  // calling this server's /mcp (Nov 21 audit): one whose MCP address is this server's own is a leftover too. Only Edit
+  // gives `claude` that address (agent.ts `mcpServers`); no other run listens on this port while this one does.
+  // Only an orphan (its parent init, or the reaper systemd or launchd is): a server still running on this port (one
+  // started twice by mistake, about to fail to listen) keeps its own agent's turns.
+  const ours = port === null ? null : `"url":"http://127.0.0.1:${port}/mcp?`;
+  const lines = new TextDecoder().decode(listed.stdout).split("\n");
+  const commands = new Map<number, string>();
+  for (const line of lines) {
+    const found = /^\s*(\d+)\s+\d+\s+(.*)$/.exec(line);
+    if (found !== null) commands.set(Number(found[1]), found[2]!);
+  }
+  const orphaned = (parent: number) => parent === 1 || /(?:^|\/)(?:systemd|launchd|init)(?:\s|$)/.test(commands.get(parent) ?? "");
+  for (const line of lines) {
     const found = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    if (found === null || Number(found[2]) !== pid) continue;
+    if (found === null || Number(found[1]) === process.pid) continue;
+    const child = Number(found[2]) === pid;
+    if (!child && (ours === null || !orphaned(Number(found[2])) || !found[3]!.includes("--mcp-config") || !found[3]!.includes(ours))) continue;
     const program = /(?:^|\/)(claude|ffmpeg|edit-ffmpeg|ffprobe|edit-ffprobe)(?:\s|$)/.exec(found[3]!)?.[1] ?? null;
-    if (program === null) continue;
+    if (program === null || (!child && program !== "claude")) continue;
     try {
       process.kill(Number(found[1]), "SIGTERM");
       ended.push(program);
@@ -301,7 +316,7 @@ export function start(home: string, host: string | null, port: number): { app: A
 function startHere(home: string, host: string | null, port: number): { app: App; servers: Server<unknown>[] } {
   diag.open(home);
   lastRun.begin(home);
-  const ended = endLeftovers();
+  const ended = endLeftovers(process.pid, port);
   if (ended.length > 0) diag.info("edit", `ended ${ended.length} process(es) the last run left (${[...new Set(ended)].join(", ")}): their work starts again`);
   // And on the way out: a quit, Edit.app closed or a server stopped leaves its FFmpeg and `claude` running for
   // nobody, with a new process id the next start can't tell apart (the 10-hour trial, Nov 4: a sound copy and a
