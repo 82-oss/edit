@@ -49,7 +49,8 @@ function clock(ms: number): string {
 
 /** A step's name: what it does, the same whether it waits, runs or is done. */
 export function stepName(step: ShareStep, given: { version?: number; durationMs?: number } = {}): string {
-  if (step.kind === "check") return "Its preview in the cloud";
+  // Waiting for it to go up from here (Nov 22: a share asked for then was refused; it waits and carries on by itself now).
+  if (step.kind === "check") return step.waits === true ? "Its preview going up to the cloud" : "Its preview in the cloud";
   if (step.kind === "script") return "The script";
   if (step.kind === "fetch") return `Its preview to ${THIS_MACHINE}`;
   if (step.kind === "footage") return given.durationMs ? `Footage for the review page · ${clock(given.durationMs)}` : "Footage for the review page";
@@ -77,7 +78,7 @@ export function nowWords(sharing: Sharing): string {
   if (sharing.stage === "cancelling") return "Stopping";
   const step = sharing.steps?.find((one) => one.state === "current");
   if (step === undefined) return "Sharing";
-  if (step.kind === "check") return "Checking its preview";
+  if (step.kind === "check") return step.waits === true ? "Waiting for its preview to go up" : "Checking its preview";
   if (step.kind === "script") return "Sending the script";
   if (step.kind === "fetch") return "Bringing its preview here";
   if (step.kind === "footage") return "Sending the footage";

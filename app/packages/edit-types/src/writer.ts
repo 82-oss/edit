@@ -205,6 +205,8 @@ export type ShareStep = {
   leftS?: number;
   /** Done without moving anything: the review link already had this preview. */
   skipped?: boolean;
+  /** The check, waiting for its preview to go up from this computer: the share carries on by itself once it's there. */
+  waits?: boolean;
 };
 
 /** A share under way: its stage word, its steps, and the whole of it 0–1 by the bytes it moves (null when it moves none worth counting, a commentary's). */

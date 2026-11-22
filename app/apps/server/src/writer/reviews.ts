@@ -397,6 +397,47 @@ export async function share(app: App, data: string, id: string): Promise<Script>
  */
 const sharing = new Map<string, Running>();
 const shareFailed = new Map<string, ShareFailed>();
+/**
+ * How a share waits for its preview to go up from here (`previewUp`): how often it looks again, how long it waits for
+ * the sync to take the preview up when nothing is sending it yet, and the most it waits at all.
+ */
+export const previewWait = { everyMs: 5_000, graceMs: 60_000, mostMs: 3 * 60 * 60_000 };
+
+/**
+ * `previewInCloud`, waited for while the preview is still going up from this computer: the share's first step, and it
+ * carries on by itself once the preview is there (Nov 22: it was refused, "Share it again once it's there", and the
+ * person had to come back and press it again). Refused as before when nothing is putting it up, or after
+ * `previewWait.mostMs`; the share's Cancel ends the wait.
+ */
+async function previewUp(data: string, id: string, dir: string, script: Script, signal?: AbortSignal): Promise<void> {
+  const began = Date.now();
+  for (;;) {
+    try {
+      await previewInCloud(data, id, dir, script);
+      return;
+    } catch (error) {
+      if (!(error instanceof ShareRefused) || error.message !== PREVIEW_GOING_UP) throw error;
+      const waited = Date.now() - began;
+      if (waited > previewWait.mostMs || (!cloud.footageGoing(data, id, "proxy.mp4") && waited >= previewWait.graceMs)) throw error;
+      const step = sharing.get(id)?.steps.find((one) => one.kind === "check");
+      if (step !== undefined && step.waits !== true) {
+        step.waits = true;
+        mark(id, "waiting for its preview to go up");
+        diag.info("writer", `${jobs.named(id, script.title)}: its preview is still going up to the cloud; the share waits for it`);
+      }
+      cloud.syncSoon();
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, previewWait.everyMs);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
+      halt(id);
+    }
+  }
+}
+
 /** The last share of each script that landed here, with its steps' times, for the dialog's "done" (cleared by the next share). */
 const landed = new Map<string, { at: number; version: number; steps: ShareStep[] }>();
 /** A share the person stopped. The step it's in lets go, and nothing is published. */
@@ -416,7 +457,7 @@ const REFUSAL_FOR_MS = 5 * 60_000;
  * upload resuming from parts already up starts high, and that start isn't
  * speed).
  */
-type Step = { kind: ShareStep["kind"]; state: ShareStep["state"]; total?: number; done?: number; startedAt?: number; endedAt?: number; first?: { at: number; done: number }; skipped?: boolean };
+type Step = { kind: ShareStep["kind"]; state: ShareStep["state"]; total?: number; done?: number; startedAt?: number; endedAt?: number; first?: { at: number; done: number }; skipped?: boolean; waits?: boolean };
 type Running = { startedAt: number; stage: string; name?: string; version?: number; steps: Step[] };
 
 /** The stage word each step prints, as the export queue and older pages read it. */
@@ -505,6 +546,7 @@ function shown(step: Step, now: number): ShareStep {
   if (step.total !== undefined) out.total = step.total;
   if (step.state === "current" && step.done !== undefined) out.done = step.done;
   if (step.skipped === true) out.skipped = true;
+  if (step.waits === true && step.state === "current") out.waits = true;
   if (step.startedAt !== undefined && step.state !== "waiting") out.seconds = Math.max(0, ((step.state === "done" ? (step.endedAt ?? now) : now) - step.startedAt) / 1000);
   if (step.state === "current" && step.first !== undefined && step.done !== undefined && step.total !== undefined && now - step.first.at >= RATE_AFTER_MS && step.done > step.first.done) {
     const rate = (step.done - step.first.done) / (now - step.first.at);
@@ -646,12 +688,12 @@ export async function shareNext(app: App, data: string, id: string): Promise<Scr
   const sized = (kind: ShareStep["kind"]) => (previewBytes === undefined ? { kind } : { kind, total: previewBytes });
   plan(id, next, [...(isFootage ? [{ kind: "check" as const }] : []), { kind: "script", total: Buffer.byteLength(snapshot) }, ...(isFootage && !here ? [sized("fetch")] : []), ...(isFootage ? [sized("footage")] : []), { kind: "publish" }]);
   begin(id, "check");
-  await previewInCloud(data, id, dir, script);
+  // The share's Cancel stops its transfers at once (none from a fix's own share, which has no Cancel).
+  const signal = shareAbort.get(id)?.signal;
+  await previewUp(data, id, dir, script, signal);
   halt(id);
   // The review's id is Repack's to give, on the first publish: snapshots are kept by the script's id instead.
   const key = `writer/reviews/${id}/v${next}/script.json`;
-  // The share's Cancel stops its transfers at once (none from a fix's own share, which has no Cancel).
-  const signal = shareAbort.get(id)?.signal;
   begin(id, "script");
   halt(id);
   await cloud.putBytes(key, snapshot, undefined, signal);

@@ -1045,6 +1045,11 @@ function footageCommitted(data: string, id: string, files: Record<string, Kept>)
   if (changed) saveFootage(data);
 }
 
+/** Whether a script's file (`name`, its preview) is on its way up from here: queued in the footage lane, going, or waiting to try again. */
+export function footageGoing(data: string, id: string, name: string): boolean {
+  return footageOf(data)[slotOf(id, name)] !== undefined;
+}
+
 /** The footage lane's run to its end (tests: a round queues it, this sends it). */
 export async function footageForTests(data: string): Promise<void> {
   sendFootage(data);

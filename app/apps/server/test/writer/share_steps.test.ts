@@ -16,13 +16,15 @@ import * as realCloud from "../../src/writer/cloud.ts";
 const PREVIEW = 1_000;
 /** The review copy's upload, held until the test lets it go, hearing bytes as the test says them. */
 let upload: { report: (done: number, total: number) => void; finish: () => void; fail: (error: Error) => void; aborted: boolean } | null = null;
-const standIn = { on: false, previewUp: true };
+const standIn = { on: false, previewUp: true, going: false };
 const real = { ...realCloud };
 // The real one whenever this test isn't running: the mock is the whole run's.
 void mock.module("../../src/writer/cloud.ts", () => ({
   ...realCloud,
   fileKey: (data: string, id: string, name: string) => (standIn.on ? { key: `writer/${id}/proxy.mp4`, size: PREVIEW, mtime: 0 } : real.fileKey(data, id, name)),
   sameAsHere: (data: string, id: string, name: string) => (standIn.on ? standIn.previewUp : real.sameAsHere(data, id, name)),
+  // The sync's footage lane: whether it's putting the preview up.
+  footageGoing: (data: string, id: string, name: string) => (standIn.on ? standIn.going : real.footageGoing(data, id, name)),
   // The kept preview is there; the review link has none yet.
   head: async (key: string) => (standIn.on ? (key.endsWith("/proxy.mp4") ? PREVIEW : null) : real.head(key)),
   putBytes: async (key: string, bytes: Uint8Array | string, type?: string) => (standIn.on ? undefined : real.putBytes(key, bytes, type)),
@@ -229,6 +231,9 @@ test("a share refused before it starts says only why, as a refusal, and the line
   script(id);
   standIn.on = true;
   standIn.previewUp = false;
+  // Nothing is putting it up (the sync hasn't queued it), and no time is given for it to start.
+  const grace = reviews.previewWait.graceMs;
+  reviews.previewWait.graceMs = 0;
   try {
     await expect(reviews.startShare({} as App, data, id)).rejects.toThrow("still going up to the cloud");
     const said = reviews.shareState(id).shareFailed;
@@ -239,7 +244,39 @@ test("a share refused before it starts says only why, as a refusal, and the line
     standIn.previewUp = true;
     expect(reviews.shareState(id).shareFailed).toBeUndefined();
   } finally {
+    reviews.previewWait.graceMs = grace;
     standIn.on = false;
     standIn.previewUp = true;
+  }
+});
+
+// Nov 22: a script shared while its preview still went up was refused, and someone had to come back and share it again.
+test("a share asked for while its preview still goes up waits for it as its first step, says so, and carries on by itself", async () => {
+  const id = "7a001eed-86e7-471f-b0c0-3fcc4009a007";
+  script(id);
+  standIn.on = true;
+  standIn.previewUp = false;
+  standIn.going = true;
+  const every = reviews.previewWait.everyMs;
+  reviews.previewWait.everyMs = 20;
+  try {
+    const going = reviews.startShare({} as App, data, id);
+    await Bun.sleep(80);
+    const waiting = reviews.shareState(id).sharing!;
+    expect(waiting.stage).toBe("waiting for its preview to go up");
+    expect(waiting.steps?.[0]).toMatchObject({ kind: "check", state: "current", waits: true });
+    expect(reviews.shareState(id).shareFailed).toBeUndefined();
+    // It's up: the share goes on to send the script and the footage, by itself.
+    standIn.previewUp = true;
+    for (let tries = 0; upload === null && tries < 200; tries++) await Bun.sleep(10);
+    expect(reviews.shareState(id).sharing?.steps?.[0]).toMatchObject({ kind: "check", state: "done" });
+    upload!.finish();
+    expect((await going).review?.version).toBe(1);
+  } finally {
+    reviews.previewWait.everyMs = every;
+    standIn.on = false;
+    standIn.previewUp = true;
+    standIn.going = false;
+    upload = null;
   }
 });
