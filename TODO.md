@@ -19,7 +19,7 @@ nightly-97 went out on Nov 22 at 03:01 (main at 6fe5ce04: everything since night
 What can still make an import or an export look frozen, or playback slow to start, on JJ's 8 Mbit/s line and on Macs short of disk.
 
 1. **Prove the nightly on the team's Macs** (hours, no code). Once JJ is on it: read his report and its `[thread]` lines, time a cold open and Play on one of his projects in Edit.app, count wake lines against `pmset -g log` after a real lid close, and write down what failed and why. Nothing else shows the playback complaint is gone.
-2. **Important (Sphe, Nov 22): footage local while a project is in work.** Steps 1 to 3 are built (Nov 22, `local_first.ts`) for new channel projects only: detail and what's left under Playback. It takes the internet out of playback, wherever the team is; every other project still reads cloud pieces.
+2. **Important (Sphe, Nov 22): footage local while a project is in work.** Built (Nov 22, `local_first.ts`) but OFF in released builds (`takesLocalMedia`'s `!RELEASE`: nightly-98 went out the same evening and none of it had run on a Mac); a build from source takes it for new channel projects only: detail and what's left under Playback. It takes the internet out of playback, wherever the team is; every other project still reads cloud pieces.
 
 ## Imports and Script mode
 

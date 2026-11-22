@@ -38,6 +38,7 @@ import { isFile, join, parent } from "./paths.ts";
 import { Semaphore } from "./semaphore.ts";
 import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
+import { RELEASE } from "./version.ts";
 
 /**
  * The working copy, in one place (a Mac measuring playback off local files may change these). Measured Nov 18 on an M1
@@ -70,7 +71,10 @@ export const WORKING_KEYS = "edit/proxies/v720/";
  * Who takes the local path for a project's first import (Nov 22: new channel projects, Edit V2). Widening it later is
  * this one line; a project that already has its footage keeps the path it took.
  */
-const takesLocalMedia = (project: Project): boolean => project.hq === true && typeof project.channel === "string" && project.channel !== "";
+const takesLocalMedia = (project: Project): boolean => !RELEASE && project.hq === true && typeof project.channel === "string" && project.channel !== "";
+// Not in a released build yet (Nov 22): none of this has run on a Mac (VideoToolbox making the copy, the window
+// switching from the original to it), and nightly-98 went out the same evening. A build from source takes it; take
+// `!RELEASE` out once a real import on a Mac has been seen. A project that already chose it keeps it (`chosen`).
 
 /**
  * Whether `project` keeps its footage local while in work (`Project.local_media`), or its footage says so (a build from
