@@ -75,16 +75,20 @@ function exportsHome(name: string, ranges: Range[]) {
 function fakeExports(app: App, home: string, project: Project, how: { silent?: (index: number) => boolean; fails?: (index: number) => boolean; hangs?: (index: number) => boolean } = {}) {
   const asked: [number, number][] = [];
   let running = false;
+  let failed = false;
   (app as unknown as { exports: unknown }).exports = {
     runningFor: () => (running ? { output: "", timeline: "", options: "" } : null),
     cancel: () => true,
+    // What the registry says of it, as a failed one says why.
+    activity: () => (failed ? [{ id: project.id, name: project.name, path: "", state: "failed", progress: 0, updated_ms: Date.now(), error: "the encoder stopped early" }] : []),
     start: async (_store: unknown, _library: unknown, _project: unknown, options: { range: [number, number] }, output: string) => {
       const index = asked.length;
       asked.push(options.range);
       running = true;
       // Edit stops here (a crash, an update): nothing after it in this run.
       if (how.hangs?.(index) === true) await new Promise<never>(() => {});
-      if (how.fails?.(index) !== true) {
+      failed = how.fails?.(index) === true;
+      if (!failed) {
         const sound = how.silent?.(index) === true ? [] : ["-f", "lavfi", "-i", "sine=duration=1", "-c:a", "aac", "-shortest"];
         await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=1", ...sound, "-c:v", "libx264", "-pix_fmt", "yuv420p", output]);
         listMade(home, project.id, { path: output, name: output, finished_ms: Date.now(), seconds: 1, bytes: 1, frames: 30, whole: false, format: "h264" });
@@ -138,7 +142,8 @@ test("a joined batch that stops leaves none of its parts listed, nor a manifest 
   fakeExports(app, home, project, { fails: (index) => index === 1 });
   const batch = exportRanges(app, project, { range: null, format: "h264" } as never, "joined", null);
   await ended(batch);
-  expect(batch.error).toBe("Two didn't export");
+  // What its export said as it failed (the Nov 21 audit: it was dropped).
+  expect(batch.error).toBe("Two didn't export: the encoder stopped early");
   expect(listExports(home, project.id)).toEqual([]);
   expect(fs.existsSync(join(chunkFolder(app.store.cacheDir(), project.id), "manifest-v1.json"))).toBe(false);
 });
@@ -149,7 +154,7 @@ test("a stretch whose export fails isn't taken for done by the file a run before
   fakeExports(app, home, project, { fails: (index) => index === 1 });
   const batch = exportRanges(app, project, { range: null, format: "h264" } as never, "each", null);
   await ended(batch);
-  expect(batch.error).toBe("Two didn't export");
+  expect(batch.error).toBe("Two didn't export: the encoder stopped early");
   expect(batch.outputs).toEqual([join(folder, "Joined - One.mp4")]);
 });
 
@@ -279,6 +284,32 @@ test("a batch cancelled while it waits for its graphics stops at once, exports n
     expect(again.finished).toBe(true);
   } finally {
     waiting.splice(0).forEach((resolve) => resolve());
+    spy.mockRestore();
+  }
+}, 30_000);
+
+// The Nov 21 audit: marked stretches' sound and join took no Cancel (up to 10 and 30 minutes).
+test("a joined batch cancelled while it joins stops at once, as cancelled, not failed", async () => {
+  const { app, home, project } = exportsHome("ranges-cancel-join", [{ start: 0, end: 30, name: "One" }, { start: 60, end: 90, name: "Two" }]);
+  fakeExports(app, home, project);
+  const real = tools.run;
+  let joining = false;
+  const spy = spyOn(tools, "run").mockImplementation(((command: string[], options?: { signal?: AbortSignal }) => {
+    if (!command.includes("concat")) return real(command, options);
+    joining = true;
+    // A join that takes its half hour: only its Cancel ends it.
+    return new Promise<Uint8Array>((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("killed")), { once: true }));
+  }) as typeof tools.run);
+  try {
+    const batch = exportRanges(app, project, { range: null, format: "h264" } as never, "joined", null);
+    for (let tries = 0; !joining && tries < 500; tries++) await Bun.sleep(10);
+    expect(joining).toBe(true);
+    expect(cancel(app, project.id)).toBe(true);
+    for (let tries = 0; !batch.finished && tries < 300; tries++) await Bun.sleep(10);
+    expect(batch.finished).toBe(true);
+    expect(batch.cancelled).toBe(true);
+    expect(batch.error).toBeNull();
+  } finally {
     spy.mockRestore();
   }
 }, 30_000);

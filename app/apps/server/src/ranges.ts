@@ -199,8 +199,8 @@ async function finished(app: App, id: string, output: string, before: bigint | n
 }
 
 /** A file's first sound: its codec, rate and channel layout; null when it has none (a stretch where nothing is heard is exported picture alone). */
-async function soundOf(path: string): Promise<{ codec: string; rate: string; layout: string } | null> {
-  const said = JSON.parse(new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channel_layout,channels", "-of", "json", path], { timeoutMs: 60_000 }))) as {
+async function soundOf(path: string, signal?: AbortSignal): Promise<{ codec: string; rate: string; layout: string } | null> {
+  const said = JSON.parse(new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channel_layout,channels", "-of", "json", path], { timeoutMs: 60_000, ...(signal === undefined ? {} : { signal }) }))) as {
     streams?: { codec_name?: string; sample_rate?: string; channel_layout?: string; channels?: number }[];
   };
   const stream = said.streams?.[0];
@@ -213,15 +213,15 @@ async function soundOf(path: string): Promise<{ codec: string; rate: string; lay
  * when some have sound (the join takes its streams from the first file, so a
  * silent first stretch left the whole video without sound).
  */
-async function withSound(parts: string[]): Promise<string[]> {
-  const sounds = await Promise.all(parts.map(soundOf));
+async function withSound(parts: string[], signal?: AbortSignal): Promise<string[]> {
+  const sounds = await Promise.all(parts.map((part) => soundOf(part, signal)));
   const like = sounds.find((one) => one !== null);
   if (like === undefined) return parts;
   return Promise.all(
     parts.map(async (part, index) => {
       if (sounds[index] !== null) return part;
       const out = part.replace(/(\.[^./]+)$/u, ".sound$1");
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", part, "-f", "lavfi", "-i", `anullsrc=r=${like.rate}:cl=${like.layout}`, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", like.codec, "-shortest", out], { timeoutMs: 10 * 60_000 });
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", part, "-f", "lavfi", "-i", `anullsrc=r=${like.rate}:cl=${like.layout}`, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", like.codec, "-shortest", out], { timeoutMs: 10 * 60_000, ...(signal === undefined ? {} : { signal }) });
       return out;
     }),
   );
@@ -333,7 +333,7 @@ async function runBatch(app: App, id: string, batch: Batch, kept: Kept, given?: 
     });
     try {
       await Promise.race([
-        seams.broll.waitForMaps(app, id, 20 * 60_000).catch((error: unknown) => {
+        seams.broll.waitForMaps(app, id, 20 * 60_000, stop.signal).catch((error: unknown) => {
           if (!seams.isUnavailable(error)) throw error;
         }),
         cancelled,
@@ -384,7 +384,9 @@ async function runBatch(app: App, id: string, batch: Batch, kept: Kept, given?: 
       });
       kept.asked.push(path);
       if (!(await finished(app, id, path, before))) {
-        if (!batch.cancelled) batch.error = `${range.name} didn't export`;
+        // What its export said as it failed, not only that it didn't (the Nov 21 audit: the real error was dropped).
+        const said = app.exports.activity?.().find((one) => one.id === id && one.state === "failed")?.error;
+        if (!batch.cancelled) batch.error = said === undefined || said === "" ? `${range.name} didn't export` : `${range.name} didn't export: ${said}`;
         return;
       }
       kept.made.push(path);
@@ -396,14 +398,15 @@ async function runBatch(app: App, id: string, batch: Batch, kept: Kept, given?: 
       batch.current = "joining them";
       note("joining them");
       const list = join(parts, "list.txt");
-      fs.writeFileSync(list, (await withSound(kept.made)).map((file) => `file '${file.replace(/'/gu, "'\\''")}'`).join("\n"));
+      // The sound's fill and the join end at its Cancel (they ran on for up to 40 minutes, the Nov 21 audit).
+      fs.writeFileSync(list, (await withSound(kept.made, stop.signal)).map((file) => `file '${file.replace(/'/gu, "'\\''")}'`).join("\n"));
       const file = `${safe(project.name)} - ${ranges.length} marked.mp4`;
       const output = join(dir, file);
       // Beside it until whole: the last run's file under this name is listed for Download, and a join that failed
       // or was stopped wrote over it.
       const partial = join(dir, `${file.slice(0, -".mp4".length)}.partial.mp4`);
       try {
-        await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", partial], { timeoutMs: 30 * 60_000 });
+        await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", partial], { timeoutMs: 30 * 60_000, signal: stop.signal });
         fs.renameSync(partial, output);
       } finally {
         fs.rmSync(partial, { force: true });
@@ -425,8 +428,11 @@ async function runBatch(app: App, id: string, batch: Batch, kept: Kept, given?: 
     }
     diag.info("export", `${project.name}: ${ranges.length} marked stretch${ranges.length === 1 ? "" : "es"} exported (${mode})`);
   } catch (error) {
-    batch.error = diag.messageOf(error);
-    diag.warn("export", `${name}: exporting its marked stretches: ${batch.error}`);
+    // Stopped by its Cancel: cancelled, not an error.
+    if (!batch.cancelled) {
+      batch.error = diag.messageOf(error);
+      diag.warn("export", `${name}: exporting its marked stretches: ${batch.error}`);
+    }
   } finally {
     batch.current = null;
     batch.finished = true;
