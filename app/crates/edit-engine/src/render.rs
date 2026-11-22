@@ -2333,6 +2333,37 @@ fn remove_stale_partials(output: &Path, id: &str, format: Format) {
     }
 }
 
+/// The ways an export was tried that failed, in order, each with why: its failure says the first cause first, then
+/// what was tried after it and how that ended ([`Tried::said`]).
+#[derive(Default)]
+struct Tried(Vec<(&'static str, String)>);
+
+impl Tried {
+    fn failed(&mut self, what: &'static str, error: String) {
+        self.0.push((what, error));
+    }
+
+    /// The first cause, as a log line's end ("" when nothing failed before).
+    fn first(&self) -> String {
+        self.0.first().map_or_else(String::new, |(what, error)| {
+            format!(" (first, {what} failed: {error})")
+        })
+    }
+
+    /// The failure of the last way tried (`what`, `error`), after the ones before: unchanged when it was the only one.
+    fn said(&self, what: &str, error: String) -> String {
+        let Some(((first, why), after)) = self.0.split_first() else {
+            return error;
+        };
+        let mut said = format!("{first} failed: {why}");
+        for (what, error) in after {
+            said.push_str(&format!("; then {what}: {error}"));
+        }
+        said.push_str(&format!("; then {what}: {error}"));
+        said
+    }
+}
+
 /// Exports `project` (its media already the files to read: originals, not
 /// proxies) to `output` through its partial file ([`partial_path`]), renamed
 /// onto `output` once complete. "cancelled" when `cancel` is set.
@@ -2358,6 +2389,9 @@ pub fn export_file(
     let mut progress = progress;
     let settings = native_options(project, options, plan, false)?;
     let mut made = None;
+    // What failed before the way that's tried next, the first cause first: each fallback hid the one before it, and
+    // the export's failure (and so a report) said only the last (Nov 22).
+    let mut tried = Tried::default();
     if let Some(settings) = settings {
         // Tried twice before exporting it whole: the chunks made are kept, so
         // a second try only makes the rest. A sound encoder that stalled once
@@ -2387,14 +2421,23 @@ pub fn export_file(
                 Err(error) if error == "cancelled" || cancel.load(Ordering::Acquire) => {
                     return Err("cancelled".to_owned())
                 }
-                Err(error) if attempt == 1 => crate::log::warn(
-                    "export",
-                    format!("a chunked export failed ({error}); trying the chunks again, rendering what it had copied from the last export"),
-                ),
-                Err(error) => crate::log::warn(
-                    "export",
-                    format!("a chunked export failed again ({error}); exporting it whole"),
-                ),
+                Err(error) if attempt == 1 => {
+                    crate::log::warn(
+                        "export",
+                        format!("a chunked export failed ({error}); trying the chunks again, rendering what it had copied from the last export"),
+                    );
+                    tried.failed("the chunked export", error);
+                }
+                Err(error) => {
+                    crate::log::warn(
+                        "export",
+                        format!(
+                            "a chunked export failed again ({error}); exporting it whole{}",
+                            tried.first()
+                        ),
+                    );
+                    tried.failed("the chunks again", error);
+                }
             }
         }
     }
@@ -2414,7 +2457,7 @@ pub fn export_file(
                 progress,
             )
         };
-        match whole(true, &mut progress) {
+        let ended = match whole(true, &mut progress) {
             Err(error)
                 if error != "cancelled"
                     && !cancel.load(Ordering::Acquire)
@@ -2422,11 +2465,21 @@ pub fn export_file(
             {
                 crate::log::warn(
                     "export",
-                    format!("the whole export failed ({error}); exporting it again with FFmpeg's encoder"),
+                    format!("the whole export failed ({error}); exporting it again with FFmpeg's encoder{}", tried.first()),
                 );
-                whole(false, &mut progress)?;
+                tried.failed("the whole export", error);
+                whole(false, &mut progress)
+                    .map_err(|error| (error, "the whole export with FFmpeg's encoder"))
             }
-            other => other?,
+            other => other.map_err(|error| (error, "the whole export")),
+        };
+        if let Err((error, what)) = ended {
+            if error == "cancelled" || cancel.load(Ordering::Acquire) {
+                return Err("cancelled".to_owned());
+            }
+            let said = tried.said(what, error);
+            crate::log::warn("export", format!("the export failed: {said}"));
+            return Err(said);
         }
     }
     if cancel.load(Ordering::Acquire) {
@@ -2775,6 +2828,11 @@ fn export_chunked(
             Ok(file)
         })
         .transpose()?;
+    if let Some(wrong) = chunks::not_end_to_end(&list, plan.start, plan.end) {
+        return Err(format!(
+            "the export's chunks don't cover it end to end: {wrong}"
+        ));
+    }
     let concat = beside(output, ".chunks.txt");
     std::fs::write(&concat.0, chunks::concat_list(&pieces, fps, &old)?)
         .map_err(|error| error.to_string())?;
@@ -2794,9 +2852,41 @@ fn export_chunked(
     })?;
     let frames = chunks::frames_in(output)?;
     if frames != plan.end - plan.start {
+        // Which piece is off, and where it came from (rendered now, kept from a run that stopped, or copied out of
+        // the last export), so a report names it rather than only the total.
+        let scratch = beside(output, ".piece.txt");
+        let off = chunks::pieces_off(&pieces, fps, &old, &scratch.0);
+        let named: Vec<String> = off
+            .iter()
+            .take(4)
+            .filter_map(|(index, what)| {
+                let (chunk, (piece, _)) = list.get(*index).zip(pieces.get(*index))?;
+                let from = match piece {
+                    Piece::Old { at, .. } => {
+                        format!("copied from the last export at its frame {at}")
+                    }
+                    Piece::File(_) if todo.iter().any(|one| one.key == chunk.key) => {
+                        "rendered now".to_owned()
+                    }
+                    Piece::File(_) => "kept from an earlier run".to_owned(),
+                };
+                Some(format!(
+                    "chunk {} of {} (frames {}–{}, {from}) {what}",
+                    index + 1,
+                    list.len(),
+                    chunk.start,
+                    chunk.end
+                ))
+            })
+            .collect();
         return Err(format!(
-            "the joined export has {frames} frames, not {}",
-            plan.end - plan.start
+            "the joined export has {frames} frames, not {}: {}",
+            plan.end - plan.start,
+            if named.is_empty() {
+                "every piece has its own frames, so the join made the difference".to_owned()
+            } else {
+                named.join("; ")
+            }
         ));
     }
     progress(1.0);
@@ -4940,6 +5030,102 @@ mod tests {
             "made of chunks, not exported whole"
         );
         shows(&two, |frame| (frame / 30) % 2 == 1, 3000);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// An export that fell back to the next way after each failure says the first cause first, then what was tried
+    /// and how each ended (Nov 22: only the last was said, so a report never showed why the chunks failed).
+    #[test]
+    fn a_failed_export_says_its_first_cause_then_what_was_tried() {
+        let mut tried = Tried::default();
+        assert_eq!(
+            tried.said("the whole export", "No space left on device".to_owned()),
+            "No space left on device"
+        );
+        assert_eq!(tried.first(), "");
+        tried.failed("the chunked export", "the joined export has 33826 frames, not 33786: chunk 3 of 9 (frames 600–900, kept from an earlier run) has 340 frames, not 300".to_owned());
+        tried.failed("the chunks again", "the sound's mix stopped".to_owned());
+        tried.failed(
+            "the whole export",
+            "VideoToolbox: the encoder stalled".to_owned(),
+        );
+        assert_eq!(
+            tried.said("the whole export with FFmpeg's encoder", "Cannot allocate memory".to_owned()),
+            "the chunked export failed: the joined export has 33826 frames, not 33786: chunk 3 of 9 (frames 600–900, kept from an earlier run) has 340 frames, not 300; then the chunks again: the sound's mix stopped; then the whole export: VideoToolbox: the encoder stalled; then the whole export with FFmpeg's encoder: Cannot allocate memory"
+        );
+        assert!(tried
+            .first()
+            .starts_with(" (first, the chunked export failed: the joined export has 33826"));
+    }
+
+    /// A joined export off by some frames names the piece that is (Marc's "joined 33826 frames, not 33786"): each
+    /// stretch copied out of the last export is counted as the join reads it, each chunk's file from its index.
+    #[test]
+    fn a_join_off_by_frames_names_the_piece_that_is() {
+        use crate::chunks::Piece;
+        let dir = temp_dir("chunks-pieces-off");
+        let red = source(&dir, "red.mp4", "red", 0.5);
+        let blue = source(&dir, "blue.mp4", "blue", 1.0);
+        let options = ExportOptions::default();
+        let cache = dir.join("cache");
+        let project = cuts(&red, &blue, &[], 0);
+        let plan = export_plan(&project, &options).unwrap();
+        let one = dir.join("one.mp4");
+        export_file(
+            &project,
+            &options,
+            &plan,
+            &one,
+            &cache,
+            &HashMap::new(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        let made = manifest(&cache);
+        assert!(made.chunks.len() >= 3, "{:?}", made.chunks);
+        let old = crate::chunks::old_file(&one).unwrap();
+        let scratch = dir.join("piece.txt");
+        let pieces: Vec<(Piece, i64)> = made
+            .chunks
+            .iter()
+            .map(|chunk| {
+                (
+                    Piece::Old {
+                        file: one.clone(),
+                        at: chunk.at,
+                    },
+                    chunk.frames,
+                )
+            })
+            .collect();
+        // Every stretch of the last export, read as the join reads it, has its frames.
+        assert_eq!(
+            crate::chunks::pieces_off(&pieces, made.fps, &old, &scratch),
+            vec![]
+        );
+        // The second as a file 30 frames short: named, the rest not.
+        let second = &made.chunks[1];
+        let short = dir.join("short.mp4");
+        let cut = crate::util::ffmpeg_command()
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&one)
+            .args(["-map", "0:v", "-c", "copy", "-frames:v"])
+            .arg((second.frames - 30).to_string())
+            .arg(&short)
+            .status()
+            .unwrap();
+        assert!(cut.success());
+        let mut spoilt = pieces.clone();
+        spoilt[1] = (Piece::File(short), second.frames);
+        assert_eq!(
+            crate::chunks::pieces_off(&spoilt, made.fps, &old, &scratch),
+            vec![(
+                1,
+                format!("has {} frames, not {}", second.frames - 30, second.frames)
+            )]
+        );
+        assert!(!scratch.exists());
         std::fs::remove_dir_all(dir).ok();
     }
 

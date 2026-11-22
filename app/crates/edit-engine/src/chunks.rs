@@ -435,6 +435,76 @@ pub fn concat_list(pieces: &[(Piece, i64)], fps: f64, old: &OldFile) -> Result<S
     Ok(text)
 }
 
+/// Where `list` doesn't lay its chunks end to end over `[start, end)`: a gap, an overlap (a boundary twice) or a
+/// chunk listed twice, said with its frames; none when it does. A join of such a list has more or fewer frames than
+/// the plan, which only its count said ("joined 33826 frames, not 33786", Marc).
+pub fn not_end_to_end(list: &[Chunk], start: i64, end: i64) -> Option<String> {
+    let mut at = start;
+    for (index, chunk) in list.iter().enumerate() {
+        if chunk.start != at || chunk.end <= chunk.start {
+            return Some(format!(
+                "chunk {} of {} is frames {}–{}, where the one before ended at {at}",
+                index + 1,
+                list.len(),
+                chunk.start,
+                chunk.end
+            ));
+        }
+        at = chunk.end;
+    }
+    (at != end).then(|| format!("the chunks end at frame {at}, not {end}"))
+}
+
+/// Each piece of a join whose frames, as the join reads it (a chunk's file from its index, a stretch of the last
+/// export through a concat list of its own, `scratch`), aren't the ones its place says: its index and what's off.
+/// Read when a joined export's count is wrong, so its failure names the piece instead of only the total.
+pub fn pieces_off(
+    pieces: &[(Piece, i64)],
+    fps: f64,
+    old: &OldFile,
+    scratch: &Path,
+) -> Vec<(usize, String)> {
+    let mut off = Vec::new();
+    for (index, (piece, frames)) in pieces.iter().enumerate() {
+        let found = match piece {
+            Piece::File(path) => frames_indexed(path),
+            Piece::Old { .. } => concat_list(&[(piece.clone(), *frames)], fps, old)
+                .and_then(|text| std::fs::write(scratch, text).map_err(|error| error.to_string()))
+                .and_then(|()| frames_listed(scratch)),
+        };
+        match found {
+            Ok(count) if count == *frames => {}
+            Ok(count) => off.push((index, format!("has {count} frames, not {frames}"))),
+            Err(error) => off.push((index, error)),
+        }
+    }
+    let _ = std::fs::remove_file(scratch);
+    off
+}
+
+/// The picture packets a concat list (`concat_list`) gives, as the join reads them.
+fn frames_listed(list: &Path) -> Result<i64, String> {
+    let output = crate::util::ffprobe_command()
+        .args(["-v", "error", "-f", "concat", "-safe", "0", "-i"])
+        .arg(list)
+        .args([
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("ffprobe: {error}"))?;
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| "its frames couldn't be counted".to_owned())
+}
+
 /// The video packets in `file`'s first picture stream (read, not decoded).
 pub fn frames_in(file: &Path) -> Result<i64, String> {
     let output = crate::util::ffprobe_command()
@@ -721,6 +791,30 @@ mod tests {
                 frame_hash(&evaluate_seen(&after, frame + 63), &mut { key }),
             );
         }
+    }
+
+    #[test]
+    fn a_chunk_list_not_end_to_end_is_named() {
+        let chunk = |start, end| Chunk {
+            start,
+            end,
+            key: format!("{start}"),
+        };
+        assert_eq!(
+            not_end_to_end(&[chunk(10, 40), chunk(40, 90)], 10, 90),
+            None
+        );
+        // A boundary twice (an overlap), a chunk listed twice, a gap, a short end.
+        assert_eq!(
+            not_end_to_end(&[chunk(10, 40), chunk(30, 90)], 10, 90).unwrap(),
+            "chunk 2 of 2 is frames 30–90, where the one before ended at 40"
+        );
+        assert!(not_end_to_end(&[chunk(10, 40), chunk(10, 40), chunk(40, 90)], 10, 90).is_some());
+        assert!(not_end_to_end(&[chunk(10, 40), chunk(50, 90)], 10, 90).is_some());
+        assert_eq!(
+            not_end_to_end(&[chunk(10, 40)], 10, 90).unwrap(),
+            "the chunks end at frame 40, not 90"
+        );
     }
 
     #[test]
