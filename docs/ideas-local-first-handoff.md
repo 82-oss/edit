@@ -26,50 +26,26 @@ Changed on `mandalorian` only, outside the repo:
 
 ## What's left, in order
 
-### 1. Reboot `mandalorian`
+### 1. An empty video is stopping one prod project's exports
 
-Its NVIDIA driver is wedged (`NVRM: dmaAllocMapping_GM107: can't alloc VA space`). The desktop, Chrome, FFmpeg and prod's GPU work are stuck, and killing them doesn't help. It may need a hard power cycle. Booting into Windows counts as the reboot.
+Prod's copy of `YouTube video [649TcIBMrOQ].mp4` in project `p1794942765038-42080` is 0 bytes, dated Nov 19. Its exports have failed with "could not decode" since Nov 23 00:47, and the agent's frames fail the same way. It's the only empty file in prod's cloud cache.
 
-The full server test suite triggered this at 21:30 by running GPU tests beside prod's removal, and it was also running during the 20:30 freeze. The same driver error was in the log from 08:36, so prod's own load may trigger it too. That isn't settled.
-
-**Don't run the whole suite on `mandalorian` while prod is busy.** Use CI, or run named files one at a time.
+The download checks its size against the cloud's, so the cloud's copy may be empty too. That hasn't been checked. Look there first: if the cloud has the real video, remove the empty copy so it downloads again. If not, the video has to be brought in again. Edit should also refuse an empty original instead of caching it. Change nothing on prod without Sphe's word.
 
 ### 2. Finish checking `2b122605`
 
-Passing so far: typecheck, lint, 703 web tests, and the `team_docs`, `ideas`, `thumbnails` and `channel_access` server tests.
+GitHub's Check passed on `f464adcd`, which includes this change: all server tests on macOS, 0 failures.
 
-22 server test files failed across the full runs on the overloaded machine:
+On Linux after the Nov 23 reboot, run one file at a time: 10 of the 11 unproven files pass. `exports.test.ts` isn't a bug: it fails only when `TMPDIR` is inside the home folder, and passes otherwise.
 
-- **10 pass** when run alone, with and without this change.
-- **1 fails the same way without this change:** `exports.test.ts`, "an export that stops moving is started again by itself". It needs its own fix.
-- **11 haven't been run again**, so they're still unproven:
-
-```
-test/effect_inputs.test.ts
-test/effect_renders.test.ts
-test/effects.test.ts
-test/local_first.test.ts
-test/local_first_minutes.test.ts
-test/reviews_ask.test.ts
-test/rife.test.ts
-test/writer/import_stops.test.ts
-test/writer/local_first.test.ts
-test/writer/missing_recordings.test.ts
-test/writer/preview_away.test.ts
-```
-
-First look at the GitHub Actions Check for `2b122605` or later, since it runs these on a clean machine:
-
-```
-gh run list --branch main --limit 5
-```
-
-If one fails there, run it against the commit before (`bbe0bb4e`) to see whether this change caused it. To run one by hand on Linux with prod idle:
+**Only `test/rife.test.ts` is left to run on Linux**, with prod idle:
 
 ```
 cd app/apps/server
-bun test --timeout=30000 ./test/local_first.test.ts
+bun test --timeout=30000 ./test/rife.test.ts
 ```
+
+**Don't run GPU tests on `mandalorian` while prod is busy.** The driver error that wedged the machine twice on Nov 22 (`NVRM: dmaAllocMapping_GM107: can't alloc VA space`) came back twice at 00:55 on Nov 23 while `effect_renders` ran beside prod's work. It didn't wedge this time. That test also left Chrome processes running on the GPU, which had to be stopped by hand.
 
 ### 3. Try both changes in the real app
 
@@ -93,11 +69,11 @@ Run `bun ~/.cache/edit-prod-build/idle.ts 7790` first and swap only when it exit
 
 ## Continuing on Windows
 
-Windows is on the same PC as `mandalorian`, so booting into it also clears the wedged driver, and prod Edit is off until the PC is back in Linux.
+Windows is on the same PC as `mandalorian`, so prod Edit is off until the PC is back in Linux.
 
 - `git pull` on `main` gets everything in the repo, including this file.
 - **Edit doesn't run on Windows.** From there you can read and change the code, push, and use GitHub Actions as the check.
-- **Possible from Windows:** step 2 through CI, and the code for the items in step 5.
-- **Needs Linux or a Mac:** steps 3 and 4, and running the server tests by hand.
+- **Possible from Windows:** the code for the items in step 5, and for refusing an empty original in step 1.
+- **Needs Linux or a Mac:** the rest of steps 1 and 2, steps 3 and 4, and running the server tests by hand.
 - The session's memory, `~/.cache/edit-prod-build`, the prod service and prod's data are on the Linux side.
 - Commit only your own paths (`git commit -o -- <paths>`), since other sessions share the `mandalorian` checkout, and never add a `Co-authored-by` trailer.
