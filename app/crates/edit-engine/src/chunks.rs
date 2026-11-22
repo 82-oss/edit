@@ -459,6 +459,73 @@ pub fn frames_in(file: &Path) -> Result<i64, String> {
         .map_err(|_| "couldn't count the export's frames".to_owned())
 }
 
+/// The frames `file`'s first picture stream says it has, read from its
+/// index (the sample table: nothing demuxed or decoded, a few ms); a file
+/// with no picture, or one that won't open, has none to give.
+pub fn frames_indexed(file: &Path) -> Result<i64, String> {
+    let output = crate::util::ffprobe_command()
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_frames",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(file)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("ffprobe: {error}"))?;
+    if !output.status.success() {
+        return Err("it doesn't open".to_owned());
+    }
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "" => Err("it has no picture".to_owned()),
+        // No count in its index (never one of Edit's chunks, which are
+        // plain MP4/MOV): counted packet by packet instead.
+        "N/A" => frames_in(file),
+        text => text
+            .parse()
+            .map_err(|_| format!("its frame count reads {text:?}")),
+    }
+}
+
+/// Which of the kept chunk files (each with the frames its place in the plan
+/// says it holds) aren't whole, and why: checked from their indexes, a few at
+/// a time. A kept chunk is reused for days, so a short or long one would
+/// spoil every export of its stretch until it went.
+pub fn not_whole(kept: &[(PathBuf, i64)]) -> Vec<(PathBuf, String)> {
+    let mut bad = Vec::new();
+    for batch in kept.chunks(8) {
+        let found: Vec<Option<(PathBuf, String)>> = std::thread::scope(|scope| {
+            let running: Vec<_> = batch
+                .iter()
+                .map(|(file, frames)| {
+                    scope.spawn(move || match frames_indexed(file) {
+                        Ok(count) if count == *frames => None,
+                        Ok(count) => {
+                            Some((file.clone(), format!("it has {count} frames, not {frames}")))
+                        }
+                        Err(error) => Some((file.clone(), error)),
+                    })
+                })
+                .collect();
+            running
+                .into_iter()
+                .map(|thread| {
+                    thread
+                        .join()
+                        .unwrap_or_else(|_| Some((PathBuf::new(), "its check failed".to_owned())))
+                })
+                .collect()
+        });
+        bad.extend(found.into_iter().flatten());
+    }
+    bad
+}
+
 /// The picture's codec setup (SPS/PPS) in `file`, hashed: chunks joined
 /// without re-encoding must all have the same.
 pub fn setup_hash(file: &Path) -> Result<String, String> {

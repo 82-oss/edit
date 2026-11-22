@@ -2402,6 +2402,25 @@ fn export_chunked(
         Ok::<_, String>(chunks::split(project, plan, &key))
     })?;
     let last = chunks::Manifest::load(&dir, fps).filter(|_| reuse_last);
+    // A chunk kept from a run that stopped is reused only when it's whole: it
+    // opens and has the frames its place in the plan says. A short or long one
+    // went into every export of its stretch, failing each join ("joined 33826
+    // frames, not 33786", Marc) until the folder was cleared days later.
+    let kept: Vec<(PathBuf, i64)> = list
+        .iter()
+        .map(|chunk| (chunks::made(&dir, &chunk.key, extension), chunk.frames()))
+        .filter(|(file, _)| file.exists())
+        .collect();
+    for (file, why) in chunks::not_whole(&kept) {
+        crate::log::warn(
+            "export",
+            format!(
+                "export: a kept chunk isn't whole ({why}); rendering it again: {}",
+                file.display()
+            ),
+        );
+        let _ = std::fs::remove_file(&file);
+    }
     let mut pieces = Vec::new();
     let mut todo = Vec::new();
     let mut copied = 0;
@@ -4778,6 +4797,66 @@ mod tests {
             |frame| (frame / 30) % 2 == 1 || frame / 30 == 96,
             3000,
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A chunk kept from a run that stopped but short of its frames (Marc's
+    /// "joined 33826 frames, not 33786", never explained) is rendered again,
+    /// not joined: it failed both chunked tries and sent the export whole.
+    #[test]
+    fn a_kept_chunk_short_of_its_frames_is_rendered_again() {
+        let dir = temp_dir("chunks-kept-short");
+        let red = source(&dir, "red.mp4", "red", 0.5);
+        let blue = source(&dir, "blue.mp4", "blue", 1.0);
+        let options = ExportOptions::default();
+        let cache = dir.join("cache");
+        let project = cuts(&red, &blue, &[], 0);
+        let run = |name: &str| {
+            let plan = export_plan(&project, &options).unwrap();
+            let output = dir.join(name);
+            export_file(
+                &project,
+                &options,
+                &plan,
+                &output,
+                &cache,
+                &HashMap::new(),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+            output
+        };
+        let one = run("one.mp4");
+        let made = manifest(&cache);
+        assert!(made.chunks.len() >= 2, "{:?}", made.chunks);
+        // The second chunk's file as a stopped run would have kept it, but a
+        // second short, cut from the export's start (the same encoder's setup).
+        let folder = crate::chunks::folder(&cache, "chunky");
+        let second = &made.chunks[1];
+        let short = crate::chunks::made(&folder, &second.key, "mp4");
+        let cut = crate::util::ffmpeg_command()
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&one)
+            .args(["-map", "0:v", "-c", "copy", "-frames:v"])
+            .arg((second.frames - 30).to_string())
+            .arg(&short)
+            .status()
+            .unwrap();
+        assert!(cut.success());
+        assert_eq!(
+            crate::chunks::frames_indexed(&short).unwrap(),
+            second.frames - 30
+        );
+        // Nothing to copy from the last export: every chunk is rendered or kept.
+        std::fs::remove_file(folder.join("manifest-v1.json")).unwrap();
+        let two = run("two.mp4");
+        assert_eq!(
+            manifest(&cache).output,
+            two,
+            "made of chunks, not exported whole"
+        );
+        shows(&two, |frame| (frame / 30) % 2 == 1, 3000);
         std::fs::remove_dir_all(dir).ok();
     }
 
