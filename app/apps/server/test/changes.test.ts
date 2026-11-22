@@ -3,7 +3,8 @@
 // thing, everything after a revision, an undo itself undone, and what's kept
 // read back after a restart.
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import fs from "node:fs";
 
 import * as changes from "../src/changes.ts";
 import { dispatch } from "../src/mcp/index.ts";
@@ -105,6 +106,45 @@ test("a version kept aside is listed with the changes and brought back as the ed
     expect(missing.isError).toBe(true);
     expect(missing.content[0]!.text).toContain("no kept version");
   } finally {
+    cleanup();
+  }
+});
+
+test("a project's first change after a start goes on the end of its kept changes without reading them; they're read when asked for, each once", async () => {
+  // Nov 22, the Linux prod Edit: two projects' kept changes of 185 and 168 MB, read and parsed on the server's thread at
+  // the first change of each after every start (0.8 s each).
+  const { app, cleanup } = fixtureHome("changes-unread");
+  try {
+    changes.start(app);
+    const id = app.store.create("Big", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await app.store.update(id, "ui-abc", (project) => void project.clips.push(solid("c1", 0)));
+    const before = app.store.get(id)!.rev;
+    // A restart: nothing of it in memory.
+    changes.forgetForTests();
+    const file = `${app.store.home}/projects/changes/${id}.jsonl`;
+    const lines = () => fs.readFileSync(file, "utf8").split("\n").filter(Boolean).length;
+    const had = lines();
+    const read = spyOn(fs, "readFileSync");
+    try {
+      await app.store.update(id, "ui-abc", (project) => void project.clips.push(solid("c2", 30)));
+      expect(read.mock.calls.filter(([path]) => String(path) === file)).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+    expect(lines()).toBe(had + 1);
+    // Asked for: the one before the restart and the one after, each once.
+    const listed = (await call(app, id, "edit_history", { count: 10 })).content[0]!.text!;
+    expect(listed.match(new RegExp(`rev ${before},`, "g"))).toHaveLength(1);
+    expect(listed.match(new RegExp(`rev ${before + 1},`, "g"))).toHaveLength(1);
+    // Fifty saved unread after another restart: read off to the side, every change in it once.
+    changes.forgetForTests();
+    for (let n = 0; n < 50; n++) await app.store.update(id, "ui-abc", (project) => void ((project.clips[0] as unknown as { opacity: number }).opacity = n / 100));
+    await Bun.sleep(50);
+    const all = (await call(app, id, "edit_history", { count: 100 })).content[0]!.text!.split("\n").filter((line) => line.startsWith("- rev "));
+    expect(all).toHaveLength(52);
+    expect(new Set(all.map((line) => line.split(",")[0])).size).toBe(52);
+  } finally {
+    changes.forgetForTests();
     cleanup();
   }
 });

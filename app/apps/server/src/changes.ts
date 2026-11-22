@@ -16,6 +16,7 @@ import * as patches from "./patch.ts";
 import { join } from "./paths.ts";
 import { registerTool, text, handlerFor } from "./mcp/registry.ts";
 import { agentCalls } from "./store.ts";
+import * as thread from "./thread.ts";
 
 /** Changes kept a project. */
 const MOST = 300;
@@ -38,30 +39,82 @@ export interface Change {
 }
 
 const kept = new Map<string, Change[]>();
+/**
+ * Changes saved this run to a project whose kept changes aren't read yet: added to the end of its file, and to its list
+ * once that's read. Read on the first change after a start, a big project's file held the server's thread (Nov 22, the
+ * Linux prod Edit: 185 and 168 MB, 0.8 s each, at every start); now it's read when something asks for its changes, or
+ * a line at a time off to the side once LOAD_AFTER have been saved, to cut it to the last MOST.
+ */
+const unread = new Map<string, Change[]>();
+const LOAD_AFTER = 50;
+const loading = new Set<string>();
 
 function file(app: App, id: string): string {
   return join(app.store.home, "projects", "changes", `${id}.jsonl`);
 }
 
+/** The changes in a file's text, a line each; a line cut short by a crash is passed over. */
+function parsed(text: string): Change[] {
+  const list: Change[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      list.push(JSON.parse(line) as Change);
+    } catch {
+      // A line cut short by a crash: the rest are kept.
+    }
+  }
+  return list;
+}
+
+/** What was read, with what this run saved that it may not have had yet (by rev, once each), the last MOST. */
+function settle(id: string, read: Change[]): Change[] {
+  const revs = new Set(read.map((one) => one.rev));
+  const list = [...read, ...(unread.get(id) ?? []).filter((one) => !revs.has(one.rev))].sort((a, b) => a.rev - b.rev).slice(-MOST);
+  unread.delete(id);
+  kept.set(id, list);
+  return list;
+}
+
 /** A project's changes, oldest first (read from disk once). */
 function changesOf(app: App, id: string): Change[] {
-  let list = kept.get(id);
+  const list = kept.get(id);
   if (list !== undefined) return list;
-  list = [];
+  let text = "";
   try {
-    for (const line of fs.readFileSync(file(app, id), "utf8").split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        list.push(JSON.parse(line) as Change);
-      } catch {
-        // A line cut short by a crash: the rest are kept.
-      }
-    }
+    text = fs.readFileSync(file(app, id), "utf8");
   } catch {
     // None kept yet.
   }
-  kept.set(id, list.slice(-MOST));
-  return kept.get(id)!;
+  return settle(id, parsed(text));
+}
+
+/** Reads a project's changes off to the side: the file read without waiting on it, each line parsed with a breath. */
+async function loadAside(app: App, id: string): Promise<void> {
+  if (loading.has(id) || kept.has(id)) return;
+  loading.add(id);
+  try {
+    let text = "";
+    try {
+      text = await Bun.file(file(app, id)).text();
+    } catch {
+      // None kept yet.
+    }
+    const breathe = thread.breather();
+    const read: Change[] = [];
+    for (const line of text.split("\n")) {
+      await breathe();
+      if (line.trim() === "") continue;
+      try {
+        read.push(JSON.parse(line) as Change);
+      } catch {
+        // A line cut short by a crash.
+      }
+    }
+    if (!kept.has(id)) settle(id, read);
+  } finally {
+    loading.delete(id);
+  }
 }
 
 /** Whether the person or an agent changed `id` here (its kept changes: since Nov 11, the last MOST). */
@@ -96,7 +149,21 @@ function record(app: App, id: string, before: Project, after: Project, rev: numb
     undo: patches.diff(after, before),
     touched: [...patches.touched(forward)],
   };
-  const list = changesOf(app, id);
+  const list = kept.get(id);
+  if (list === undefined) {
+    // Not read yet: added to the file's end, read when it's asked for (see `unread`).
+    const waiting = unread.get(id) ?? [];
+    waiting.push(change);
+    unread.set(id, waiting);
+    try {
+      fs.mkdirSync(join(app.store.home, "projects", "changes"), { recursive: true });
+      fs.appendFileSync(file(app, id), `${JSON.stringify(change)}\n`);
+    } catch (error) {
+      diag.warn("changes", `${id}: keeping a change: ${diag.messageOf(error)}`);
+    }
+    if (waiting.length >= LOAD_AFTER) void loadAside(app, id).catch((error: unknown) => diag.warn("changes", `${id}: reading its changes: ${diag.messageOf(error)}`));
+    return;
+  }
   list.push(change);
   if (list.length > MOST) list.splice(0, list.length - MOST);
   try {
@@ -291,4 +358,5 @@ export function byHand(app: App, id: string, now: Project, pick: (clip: Clip) =>
 /** Tests: forget what's kept in memory (the files stay). */
 export function forgetForTests(): void {
   kept.clear();
+  unread.clear();
 }
