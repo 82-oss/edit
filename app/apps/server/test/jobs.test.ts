@@ -754,3 +754,26 @@ test("rows woken together start together, however long each takes to settle; a r
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Nov 22: a waiting row's step is its wait line, and a person's Retry on a share stepped to it, which read as getting
+// further and started the same failure's count again; a real next step still does.
+test("a retry stepping to the row's own step (its wait line) isn't progress: the same failure's count goes on", () => {
+  const dir = home();
+  try {
+    const key = jobs.begin(dir, "share", "p1", {}, "", "review copy");
+    jobs.step(dir, key, "uploading");
+    for (let n = 1; n <= 2; n++) jobs.wait(dir, key, new Error("Something nobody has named"), "Waiting to try again. The link comes by itself.");
+    expect(jobs.get(dir, key)!.args.same_count).toBe(2);
+    // Retry: the share steps to where it is, then runs on to the step it failed at.
+    jobs.step(dir, key, jobs.get(dir, key)!.step!);
+    jobs.step(dir, key, "uploading");
+    expect(jobs.get(dir, key)!.args.same_count).toBe(2);
+    jobs.wait(dir, key, new Error("Something nobody has named"), "Waiting to try again. The link comes by itself.");
+    expect(jobs.get(dir, key)!.args.same_count).toBe(3);
+    // Getting further is still progress.
+    jobs.step(dir, key, "publishing");
+    expect(jobs.get(dir, key)!.args.same_count).toBeUndefined();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

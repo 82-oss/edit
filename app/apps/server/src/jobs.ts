@@ -267,13 +267,17 @@ export function step(home: string | null, key: string, step: string, args: Recor
     // Getting further forgives its waits and restarts so far (verify.md finding 3: otherwise every blip waited longer):
     // a step this row has never reached before, not one it reaches again after a wait (Fable's last look, Nov 19: a
     // file the relay refused every time was tried every minute for good, each start's first step read as progress).
+    // Nor the step it's at now, noted as reached all the same (Nov 22): a waiting row's is its wait line, which a
+    // person's Retry stepped to, and the same failure's count started again.
     const seen = Array.isArray(job.args.steps_seen) ? (job.args.steps_seen as unknown[]).filter((one): one is string => typeof one === "string") : [];
     if (!seen.includes(step)) {
-      job.attempts = 0;
-      delete job.put_off;
-      delete job.crashy;
-      delete job.args.same_why;
-      delete job.args.same_count;
+      if (step !== job.step) {
+        job.attempts = 0;
+        delete job.put_off;
+        delete job.crashy;
+        delete job.args.same_why;
+        delete job.args.same_count;
+      }
       job.args.steps_seen = [...seen, step].slice(-STEPS_KEPT);
     }
     job.step = step;
