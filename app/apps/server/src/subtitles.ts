@@ -49,6 +49,7 @@ import { compareKeys } from "./stable.ts";
 import { isSubtitled, SUBTITLE_NAME } from "./store.ts";
 import { join } from "./paths.ts";
 import { fixTurns } from "./turns.ts";
+import * as changes from "./changes.ts";
 import { spills as post } from "./ai_claude.ts";
 import type { Transcript, Word } from "./transcribe.ts";
 
@@ -1139,7 +1140,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
   if (!latestRun(projectId, run)) return SUPERSEDED;
   // Per voice: lines in footage with seats that sat under the face, and that didn't.
   const seatedLines = new Map<string, [under: number, bottom: number]>();
-  const [after, [placed, skipped, outside, texts]] = await app.store.update(projectId, "agent", (edited) => {
+  const [after, [placed, skipped, outside, texts, leftOutByHand, heldByHand]] = await app.store.update(projectId, "agent", (edited) => {
     seatedLines.clear();
     leftOff = 0;
     const shownNow = clashing.length > 0 ? burned.onTimeline(edited).shown : [];
@@ -1156,6 +1157,11 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
       })
       .map((track) => track.id)
       .reverse();
+    // The person's own fixes to the subtitles a re-run replaces: lines they deleted stay out, holds they lengthened stay long.
+    const fixes = handFixes(app, projectId, edited);
+    let handLeftOut = 0;
+    let handHeld = 0;
+    const deletedByHand = (line: Line, start: number, end: number) => fixes.deleted.some((one) => one.words === wordsKey(line.text) && sameMoment(one, start, end));
     edited.clips = edited.clips.filter(
       (clip) => !((clip.name ?? "").startsWith(NAME) && clip.start < to && clipEnd(clip) > from),
     );
@@ -1185,11 +1191,21 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     }
     const counted = new Set<Line>(pieces.map(([line]) => line));
     const outsideCount = shownLines.length - counted.size;
-    for (const [line, start, end] of pieces) {
-      if (end <= start) {
+    for (const [index, [line, start, said]] of pieces.entries()) {
+      if (said <= start) {
         skippedCount += 1;
         continue;
       }
+      if (deletedByHand(line, start, said)) {
+        handLeftOut += 1;
+        continue;
+      }
+      // Held as long as the person made it, never into the next line shown.
+      const words = wordsKey(line.text);
+      const held = fixes.lengthened.find((one) => one.words === words && sameMoment(one, start, said));
+      const next = pieces.slice(index + 1).find(([other, from, to]) => from > start && !deletedByHand(other, from, to))?.[1] ?? Number.MAX_SAFE_INTEGER;
+      const end = held !== undefined && held.end > said ? Math.max(said, Math.min(held.end, next, to)) : said;
+      if (end > said) handHeld += 1;
       if (burnedIn === "leave_off" && burned.over(shownNow, start, end)) {
         leftOff += 1;
         continue;
@@ -1275,7 +1291,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     // One colour per person, ΔE 28 apart, the same rule as add_subtitles';
     // each person and their lines named by id (`project.people`).
     seams.people.oneColourPerPerson(edited);
-    return [placedCount, skippedCount, outsideCount, starredTexts] as const;
+    return [placedCount, skippedCount, outsideCount, starredTexts, handLeftOut, handHeld] as const;
   });
   // The colours as given (a voice's person's).
   for (const voice of voices.values()) {
@@ -1312,9 +1328,53 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     ...(covers > 0 ? { burned_in_subtitles_covered: covers } : {}),
     ...(unread.length > 0 ? { not_yet_read_for_burned_in_subtitles: unread.map((one) => one.name) } : {}),
     texts_starred: texts,
+    ...(leftOutByHand > 0 ? { deleted_by_hand_left_out: leftOutByHand } : {}),
+    ...(heldByHand > 0 ? { holds_lengthened_by_hand_kept: heldByHand } : {}),
     speakers: listedSpeakers,
     mutes: muted,
   };
+}
+
+/** A line's words as a re-run knows them again: each word's first letter and length (a starred word is the same word). */
+function wordsKey(text: string): string {
+  return text.toLowerCase().split(/\s+/u).map((word) => word.replace(/[^\p{L}\p{N}*]/gu, "")).filter(Boolean).map((word) => `${word[0]}${word.length}`).join(" ");
+}
+
+/** Whether a subtitle the person fixed is the one at `start`–`end`: overlapping it by half the shorter of the two. */
+function sameMoment(one: { start: number; end: number }, start: number, end: number): boolean {
+  return Math.min(one.end, end) - Math.max(one.start, start) >= 0.5 * Math.min(one.end - one.start, end - start);
+}
+
+/**
+ * The person's fixes to Repack's subtitles, from the changes kept (`changes.byHand`): the lines they deleted (and
+ * haven't put back), and the ones they lengthened, as their net change (the newest after against the oldest before).
+ */
+function handFixes(app: App, projectId: string, project: Project): { deleted: { words: string; start: number; end: number }[]; lengthened: { words: string; start: number; end: number }[] } {
+  const ours = (clip: Clip) => clip.type === "text" && (clip.name ?? "").startsWith(NAME);
+  const net = new Map<string, { before: Clip | null; after: Clip | null }>();
+  for (const edit of changes.byHand(app, projectId, project, ours)) {
+    const id = (edit.after ?? edit.before)!.id;
+    const seen = net.get(id);
+    // Newest first: the first seen is the newest after; each older one moves the before back.
+    if (seen === undefined) net.set(id, { ...edit });
+    else seen.before = edit.before;
+  }
+  const textOf = (clip: Clip) => (clip.type === "text" ? clip.text : "");
+  const here = project.clips.filter(ours);
+  const deleted: { words: string; start: number; end: number }[] = [];
+  const lengthened: { words: string; start: number; end: number }[] = [];
+  for (const { before, after } of net.values()) {
+    if (before === null) continue;
+    const words = wordsKey(textOf(before));
+    const span = { words, start: before.start, end: clipEnd(before) };
+    if (after === null) {
+      // Put back since (their undo, or a line typed again): not a deletion.
+      if (!here.some((clip) => wordsKey(textOf(clip)) === words && sameMoment(span, clip.start, clipEnd(clip)))) deleted.push(span);
+    } else if (clipEnd(after) > clipEnd(before)) {
+      lengthened.push({ words: wordsKey(textOf(after)), start: after.start, end: clipEnd(after) });
+    }
+  }
+  return { deleted, lengthened };
 }
 
 /**

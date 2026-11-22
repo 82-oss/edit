@@ -11,7 +11,7 @@ import fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
-import type { Project } from "./model.ts";
+import type { Clip, Project } from "./model.ts";
 import * as patches from "./patch.ts";
 import { join } from "./paths.ts";
 import { registerTool, text, handlerFor } from "./mcp/registry.ts";
@@ -253,6 +253,39 @@ export async function undo(app: App, id: string, given: { revs?: number[]; backT
     Object.assign(project, restored);
   }, app.store.get(id) ?? undefined);
   return `Undone: ${newestFirst.map((one) => `rev ${one.rev} (${one.what})`).join("; ")}. It's one new change: undo_changes takes it back too.`;
+}
+
+/** A clip the person changed by hand, as it was before and after (null: not there). */
+export interface HandEdit {
+  before: Clip | null;
+  after: Clip | null;
+}
+
+/**
+ * The person's own changes to the clips `pick` takes, newest first, read from the changes kept (the last MOST): each
+ * of the person's changes is seen as the project was either side of it by taking every change after it back from
+ * `now`, so a clip they deleted, moved or lengthened is told from one an agent's re-run replaced since. What a
+ * re-run keeps of their hand fixes (repack_subtitles, Nov 22: lines deleted and holds lengthened came back).
+ */
+export function byHand(app: App, id: string, now: Project, pick: (clip: Clip) => boolean): HandEdit[] {
+  const list = changesOf(app, id);
+  const clips = new Map(now.clips.map((clip) => [clip.id, clip]));
+  const out: HandEdit[] = [];
+  for (let index = list.length - 1; index >= 0; index--) {
+    const change = list[index]!;
+    const undo = change.undo.lists.clips;
+    if (undo === undefined) continue;
+    const touched = [...undo.remove, ...undo.put.map((item) => (item as { id: string }).id)];
+    const after = new Map(touched.map((one) => [one, clips.get(one) ?? null]));
+    for (const one of undo.remove) clips.delete(one);
+    for (const item of undo.put) clips.set((item as Clip).id, item as Clip);
+    if (change.by !== "person") continue;
+    for (const one of new Set(touched)) {
+      const [was, is] = [clips.get(one) ?? null, after.get(one) ?? null];
+      if ((was !== null && pick(was)) || (is !== null && pick(is))) out.push({ before: was, after: is });
+    }
+  }
+  return out;
 }
 
 /** Tests: forget what's kept in memory (the files stay). */

@@ -6,6 +6,7 @@ import * as aiModule from "../src/ai_claude.ts";
 
 import type { App } from "../src/app.ts";
 import { hex, subtitleName, timing, transcriptOf } from "../src/captions_core.ts";
+import * as changes from "../src/changes.ts";
 import { baseRouter, respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import type { AudioClip, Media, Project, TextClip } from "../src/model.ts";
@@ -113,6 +114,41 @@ test("repack_subtitles subtitles the footage in its speakers' colours, mutes and
     // An empty span says so.
     expect(await call(app, "repack_subtitles", { project_id: id, start: 5, end: 5 })).toEqual({ text: "the span is empty", isError: true });
   } finally {
+    cleanup();
+  }
+});
+
+test("repack_subtitles run again keeps the person's fixes: a line they deleted stays out, a hold they lengthened stays long", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("repack-hand");
+  try {
+    changes.start(app);
+    const id = await footage(app, dir);
+    await call(app, "repack_subtitles", { project_id: id });
+    const texts = () => store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text").map((clip) => [clip.text, clip.start, clip.duration]);
+    expect(texts()).toEqual([["Stop f****** moving.", 30, 60], ["Okay.", 90, 39]]);
+    // By hand, in the editor: "Okay." deleted, the officer's line held half a second longer.
+    await store.update(id, "ui-1", (project) => {
+      project.clips = project.clips.filter((clip) => !(clip.type === "text" && clip.text === "Okay."));
+    });
+    await store.update(id, "ui-1", (project) => {
+      const line = project.clips.find((clip) => clip.type === "text" && clip.text.startsWith("Stop"))!;
+      line.duration = 75;
+    });
+    for (let run = 0; run < 2; run++) {
+      const { text } = await call(app, "repack_subtitles", { project_id: id });
+      expect(texts()).toEqual([["Stop f****** moving.", 30, 75]]);
+      expect(JSON.parse(text.slice(text.indexOf("{")))).toMatchObject({ deleted_by_hand_left_out: 1, holds_lengthened_by_hand_kept: 1 });
+    }
+    // Put back by hand: shown again on the next run, the hold before it stopping where it starts.
+    await store.update(id, "ui-1", (project) => {
+      const line = structuredClone(project.clips.find((clip) => clip.type === "text")!) as TextClip;
+      Object.assign(line, { id: "back", text: "Okay.", start: 105, duration: 24 });
+      project.clips.push(line);
+    });
+    await call(app, "repack_subtitles", { project_id: id });
+    expect(texts()).toEqual([["Stop f****** moving.", 30, 60], ["Okay.", 90, 39]]);
+  } finally {
+    changes.forgetForTests();
     cleanup();
   }
 });
