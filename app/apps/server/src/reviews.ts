@@ -760,12 +760,21 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
   return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }) });
 }
 
-/** Whether a share waits out `error` by itself: only what's surely passing, never one of its own refusals. */
-function waitsOn(error: unknown): boolean {
+/**
+ * Whether a share waits out `error` by itself: anything but the person's to answer (its own refusals are
+ * `NeedsPerson`: "export the whole edit first") and Edit's own bug. What nothing recognises waits as passing, as an
+ * import's does (Nov 22: it stopped the share as if it were the person's to fix), and the same failure four times in
+ * a row stops it as Edit's (jobs.ts `postpone`); one met by its export keeps the export's rule (exports.ts `waitsOn`:
+ * it fails with Retry, as it's often Edit's own fault and a blind try would hold the encoder).
+ */
+function waitsOn(error: unknown, exporting: boolean): boolean {
   if (stillRendering(error)) return true;
   const kind = failure.surely(error);
-  return kind !== null && failure.waitsByItself(kind);
+  return kind === null ? !exporting : failure.waitsByItself(kind);
 }
+
+/** What a share waiting on a failure nothing recognises says: what it waits on is its next try. */
+const UNKNOWN_WAIT = "Sharing ran into a problem Edit didn't recognise: it tries again by itself. The link comes once it's through.";
 
 /**
  * Its graphics still rendering after the share's 20 minutes (effects.ts `waitForRenders`), or behind another
@@ -888,9 +897,12 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
   const key = shareKey(projectId);
   const first = argsOf(home, projectId);
   sharing.set(projectId, shareJob(home, projectId)?.step ?? "sharing");
+  let exporting = false;
   try {
     if (first.export !== undefined && first.path === undefined) {
+      exporting = true;
       const path = await exportStep(app, projectId, first);
+      exporting = false;
       haltShare(projectId);
       jobs.step(home, key, "review copy", { path });
     }
@@ -902,15 +914,25 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
     const message = diag.messageOf(error);
     const cancelled = message === "the share was cancelled" || message === "the export was cancelled" || droppedShares.has(projectId);
     if (cancelled) jobs.end(home, key);
-    else if (waitsOn(error)) {
+    else if (waitsOn(error, exporting)) {
       // Trouble that passes (the line dropped, the relay busy, a full disk): the share waits and goes on from its step
       // by itself; nothing says "Sharing stopped", and the link's notice comes when it's up (honest council change 7f).
-      const kind = failure.surely(error) ?? "passing";
-      // Said as what it waits on: its graphics, a review copy that stood still (Edit makes it again), the connection.
+      const known = failure.surely(error);
+      const kind = known ?? "passing";
+      // Said as what it waits on: its graphics, a review copy that stood still (Edit makes it again), the connection,
+      // or for what nothing recognises its next try.
       const own = error instanceof failure.StoodStill || error instanceof failure.StepTimedOut ? `${message.charAt(0).toUpperCase()}${message.slice(1).replace(/\.?$/u, ".")} The link comes by itself.` : null;
-      const at = jobs.wait(home, key, error, stillRendering(error) ? "Waiting for its graphics to render. The link comes by itself." : own ?? (kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`));
-      diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${failure.surely(error)}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
-      throw new ShareWaits(message);
+      const rendering = stillRendering(error);
+      const line = rendering ? "Waiting for its graphics to render. The link comes by itself." : own ?? (known === null ? UNKNOWN_WAIT : kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`);
+      const at = jobs.wait(home, key, error, line);
+      // The same failure nothing recognises four times in a row: its row is failed as Edit's to fix (jobs.ts
+      // `postpone`), and the share stops, said as "Sharing stopped" with Retry, rather than waiting for good.
+      if (shareJob(home, projectId)?.state === "failed") {
+        diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing stopped after the same failure again and again: ${message}`);
+      } else {
+        diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${known ?? "unrecognised"}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
+        throw new ShareWaits(message);
+      }
     } else jobs.settle(home, key, "failed", { error: message, build: BUILD });
     if (cancelled) throw new Error(message === "the export was cancelled" ? message : "the share was cancelled");
     throw error;
@@ -966,7 +988,7 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
       );
       haltShare(projectId);
       const live = app.store.get(projectId);
-      if (live === null) throw new Error("no such project");
+      if (live === null) throw new failure.NeedsPerson("no such project");
       if (tries >= 2 || (seams.broll.exportReady?.(app.store, live.project, 0, Number.POSITIVE_INFINITY) ?? null) === null) taken = live.project;
     }
     project = taken;
@@ -1008,10 +1030,10 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
   if (args.published !== undefined) return args.published;
   const resumed = (shareJob(home, projectId)?.attempts ?? 0) > 0;
   const live = app.store.get(projectId);
-  if (live === null) throw new Error("no such project");
+  if (live === null) throw new failure.NeedsPerson("no such project");
   const path = args.path ?? null;
   const chosen = shareable(listExports(home, projectId), path);
-  if (chosen === undefined) throw new Error(path === null ? "export the whole edit first: a review shares an export" : "that isn't one of this project's whole exports or an export of its opening");
+  if (chosen === undefined) throw new failure.NeedsPerson(path === null ? "export the whole edit first: a review shares an export" : "that isn't one of this project's whole exports or an export of its opening");
   let replace = args.replace === true;
   // A version is gone over only while no one has a note on it: the rule is asked again here, with the notes heard
   // now, before anything goes up over it (the share may have been asked for an hour ago, its label read from what Edit
@@ -1025,7 +1047,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     }
   }
   const latest = replace ? newestVersion(home, projectId) : null;
-  if (replace && latest === null) throw new Error("nothing shared yet to replace");
+  if (replace && latest === null) throw new failure.NeedsPerson("nothing shared yet to replace");
   const exportedTimeline = chosen.timeline ?? timelineHash(live.project);
   // When the video's edit was taken (its fixes are those made before): as the share noted it, else now when the export
   // is the edit as it is now, else unknown, and no note is marked by it.

@@ -24,7 +24,8 @@ afterEach(async () => {
 });
 
 /** The cloud as a share sees it: R2 by key, Repack's versions (with their meta), every call kept. */
-function fakeCloud(refuse: () => boolean = () => false) {
+/** `refuse`: the publish fails (true: "Repack didn't answer"; words: with those). */
+function fakeCloud(refuse: () => boolean | string = () => false) {
   const r2 = new Map<string, number>();
   const versions: { n: number; meta: Record<string, unknown> }[] = [];
   const calls: string[] = [];
@@ -46,7 +47,8 @@ function fakeCloud(refuse: () => boolean = () => false) {
       if (name === "reviews:setMeta") return null as never;
       calls.push(name);
       if (name === "reviews:publish") {
-        if (refuse()) throw new Error("Repack didn't answer");
+        const refused = refuse();
+        if (refused !== false) throw new Error(refused === true ? "Repack didn't answer" : refused);
         const n = versions.length + 1;
         versions.push({ n, meta: (args as { meta: Record<string, unknown> }).meta });
         return { reviewId: "r1", url: "https://review.test/r1", version: n } as never;
@@ -242,6 +244,53 @@ test("a share that meets trouble that passes waits and says the link comes by it
     // The copy and poster aren't sent again: only the publish, which failed, then went.
     expect(steps()).toEqual(["reviews:publish", "reviews:publish"]);
     expect(reviews.shareNow(home, id).share).toMatchObject({ state: "done" });
+  } finally {
+    cleanup();
+  }
+});
+
+// Nov 22: a share read only what was surely passing, so a failure nothing recognised stopped it as the person's to fix
+// ("Sharing stopped"), where an import waits those out. Now it waits too, saying what it waits on, and the same failure
+// four times in a row stops it as Edit's; its own refusals the person answers still stop it at once.
+test("a share failing for something nobody has named waits, saying so, and stops as Edit's after the same failure four times", async () => {
+  const { app, home, id, path, copy, poster, work, cleanup } = await exported("share-unknown");
+  fakeCloud(() => "the page's answer had no version in it");
+  const failure = await import("../src/failure.ts");
+  const waits = { passing: [...failure.PASSING_WAITS.value], every: failure.PASSING_EVERY_MS.value };
+  const lines: (string | undefined)[] = [];
+  const wait = jobs.wait;
+  spies.push(spyOn(jobs, "wait").mockImplementation((...given: Parameters<typeof jobs.wait>) => (lines.push(given[3]), wait(...given))));
+  try {
+    // Its waits made short, and woken by them as the server's table does.
+    failure.PASSING_WAITS.value = [20, 20, 20];
+    failure.PASSING_EVERY_MS.value = 20;
+    const resumers = { share: (job: jobs.Job) => reviews.resumeShareJob(app, job) };
+    jobs.useResumers(home, resumers);
+    fs.mkdirSync(work, { recursive: true });
+    fs.copyFileSync(path, copy);
+    fs.writeFileSync(poster, "jpg");
+    cutShort(home, id, "publishing", { checked: true, uploaded: true });
+    await jobs.resume(home, resumers, ["share"]);
+    for (let tries = 0; tries < 1000 && jobs.get(home, `share:${id}`)?.state !== "failed"; tries++) await Bun.sleep(10);
+    // Waited three times, each saying what it waits on; the fourth of the same stopped it as Edit's to fix.
+    expect(lines).toEqual(Array(4).fill("Sharing ran into a problem Edit didn't recognise: it tries again by itself. The link comes once it's through."));
+    expect(jobs.get(home, jobs.keyOf("share", id))).toMatchObject({ state: "failed", error: "the page's answer had no version in it" });
+    expect(reviews.shareNow(home, id).share).toMatchObject({ state: "failed" });
+  } finally {
+    failure.PASSING_WAITS.value = waits.passing;
+    failure.PASSING_EVERY_MS.value = waits.every;
+    cleanup();
+  }
+});
+
+test("a share's own refusal the person answers (no whole export to share) stops it at once, never waiting", async () => {
+  const { app, home, id, cleanup } = await exported("share-refused");
+  fakeCloud();
+  try {
+    fs.writeFileSync(nodePath.join(home, "exports.json"), JSON.stringify({ [id]: [] }));
+    cutShort(home, id, "publishing", { checked: true, uploaded: true });
+    await carryOn(app, home, id);
+    expect(jobs.get(home, jobs.keyOf("share", id))).toMatchObject({ state: "failed", error: "export the whole edit first: a review shares an export" });
   } finally {
     cleanup();
   }
