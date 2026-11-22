@@ -48,6 +48,8 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   // scripts saved before that (Nov 4) are named once now, before anything else writes them.
   store.hooks.withSharedKeys = handoff.withSharedKeys;
   handoff.stampAll(data);
+  // And a master named while it went up whose upload a restart or a failed try came between: named once it's up.
+  void handoff.settlePending(data);
   // Claude's jobs are written down in Edit's job table, so a restart carries them on (work.ts), and stopped where they are before Edit restarts itself.
   jobs.useHome(app.store.home);
   holdBeforeRestart();

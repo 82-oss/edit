@@ -168,3 +168,45 @@ test("Start the edit answers at once with its project while the folder master's 
     cleanup();
   }
 });
+
+// Nov 21 audit: a master named while it went up (`nameShared`) was named for every Mac only by the share that sent it.
+// One failed try, or a restart mid-upload, and nothing named it again, though the job table's next try put it up.
+test("a folder case's master is named for every Mac once a later try puts it up, and at start once it's up", async () => {
+  const { spyOn } = await import("bun:test");
+  const cloud = await import("../../src/cloud.ts");
+  const cloudMedia = await import("../../src/cloud_media.ts");
+  const jobs = await import("../../src/jobs.ts");
+  const { dir: home, cleanup } = scratch("folder-case-later");
+  const real = cloud.uploadFile;
+  let tries = 0;
+  const up = spyOn(cloud, "uploadFile").mockImplementation((...args: Parameters<typeof real>) => (++tries === 1 ? Promise.reject(new Error("The socket connection was closed unexpectedly")) : real(...args)));
+  try {
+    const { dir } = imported(home);
+    const master = new Uint8Array(4096).map((_, at) => (at * 11) % 241);
+    fs.writeFileSync(join(dir, "compilation", "00.mp4"), master);
+    const hash = createHash("sha256").update(master).digest("hex");
+    const key = `edit/originals/sha256/${hash}/00.mp4`;
+    const data = store.dataDir(home);
+    await handoff.nameShared(data, ID);
+    await expect(handoff.share(data, ID)).rejects.toThrow("didn't go up yet");
+    expect(store.read(dir).parts?.[0]?.mediaSource).toBeUndefined();
+    // The table's next try.
+    const row = jobs.get(home, jobs.keyOf("upload", "-", `sha256:${hash}`))!;
+    cloudMedia.resumeUpload(home, row.args);
+    for (let i = 0; i < 200 && store.read(dir).parts?.[0]?.mediaSource === undefined; i++) await Bun.sleep(10);
+    expect(store.read(dir).parts?.[0]).toMatchObject({ mediaSource: `sha256:${hash}`, originalKey: key });
+
+    // A restart between the upload and the share's end: named at start, the registry saying it's up.
+    const body = JSON.parse(fs.readFileSync(join(dir, "script.json"), "utf8")) as { parts: Record<string, unknown>[] };
+    delete body.parts[0]!.mediaSource;
+    delete body.parts[0]!.originalKey;
+    fs.writeFileSync(join(dir, "script.json"), JSON.stringify(body));
+    handoff.keepShared(dir, join(dir, "compilation", "00.mp4"), `sha256:${hash}`, key, true);
+    expect(handoff.stampShared(dir)).toBe(false);
+    await handoff.settlePending(data);
+    expect(store.read(dir).parts?.[0]).toMatchObject({ mediaSource: `sha256:${hash}`, originalKey: key });
+  } finally {
+    up.mockRestore();
+    cleanup();
+  }
+});

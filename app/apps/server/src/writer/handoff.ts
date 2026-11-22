@@ -22,6 +22,7 @@ import { writeAtomic } from "../files.ts";
 import { isFile, join, parent } from "../paths.ts";
 import { hearsAll, MODEL as SCRIBE, serialize, type Transcript } from "../transcribe.ts";
 import * as drive from "./drive.ts";
+import * as jobs from "../jobs.ts";
 import * as hearing from "./hearing.ts";
 import { named } from "./jobs.ts";
 import * as media from "./media.ts";
@@ -276,7 +277,11 @@ export async function share(data: string, id: string): Promise<string> {
       // This Mac's resumable upload, noted in the job table (cloud_media `uploadLater`: one at a time, carried on after
       // a quit, tried again by itself), not a plain upload that started from nothing after every drop (Nov 20).
       cloudMedia.uploadLater(parent(data) ?? data, { file: recording.file, source: recording.source, size, duration: duration ?? 0, originalKey: key, uploadOriginal: true, proxy: null, local: null });
-      if (!(await cloudMedia.uploaded(recording.file))) throw new Error(`${recording.name} didn't go up yet; Edit tries again by itself`);
+      if (!(await cloudMedia.uploaded(recording.file))) {
+        // Named for every Mac once a later try lands it: nothing shared it again, so a folder case's master stayed unnamed after one failed upload (Nov 21 audit).
+        nameWhenUp(dir, recording.file, recording.source, key);
+        throw new Error(`${recording.name} didn't go up yet; Edit tries again by itself`);
+      }
       record = (await editCloud.query("edit:getMedia", { source: recording.source })) as Record<string, unknown> | null;
       done.push(`uploaded ${recording.name}`);
     }
@@ -370,6 +375,67 @@ export function shareSoon(data: string, id: string): void {
       // The script's gone.
     }
   });
+}
+
+/** The masters waited on now (`nameWhenUp`), by folder and source: one wait each, however often a share is tried. */
+const waitedUp = new Set<string>();
+
+/** Names `source`'s master (still going up, `nameShared`) for every Mac once its upload lands, at whichever try the job table makes. */
+function nameWhenUp(dir: string, file: string, source: string, key: string): void {
+  const at = `${dir}\n${source}`;
+  if (waitedUp.has(at)) return;
+  waitedUp.add(at);
+  void cloudMedia
+    .landed(file)
+    .then(
+      () => {
+        keepShared(dir, file, source, key);
+        stampShared(dir);
+      },
+      () => {},
+    )
+    .catch((error: unknown) => diag.warn("writer", `${source}: up, but its script wasn't named: ${diag.messageOf(error)}`))
+    .finally(() => waitedUp.delete(at));
+}
+
+/**
+ * At start, each master `nameShared` named while it was going up: named for every Mac if it's up now (a restart came
+ * between its upload and the share's end), waited on if its upload is still in the job table, and shared again if
+ * nothing takes it up. Before (Nov 21 audit), a restart mid-upload left the folder case unnamed for good.
+ */
+export async function settlePending(data: string): Promise<void> {
+  if (!editCloud.enabled()) return;
+  let ids: string[];
+  try {
+    ids = store.ids(data);
+  } catch {
+    return;
+  }
+  const home = parent(data) ?? data;
+  for (const id of ids) {
+    const dir = store.scriptDir(data, id);
+    try {
+      let kept: { source?: unknown; key?: unknown; file?: unknown; pending?: unknown }[];
+      try {
+        kept = JSON.parse(fs.readFileSync(join(dir, "edit-shared.json"), "utf8")) as typeof kept;
+      } catch {
+        continue;
+      }
+      let again = false;
+      for (const entry of kept) {
+        if (entry.pending !== true || typeof entry.source !== "string" || typeof entry.key !== "string" || typeof entry.file !== "string" || entry.file.split("/").includes("..")) continue;
+        const file = join(dir, entry.file);
+        const record = (await editCloud.query("edit:getMedia", { source: entry.source })) as { originalReady?: boolean } | null;
+        if (record?.originalReady === true) keepShared(dir, file, entry.source, entry.key);
+        else if (jobs.get(home, jobs.keyOf("upload", "-", entry.source)) !== undefined) nameWhenUp(dir, file, entry.source, entry.key);
+        else again = true;
+      }
+      if (stampShared(dir)) diag.info("writer", `${named(id, store.read(dir).title)}: its Drive folder cases name their masters in Edit's originals, now up`);
+      if (again) shareSoon(data, id);
+    } catch (error) {
+      diag.warn("writer", `${id}: its masters going up weren't looked at: ${diag.messageOf(error)}`);
+    }
+  }
 }
 
 /** Scripts saved before Nov 4 whose folder cases were shared but never named their masters: named once, at start. */
