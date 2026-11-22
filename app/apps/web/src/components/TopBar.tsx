@@ -66,6 +66,7 @@ export function TopBar({ onShare, footage = null }: { onShare: () => void; foota
         <DocChangesButton />
         <History />
         <SyncState footage={footage} />
+        <ExportWords />
         <Button
           variant="primary"
           className="ml-1.5"
@@ -82,6 +83,21 @@ export function TopBar({ onShare, footage = null }: { onShare: () => void; foota
         <AppMenu />
       </div>
     </header>
+  );
+}
+
+/**
+ * What the export is on, beside its percent, while its percent alone doesn't say it: its footage being cut, its sound
+ * copied, the line it waits in (the MacBook Air, Nov 21: "67%" for 58 s while it cut the footage, no words in the bar).
+ */
+export function ExportWords() {
+  const exportState = useEditor((state) => state.exportState);
+  const words = exportState?.state === "running" && exportState.phase ? capitalize(exportState.phase) : exportState?.state === "queued" && exportState.waiting ? capitalize(exportState.waiting) : null;
+  if (words === null) return null;
+  return (
+    <span className="max-w-[260px] truncate px-1 text-[12px] text-muted tabular" title={words}>
+      {words}
+    </span>
   );
 }
 
