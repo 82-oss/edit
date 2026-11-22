@@ -65,7 +65,7 @@ use serde_json::Value;
 
 use crate::mac_media::Speaker;
 use crate::mix::{self, Part, RATE};
-use crate::preroll::{self, Preroll};
+use crate::preroll::{self, picture_streamed, through_server, Preroll};
 use crate::render::{
     decode_stats, feed_peaks, heard_segments, PreviewPictures, READERS, READERS_A_FILE,
 };
@@ -916,7 +916,8 @@ impl Player {
     /// next `READ_AHEAD_SECONDS` of playing, to the play's end), read by
     /// `workers` FFmpegs (`crate::preroll`); `asked`: the playhead now. A file
     /// on this Mac, an R2 original read straight (nothing there is kept), and
-    /// a long video's pieces (cut into files behind the viewer) aren't read.
+    /// a long video's picture where a piece of it is cut into a file here
+    /// (`picture_streamed`) aren't read.
     fn read_ahead(&self, frame: i64, asked: i64, workers: usize) -> Option<Reading> {
         let project = self.project.as_ref()?;
         let fps = project.fps();
@@ -926,14 +927,18 @@ impl Player {
         if end <= frame {
             return None;
         }
-        let streamed =
-            |path: &&PathBuf| through_server(path) && crate::excerpts::of(path).is_none();
-        let picture = |media: &str| self.sources.get(media).filter(streamed).cloned();
+        let picture = |media: &str, time: f64| {
+            self.sources
+                .get(media)
+                .filter(|path| picture_streamed(path, time))
+                .cloned()
+        };
+        // Excerpts are pictures only: a long video's sound streams wherever its pieces are cut.
         let sound = |media: &str| {
             self.sounds
                 .get(media)
                 .or_else(|| self.sources.get(media))
-                .filter(streamed)
+                .filter(|path| through_server(path))
                 .cloned()
         };
         let stretches = preroll::stretches(project, frame, end, picture, sound);
@@ -1503,21 +1508,6 @@ fn speaker_dead(
     }
 }
 
-/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`, or a script's
-/// preview in the cloud, `…/api/writer/scripts/<id>/proxy`), whose bytes it keeps in blocks on disk as they're read:
-/// what's worth reading ahead.
-fn through_server(path: &std::path::Path) -> bool {
-    path.to_str().is_some_and(|text| {
-        (text.starts_with("http://127.0.0.1:") || text.starts_with("http://localhost:"))
-            && (text.contains("/api/cloud/preview?")
-                || (text.contains("/api/writer/scripts/")
-                    && text
-                        .split('?')
-                        .next()
-                        .is_some_and(|path| path.ends_with("/proxy"))))
-    })
-}
-
 /// A draw's trace line: "Ok" first (the acceptance check, scripts/acceptance.ts,
 /// reads success from it), then where its time went.
 pub fn describe_draw(
@@ -1686,8 +1676,7 @@ fn mix_into(
 
 #[cfg(test)]
 mod tests {
-    use super::{speaker_dead, through_server, SPEAKER_DEAD};
-    use std::path::Path;
+    use super::{speaker_dead, SPEAKER_DEAD};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1704,24 +1693,5 @@ mod tests {
         assert!(speaker_dead(Some(still), 900, later(500) + SPEAKER_DEAD, || false).is_none());
         // Nothing played for long, but the engine runs (a play held, short of sound): never taken for dead.
         assert!(speaker_dead(Some(still), 900, later(9000), || true).is_some());
-    }
-
-    #[test]
-    fn a_scripts_preview_in_the_cloud_is_read_ahead_as_the_editors_cloud_footage_is() {
-        assert!(through_server(Path::new(
-            "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fproxies%2Fa.mp4"
-        )));
-        assert!(through_server(Path::new(
-            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a-2b3f-4a5e-8c9d-0f1e2d3c4b5a/proxy"
-        )));
-        assert!(!through_server(Path::new(
-            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a/footage/yt-0.mp4"
-        )));
-        assert!(!through_server(Path::new(
-            "/Users/x/.edit/writer/scripts/a/proxy.mp4"
-        )));
-        assert!(!through_server(Path::new(
-            "https://example.com/api/cloud/preview?key=a"
-        )));
     }
 }

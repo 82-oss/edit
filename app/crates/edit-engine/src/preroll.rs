@@ -47,14 +47,15 @@ pub(crate) struct Stretch {
 }
 
 /// What the timeline plays from frame `from` to `end` that's read through
-/// `picture` (a video media's file, None when there's nothing to read ahead:
-/// a file on this Mac) and `sound` (a heard media's), as the stretches of
-/// each file, in the order they're first played.
+/// `picture` (a video media's file at a second of it, None when there's
+/// nothing to read ahead there: a file on this Mac, or a moment of a stream
+/// that's in a local excerpt) and `sound` (a heard media's), as the
+/// stretches of each file, in the order they're first played.
 pub(crate) fn stretches(
     project: &Project,
     from: i64,
     end: i64,
-    picture: impl Fn(&str) -> Option<PathBuf>,
+    picture: impl Fn(&str, f64) -> Option<PathBuf>,
     sound: impl Fn(&str) -> Option<PathBuf>,
 ) -> Vec<Stretch> {
     let fps = project.fps();
@@ -102,7 +103,7 @@ pub(crate) fn stretches(
             {
                 continue;
             }
-            if let Some(path) = picture(media) {
+            if let Some(path) = picture(media, *source_time) {
                 let at = seconds(frame);
                 asked.push((path, *source_time, at, at + span));
             }
@@ -157,6 +158,31 @@ pub(crate) fn stretches(
     }
     out.sort_by(|a, b| a.at.total_cmp(&b.at));
     out
+}
+
+/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`, or a script's
+/// preview in the cloud, `…/api/writer/scripts/<id>/proxy`), whose bytes it keeps in blocks on disk as they're read:
+/// what's worth reading ahead.
+pub(crate) fn through_server(path: &std::path::Path) -> bool {
+    path.to_str().is_some_and(|text| {
+        (text.starts_with("http://127.0.0.1:") || text.starts_with("http://localhost:"))
+            && (text.contains("/api/cloud/preview?")
+                || (text.contains("/api/writer/scripts/")
+                    && text
+                        .split('?')
+                        .next()
+                        .is_some_and(|path| path.ends_with("/proxy"))))
+    })
+}
+
+/// Whether the picture of `path` at `time` (seconds of it) is read through this server: its stream, with no excerpt
+/// here holding that moment (a long video's piece cut into a file, which the reader reads instead). Any excerpt of a
+/// file left the whole file out, so a long video with one piece cut read every other stretch of it cold at the frame
+/// that needed it (the Nov 20 audit).
+pub(crate) fn picture_streamed(path: &std::path::Path, time: f64) -> bool {
+    through_server(path)
+        && crate::excerpts::of(path)
+            .is_none_or(|list| crate::excerpts::covering(&list, time, &[]).is_none())
 }
 
 /// A line in the window's trace (`player::trace`, `EDIT_PREVIEW_TRACE=1`).
@@ -424,7 +450,7 @@ mod tests {
             ]),
         );
         let path = |_: &str| Some(PathBuf::from("http://127.0.0.1:1/api/cloud/preview?key=k"));
-        let found = stretches(&project, 30, 120, path, path);
+        let found = stretches(&project, 30, 120, |media, _| path(media), path);
         assert_eq!(found.len(), 1, "{found:?}");
         let stretch = &found[0];
         assert!((stretch.from - 2.0).abs() < 1e-6, "{stretch:?}");
@@ -449,7 +475,7 @@ mod tests {
             &project,
             0,
             60,
-            |_| Some(PathBuf::from("http://127.0.0.1:1/x")),
+            |_, _| Some(PathBuf::from("http://127.0.0.1:1/x")),
             |_| None,
         );
         assert_eq!(found.len(), 2, "{found:?}");
@@ -461,7 +487,7 @@ mod tests {
             found[1].from.abs() < 1e-6 && (found[1].at - 1.0).abs() < 1e-6,
             "{found:?}"
         );
-        assert!(stretches(&project, 0, 60, |_| None, |_| None).is_empty());
+        assert!(stretches(&project, 0, 60, |_, _| None, |_| None).is_empty());
     }
 
     #[test]
@@ -477,7 +503,7 @@ mod tests {
             ]),
         );
         let path = |_: &str| Some(file.clone());
-        let found = stretches(&project, 0, 120, path, path);
+        let found = stretches(&project, 0, 120, |media, _| path(media), path);
         assert_eq!(found.len(), 1);
         let preroll = Preroll::start(found, 0, 120, 30.0, 2);
         let began = Instant::now();
@@ -508,7 +534,7 @@ mod tests {
             &url,
             json!([{"id": "c", "track": "v", "type": "video", "media": "m", "source_in": 0.0, "start": 0, "duration": 120}]),
         );
-        let found = stretches(&project, 0, 90, |_| Some(PathBuf::from(&url)), |_| None);
+        let found = stretches(&project, 0, 90, |_, _| Some(PathBuf::from(&url)), |_| None);
         let preroll = Preroll::start(found, 0, 90, 30.0, 1);
         std::thread::sleep(Duration::from_millis(500));
         assert!(!preroll.done());
@@ -524,5 +550,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         held.join().unwrap();
+    }
+
+    #[test]
+    fn a_long_videos_picture_is_read_ahead_where_no_piece_of_it_is_cut_here() {
+        let url = "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fpieces%2Fv3%2Fdrive%2FreadAhead%2Fproxy.mp4";
+        assert!(picture_streamed(Path::new(url), 65.0));
+        let object = crate::excerpts::object_of(Path::new(url)).unwrap();
+        crate::excerpts::add(
+            &object,
+            [crate::excerpts::Excerpt {
+                from: 60.0,
+                to: 120.0,
+                path: PathBuf::from("/cache/native2/1.mp4"),
+            }],
+        );
+        // The piece cut here is read from its file; the rest of the video still streams, and is read ahead.
+        assert!(!picture_streamed(Path::new(url), 65.0));
+        assert!(picture_streamed(Path::new(url), 30.0));
+        assert!(picture_streamed(Path::new(url), 125.0));
+        assert!(!picture_streamed(
+            Path::new("/Users/x/.edit/cache/a.mp4"),
+            30.0
+        ));
+    }
+
+    #[test]
+    fn a_scripts_preview_in_the_cloud_is_read_ahead_as_the_editors_cloud_footage_is() {
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fproxies%2Fa.mp4"
+        )));
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a-2b3f-4a5e-8c9d-0f1e2d3c4b5a/proxy"
+        )));
+        assert!(!through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a/footage/yt-0.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "/Users/x/.edit/writer/scripts/a/proxy.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "https://example.com/api/cloud/preview?key=a"
+        )));
     }
 }
