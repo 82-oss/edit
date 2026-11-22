@@ -24,6 +24,8 @@ import { parseClock, clockRegion } from "./camera_clock.ts";
 import { isOverlay } from "./clean_strips.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
+import * as diag from "./diag.ts";
+import * as found from "./found.ts";
 import { hidingFrames } from "./frames_fill.ts";
 import { probe } from "./media.ts";
 import type { Media, Project } from "./model.ts";
@@ -408,11 +410,13 @@ export function slowedFrom(project: Pick<Project, "media">, media: Media): Media
  * what detection finds within what was asked (a file still being read is
  * read, and waits).
  */
-function wantedOf(app: App, project: Project): Wanted[] {
+async function wantedOf(app: App, project: Project): Promise<Wanted[]> {
   const wanted: Wanted[] = [];
   const taught = lessonOf(project);
   const lesson = asks.inForce(taught, app.store.home, project.id);
   if (lesson === null || removal.kinds(lesson).blur.length === 0) return wanted;
+  // Where this machine finds what's theirs itself (found.ts), that's what goes: no mark is waited for.
+  if (found.available()) return foundWanted(app, project, lesson);
   const marking = marksOnly(project);
   // Every stretch detection proposes, when the agent took them all (its own marks and unmarks over them).
   const proposals = new Map<string, [number, number][]>();
@@ -472,12 +476,55 @@ function wantedOf(app: App, project: Project): Wanted[] {
 }
 
 /**
+ * `wantedOf` by the finder (found.ts): of each footage file read, the shown seconds that have something of theirs (its
+ * captions, labels, marks and notes, by frame); a file not read yet waits for its read (`findWants`, `found.ensure`).
+ * A box the agent marked itself still goes, whatever the finder found there.
+ */
+async function foundWanted(app: App, project: Project, lesson: removal.Lesson): Promise<Wanted[]> {
+  const wanted: Wanted[] = [];
+  const ours = reusedMedia(project);
+  const pointed = asks.pointedAt(app.store.home, project.id);
+  const boxes = asks.markedBoxes(app.store.home, project.id);
+  for (const [id, shown] of shownSeconds(project, true)) {
+    // A finished video of ours, reused: only where it's asked for by name.
+    if (ours.has(id) && !pointed.has(id)) continue;
+    const media = project.media.find((one) => one.id === id)!;
+    const read = found.foundOf(app, await sourceOf(media));
+    const marked = (boxes.get(id) ?? []).flatMap(([a, b, box]) => sections.intersect([[a, b]], shown).map(([x, y]): asks.BoxMark => [x, y, box]));
+    const theirs = read !== null && found.covers(read, shown) ? found.spansOf(read, shown) : [];
+    // The finder's stretches as they are (each a piece no longer than the model takes); a marked box beyond them its own.
+    const beyond = sections.minus(merged(marked.map(([a, b]): [number, number] => [a, b])), merged(theirs));
+    const spans = [...theirs, ...beyond].sort((a, b) => a[0] - b[0]);
+    if (spans.length > 0) wanted.push({ media, spans, kinds: removal.kinds(lesson).blur, marks: marked });
+  }
+  return wanted;
+}
+
+/** What found.ts reads for `project`: each footage file it shows, its source, and for a slowed copy the file it was made from. */
+export async function findWants(project: Project): Promise<found.Want[]> {
+  const ours = reusedMedia(project);
+  const out: found.Want[] = [];
+  for (const [id, shown] of shownSeconds(project, true)) {
+    if (ours.has(id)) continue;
+    const media = project.media.find((one) => one.id === id)!;
+    const parent = slowedFrom(project, media);
+    out.push({ media, source: await sourceOf(media), shown, parent: parent === null ? null : { media: parent, source: await sourceOf(parent) } });
+  }
+  // A copy's parent the timeline doesn't show itself is read all the same (the copy reads as it): over the copy's own length.
+  for (const want of [...out]) {
+    if (want.parent === null || out.some((one) => one.source === want.parent!.source)) continue;
+    out.push({ media: want.parent.media, source: want.parent.source, shown: [[0, want.parent.media.duration ?? 0]], parent: null });
+  }
+  return out;
+}
+
+/**
  * The files whose marked seconds get the tracked blur (every section of the
  * edit, the intro and every case), as text_blur.ts takes them.
  */
 export async function blurPlan(app: App, project: Project): Promise<blur.BlurPlan[]> {
   const out: blur.BlurPlan[] = [];
-  const wanted = wantedOf(app, project);
+  const wanted = await wantedOf(app, project);
   if (wanted.length === 0) return out;
   const lesson = inForceOf(app, project);
   for (const { media, spans, kinds, marks } of wanted) {
@@ -560,11 +607,25 @@ export async function ensure(app: App, id: string): Promise<void> {
   await inpaint.cloudOn();
   const live = app.store.get(id);
   if (live === null) return;
-  const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
+  const taken = removal.kinds(inForceOf(app, live.project)).blur.length > 0;
+  // The files not read by the finder yet are read in the background (`whenFound` plans again as each is done).
+  if (taken && found.available()) found.ensure(app, id, await findWants(live.project));
+  const plans = taken ? await blurPlan(app, live.project) : [];
   await blur.ensure(app, id, plans);
   const cleaned = inpaintPlan(live.project, plans);
   await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
 }
+
+// A file read by the finder: the project's plan again, with its boxes (one look at a time a project).
+const planning = new Map<string, Promise<void>>();
+found.whenFound.push((app, id) => {
+  if (planning.has(id)) return;
+  const run = new Promise<void>((resolve) => setTimeout(resolve, 500))
+    .then(() => ensure(app, id))
+    .catch((error: unknown) => diag.warn("removal", `${id}: planning after a file was read: ${diag.messageOf(error)}`))
+    .finally(() => planning.delete(id));
+  planning.set(id, run);
+});
 
 /**
  * text_inpaint's masks: their words' boxes from the track (text_blur `boxesOf`), with their watermark's boxes marked
@@ -582,7 +643,7 @@ export function masksWithMarks(words: Box[][], marks: blur.Mark[], fps: number, 
 const masksOf =
   (app: App, plans: inpaint.InpaintPlan[]): inpaint.MasksOf =>
   (source, from, to, fps, first, frames) => {
-    const words = blur.boxesOf(app, source, from, to, fps, first, frames);
+    const words = blur.boxesOf(app, source, from, to, fps, first, frames, true);
     if (words === null) return null;
     const marks = plans.filter((plan) => plan.source === source).flatMap((plan) => plan.marks ?? []);
     return masksWithMarks(words, marks, fps, first);
@@ -591,7 +652,7 @@ const masksOf =
 const rangeOf =
   (app: App, plans: inpaint.InpaintPlan[]): inpaint.RangeOf =>
   (source, from, to) => {
-    const trackRange = blur.yRangeOf(app, source, from, to);
+    const trackRange = blur.yRangeOf(app, source, from, to, true);
     if (trackRange === undefined) return undefined;
     let minY = trackRange === null ? Infinity : trackRange[0];
     let maxY = trackRange === null ? -Infinity : trackRange[1];

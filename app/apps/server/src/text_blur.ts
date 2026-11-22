@@ -35,6 +35,7 @@ import type { App } from "./app.ts";
 import { isOverlay, TRACKED } from "./clean_strips.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as found from "./found.ts";
 import { framingAt } from "./frames_fill.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import type { AdjustmentClip, Keyframe, Media, Project, VideoClip } from "./model.ts";
@@ -412,6 +413,12 @@ function known(app: App, source: string, from: number, to: number): Sample[] | n
   const key = trackKey(source, from, to);
   const hit = tracks.get(key);
   if (hit !== undefined) return hit;
+  // The finder's boxes for the file, where it has read it (found.ts): nothing is tracked then.
+  const made = found.samplesFor(app, source, from, to);
+  if (made !== null) {
+    tracks.set(key, made);
+    return made;
+  }
   try {
     const kept = JSON.parse(fs.readFileSync(fileOf(app, source, from, to), "utf8")) as Sample[];
     tracks.set(key, kept);
@@ -420,6 +427,11 @@ function known(app: App, source: string, from: number, to: number): Sample[] | n
     return null;
   }
 }
+
+// A file read again by the finder: the tracks made from its old boxes go.
+found.whenRead.push((source) => {
+  for (const key of [...tracks.keys()]) if (key.startsWith(`${source}|`) && found.isFound(tracks.get(key)!)) tracks.delete(key);
+});
 
 /** Called when one of a project's stretches is tracked (text_removal.ts cleans it then, where it's cleaned). */
 export const whenTracked: ((app: App, id: string) => void)[] = [];
@@ -431,13 +443,16 @@ const yRanges = new WeakMap<Sample[], [number, number] | null>();
  * Vertical extent [minY, maxY] of a tracked stretch's surviving slots (cached per track in O(1), never expanding per-frame
  * masks). Returns undefined while untracked, null when tracked with no surviving text.
  */
-export function yRangeOf(app: App, source: string, from: number, to: number): [number, number] | null | undefined {
+export function yRangeOf(app: App, source: string, from: number, to: number, cleaned = false): [number, number] | null | undefined {
   const samples = known(app, source, from, to);
   if (samples === null) return undefined;
-  if (yRanges.has(samples)) return yRanges.get(samples)!;
+  // Of the finder's boxes the model cleans the captions only (`cleanedSlots`).
+  const only = cleaned && found.isFound(samples);
+  if (!only && yRanges.has(samples)) return yRanges.get(samples)!;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (const slot of slotsOf(samples).values()) {
+  for (const [name, slot] of slotsOf(samples)) {
+    if (only && !found.isCaption(name)) continue;
     for (const sample of slot) {
       if (sample.box === null) continue;
       if (sample.box[1] < minY) minY = sample.box[1];
@@ -445,7 +460,7 @@ export function yRangeOf(app: App, source: string, from: number, to: number): [n
     }
   }
   const range: [number, number] | null = Number.isFinite(minY) ? [minY, maxY] : null;
-  yRanges.set(samples, range);
+  if (!only) yRanges.set(samples, range);
   return range;
 }
 
@@ -453,10 +468,13 @@ export function yRangeOf(app: App, source: string, from: number, to: number): [n
  * Their words' boxes (shares) at each of a stretch's frames, from its track: frame k at source second (first + k) / fps,
  * a box for each place of theirs there (`slotsOf`, `boxAt`). Null while it isn't tracked. The mask text_inpaint.ts cleans by.
  */
-export function boxesOf(app: App, source: string, from: number, to: number, fps: number, first: number, frames: number): Box[][] | null {
+export function boxesOf(app: App, source: string, from: number, to: number, fps: number, first: number, frames: number, cleaned = false): Box[][] | null {
   const samples = known(app, source, from, to);
   if (samples === null) return null;
-  const slots = [...slotsOf(samples).values()];
+  // `cleaned`: what the model takes out. Of the finder's boxes that's the captions and notes; their labels and marks
+  // stay with the blur (a label at the top and a caption at the bottom would be one band the height of the picture).
+  const only = cleaned && found.isFound(samples);
+  const slots = [...slotsOf(samples)].filter(([name]) => !only || found.isCaption(name)).map(([, slot]) => slot);
   return Array.from({ length: frames }, (_, k) => slots.flatMap((one): Box[] => {
     const box = boxAt(one, (first + k) / fps);
     return box === null ? [] : [box];
@@ -485,13 +503,33 @@ function laidOf(app: App, id: string): Map<string, Laid[]> {
   return out;
 }
 
+/** A finder's track without its captions (what the blur keeps where the model cleaned them), or null when that's nothing. Kept by track, so the blurs laid from it stay the same from one look to the next. */
+const beside = new WeakMap<Sample[], Sample[] | null>();
+function besideCaptions(samples: Sample[]): Sample[] | null {
+  if (beside.has(samples)) return beside.get(samples)!;
+  const rest = samples.map((one): Sample => {
+    const parts = (one.parts ?? []).filter((part) => !found.isCaption(part.slot));
+    const box = parts.length === 0 ? null : parts.reduce<Box>((all, part) => union(all, part.box), parts[0]!.box);
+    return { t: one.t, box, words: "", parts };
+  });
+  const out = rest.some((one) => one.box !== null) ? rest : null;
+  beside.set(samples, out);
+  return out;
+}
+
 /** The tracked blurs `project` should have now, over every clip of their footage (none where a strip took their words out: text_inpaint.ts). */
 function wanted(app: App, project: Project): AdjustmentClip[] {
   const laid = laidOf(app, project.id);
   const out: AdjustmentClip[] = [];
   for (const clip of project.clips) {
     if (clip.type !== "video") continue;
-    const mine = laid.get(clip.media)?.filter((one) => !stripCovers(project, clip.media, one.from, one.to));
+    // Where a strip took their words out, no blur over them; the finder's labels and marks there keep theirs (the strip is the captions' only).
+    const mine = laid.get(clip.media)?.flatMap((one): Laid[] => {
+      if (!stripCovers(project, clip.media, one.from, one.to)) return [one];
+      if (!found.isFound(one.samples)) return [];
+      const rest = besideCaptions(one.samples);
+      return rest === null ? [] : [{ ...one, samples: rest }];
+    });
     const media = project.media.find((one) => one.id === clip.media);
     if (mine === undefined || media === undefined) continue;
     out.push(...blursFor(project, clip, media, mine));

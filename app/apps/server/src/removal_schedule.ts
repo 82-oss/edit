@@ -29,6 +29,7 @@ import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as found from "./found.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { framingAt } from "./frames_fill.ts";
 import type { Media, Project, VideoClip } from "./model.ts";
@@ -129,7 +130,8 @@ export function progressOf(id: string): { done: number; out: number } {
   // A file still being looked at for its mark counts as out: its pieces aren't known yet.
   const blurs = textBlur.piecesOf(id);
   const cleans = textInpaint.piecesOf(id);
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id);
+  // A file the finder is still reading counts as out too: its stretches aren't known yet (found.ts).
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id);
   const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
