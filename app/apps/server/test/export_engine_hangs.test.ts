@@ -255,7 +255,7 @@ test("an export the connection dropped under waits and goes again by itself; one
   const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
   const render = spyOn(t.native.ExportJob, "start").mockImplementation((job) => {
     const named = JSON.parse(job.project.json).name as string;
-    const why = named === "Dropped" ? "could not decode <url> failed to fill whole buffer" : "the encoder stopped early";
+    const why = named === "Dropped" ? "could not decode <url> failed to fill whole buffer" : named === "Full" ? "No space left on device (os error 28)" : "the encoder stopped early";
     return { cancel: () => {}, wait: () => Promise.reject(new Error(`${named}: ${why}`)) };
   });
   const make = async (named: string): Promise<Project> => {
@@ -284,6 +284,11 @@ test("an export the connection dropped under waits and goes again by itself; one
     expect(String(waiting?.why)).toContain("the connection dropped");
     // The page is told it's in line to go again, not that it failed (the Nov 21 audit).
     expect(told.get(dropped.id)).toBe("queued");
+    // The disk full: it waits for room and goes by itself, never a Retry to press (Nov 22).
+    const full = await make("Full");
+    await registry.start(t.store, t.app.library, full, options, `${t.dir}/full.mp4`, { drive: false, keepLocal: true });
+    expect(await settled(full.id)).toMatchObject({ state: "waiting" });
+    expect(told.get(full.id)).toBe("queued");
     // Its own failure (nothing failure.ts knows as trouble that passes): failed, as before, for a person or the next build.
     const broken = await make("Broken");
     await registry.start(t.store, t.app.library, broken, options, `${t.dir}/broken.mp4`, { drive: false, keepLocal: true });

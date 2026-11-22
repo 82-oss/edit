@@ -293,7 +293,7 @@ export function waitLine(kind: Kind, error: unknown, at: number | null): string 
   const words = typeof error === "string" ? error : diag.messageOf(error);
   if (kind === "quota") return `The plan is out of credit or today's allowance is used up: Edit tries again by itself${when}.`;
   if (kind === "limit") return `Google Drive's download limit is used up for today: Edit tries again by itself${when}.`;
-  if (kind === "room") return `${words.replace(/\s*(Retry|then press Retry|Free some space)[^.]*\.?\s*$/u, "").replace(/\.?\s*$/u, ".")} Edit goes on by itself once there's room${when === "" ? "" : ` (it looks again${when})`}.`;
+  if (kind === "room") return `${words.replace(/[,;]?\s*(Retry|then press Retry|Free some space)[^.]*\.?\s*$/u, "").replace(/\.?\s*$/u, ".")} Edit goes on by itself once there's room${when === "" ? "" : ` (it looks again${when})`}.`;
   if (kind === "encoder") return "The hardware encoder is busy with an export: it goes on once it's free.";
   if (kind === "signin") return "Sign in to Edit, and it goes on by itself.";
   return `Waiting for the connection: Edit tries again by itself${when}.`;

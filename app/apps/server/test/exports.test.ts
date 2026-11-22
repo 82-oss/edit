@@ -4,6 +4,7 @@ import * as os from "node:os";
 
 import { aheadFile, archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
 import type { Project } from "../src/model.ts";
+import * as jobs from "../src/jobs.ts";
 import * as capacity from "../src/export_capacity.ts";
 import * as seams from "../src/seams.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -535,8 +536,10 @@ test("an export asks the disks again as it starts, a share's review copy counted
     await store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
     await registry.start(store, app.library, store.get(id)!.project, native.exportDefaults(), `${dir}/full.mp4`, { drive: false, keepLocal: true });
     for (let tries = 0; registry.runningFor(id) !== null && tries < 200; tries++) await Bun.sleep(5);
-    expect(registry.activity().find((one) => one.id === id)).toMatchObject({ state: "failed" });
-    expect(registry.activity().find((one) => one.id === id)!.error).toMatch(/^Your disk is full: free about \d+ GB, then press Retry\.$/);
+    // Said as what to free, and it goes by itself once there's room: no Retry to press (Nov 22).
+    expect(registry.activity().find((one) => one.id === id)).toMatchObject({ state: "queued" });
+    expect(registry.activity().find((one) => one.id === id)!.waiting).toMatch(/^Your disk is full: free about \d+ GB\. Edit goes on by itself once there's room\.$/);
+    expect(jobs.get(home, jobs.keyOf("export", id))).toMatchObject({ state: "waiting" });
     // Room when it was asked for, none by the time it renders (another export, a download filled the disk): refused
     // before anything is written, with nothing rendered.
     render.mockClear();
@@ -545,7 +548,7 @@ test("an export asks the disks again as it starts, a share's review copy counted
     await registry.start(store, app.library, store.get(id)!.project, native.exportDefaults(), `${dir}/full.mp4`, { drive: false, keepLocal: true });
     for (let tries = 0; registry.runningFor(id) !== null && tries < 200; tries++) await Bun.sleep(5);
     expect(render).not.toHaveBeenCalled();
-    expect(registry.activity().find((one) => one.id === id)!.error).toBe("Your disk is full: free about 1 GB, then press Retry.");
+    expect(registry.activity().find((one) => one.id === id)!.waiting).toBe("Your disk is full: free about 1 GB. Edit goes on by itself once there's room.");
   } finally {
     room.free = free;
     render.mockRestore();

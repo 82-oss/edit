@@ -403,6 +403,16 @@ export const abandon = { ms: 60_000 };
 /** Engine jobs given up on in this run (`EngineWatch`): the second means the engine itself is stuck, and only a new Edit frees it. */
 let abandonedJobs = 0;
 
+/**
+ * Whether an export that failed with `kind` (failure.ts `surely`) waits and goes again by itself: trouble that passes
+ * with time or by itself, said as it waits (room: it goes once the disk has it; the cloud's allowance, Drive's limit, a
+ * sign-in, the encoder). What nothing recognises (null) fails with Retry, as a person's question and Edit's own bug do:
+ * it's often Edit's own fault, and tried again blind it would hold the encoder for nothing (Nov 22).
+ */
+export function waitsOn(kind: failure.Kind | null): boolean {
+  return kind === "room" || kind === "quota" || kind === "limit" || kind === "signin" || kind === "encoder";
+}
+
 /** An engine job told to stop that never ended (`abandon`): passing trouble, tried again by itself on a fresh job. */
 export class EngineAbandoned extends failure.StoodStill {}
 
@@ -1990,7 +2000,8 @@ export class ExportRegistry implements seams.Exports {
         running.letReuseGo();
         await make();
       }
-      if (short > 0) throw new Error(diskFull(short));
+      // Room it needs, known as room (failure.ts `NoRoom`): it waits for it and goes by itself (Nov 22: Retry to press).
+      if (short > 0) throw new failure.NoRoom(short, diskFull(short));
     };
     // A speed sample (`fresh_fps`): rendered here from the start, every frame new, never restarted.
     let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), running.chunks ?? id);
@@ -2283,13 +2294,23 @@ export class ExportRegistry implements seams.Exports {
         diag.warn("export", `${project.name}: the connection dropped under the export (${result.error.slice(0, 160)}); it waits and goes again by itself`);
         jobs.wait(this.home, running.key, new Error(`could not reach the footage in the cloud: the connection dropped while ${project.name} was exporting`));
       }
+      // Trouble that passes with time or by itself, said as it waits (its row, the page's line): room (it goes once the
+      // disk has it), the cloud's allowance, Drive's limit, a sign-in, the encoder (Nov 22: these ended failed, a Retry
+      // to press). What nothing recognises still fails with Retry (`waitsOn`).
+      else if (waitsOn(failure.surely(failedWith ?? result.error))) {
+        diag.warn("export", `${project.name}: ${result.error.slice(0, 160)}; it waits and goes again by itself`);
+        jobs.wait(this.home, running.key, failedWith ?? result.error);
+      }
       // Kept, failed, for the next build to try again (retry_after_update.ts).
       else jobs.settle(this.home, running.key, "failed", { error: result.error, build: BUILD, args: { name: project.name, ...(upload ? { drive: true } : {}) } });
       // Said as it stands: one that waits to go again by itself is in line, not failed with a Retry to press (the Nov 21
       // audit: the page was told "failed" while its row waited). A share's export says it failed: the share waits itself.
       const listed = jobs.get(this.home, running.key);
       if (running.share !== true && listed?.state === "waiting") {
-        running.waiting = `waiting to start again by itself${listed.why ? ` (${listed.why.replace(/\.$/u, "")})` : ""}`;
+        // The disk full: what to free, and that it goes by itself once there's room (failure.ts `waitLine`).
+        const kind = failure.surely(failedWith ?? result.error);
+        running.waiting =
+          kind === "room" ? failure.waitLine("room", result.error, null) : `waiting to start again by itself${listed.why ? ` (${listed.why.replace(/\.$/u, "")})` : ""}`;
         emit("queued", 0);
       } else emit("failed", 0, { error: result.error });
     }
