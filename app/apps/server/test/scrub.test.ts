@@ -50,7 +50,8 @@ test("a scrub strip takes its turn on the encoder after a share's review copy", 
     copy.release();
     expect(await piece).toBeNull();
     expect(ran).toHaveLength(1);
-    expect(encoder.busy()).toBe(false);
+    // Its own turn is given back (another test file's work may still hold the encoder in this process: on CI's Mac one did).
+    expect(encoder.holding("playback")).not.toContain("cam's scrub strip");
   } finally {
     copy.release();
     run.mockRestore();
