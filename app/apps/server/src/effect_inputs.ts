@@ -280,6 +280,11 @@ function markHolds(app: App, projectId: string, name: string, text: string | nul
 const BENEATH_FINE_SECONDS = 300;
 const BENEATH_FINE_RATE = 40_000_000;
 
+/** The export's target size (MB) for `frames` of what's beneath at BENEATH_FINE_RATE (the engine's sum, export.rs `video_bitrate`). */
+function beneathTargetMb(frames: number, fps: number): number {
+  return (BENEATH_FINE_RATE * (frames / fps)) / (8_000_000 * 0.94);
+}
+
 /**
  * Renders what's beneath effect `name`'s clip, for its span, into its folder
  * (`beneath.mp4`: no sound, a keyframe every third of a second for seeking),
@@ -310,12 +315,16 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     const partial = join(dir, `${BENEATH}.partial.mp4`);
     try {
       const fine = seconds <= BENEATH_FINE_SECONDS;
-      const options = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null, ...(fine ? { target_mb: (BENEATH_FINE_RATE * seconds) / (8_000_000 * 0.94) } : {}) };
+      const asked = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null };
       thread.note(`beneath ${name}: the project as JSON for its render`);
       const input = { json: jsonForSerde(missingMedia.playable(app.store.home, found.project)) };
       // Planned off the server's thread (native/index.ts `planOffThread`, Nov 21): sent as JSON, a long edit's plan
       // reads the whole project again, and a process's first plan ran FFmpeg for the encoders, all on the thread.
-      const { plan } = await planOffThread(input, options);
+      const { plan } = await planOffThread(input, asked);
+      // Its size from the span the plan renders, which ends where the tracks below do: sized on the effect's whole
+      // clip, 8 frames of footage under a 5.9 s title card asked 940 Mbit/s, which NVENC refuses ("Invalid Level";
+      // Nov 22, "When Cops Rescue Boyfriends…", at every start of the Linux prod Edit).
+      const options = fine ? { ...asked, target_mb: beneathTargetMb(plan.end - plan.start, fps) } : asked;
       const job = native().ExportJob.start({ project: input, options, plan, output: exported, cacheDir: app.store.cacheDir() }, () => {});
       const timer = setTimeout(() => job.cancel(), 10 * 60_000);
       try {

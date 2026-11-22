@@ -140,6 +140,32 @@ test.skipIf(addon === null)("the picture beneath an effect is rendered into its 
   }
 }, 120_000);
 
+test.skipIf(addon === null)("what's beneath an effect longer than the footage under it is made of that footage's frames alone, at a rate the encoder takes", async () => {
+  // Nov 22, the Linux prod Edit: a 5.9 s title card over the last 8 frames of a shot, its beneath sized on the 5.9 s,
+  // asked 940 Mbit/s of NVENC, refused ("Invalid Level") at every start.
+  const { app, cleanup, id } = hq("effect-beneath-short");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m2", name: "title-card", path: "/nowhere/title.png", kind: "image", duration: 6, width: 1280, height: 720, fps: 0, has_audio: false, effect: "title-card" });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.tracks.push({ id: "t2", kind: "video", name: "V2", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c0", type: "solid", track: "t1", start: 0, duration: 128, fill: [0, 0, 1, 1], opacity: 1 } as unknown as (typeof project.clips)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t2", start: 120, duration: 177, media: "m2", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } } as unknown as (typeof project.clips)[number]);
+    });
+    const dir = effects.folder(app.store, id, "title-card");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>title</p>");
+    const answer = await call(app, id, "effect_beneath", { name: "title-card" });
+    expect(answer.content[0]!.text).not.toContain("Nothing was written");
+    expect(answer.isError).toBe(false);
+    const frames = Bun.spawnSync(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", join(dir, "beneath.mp4")]).stdout.toString().trim();
+    expect(Number(frames)).toBe(8);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
 test.skipIf(addon === null)("what's beneath an effect, opened on another computer (its own paths, its own port), isn't made again over its mark: the effect's code and its render stay as they were (kenobi, Nov 17)", async () => {
   const { app, cleanup, id } = hq("effect-beneath-elsewhere");
   try {
