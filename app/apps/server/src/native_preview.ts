@@ -373,6 +373,21 @@ async function pieceExcerpts(id: string, cache: string, base: string, played: [n
 }
 
 /**
+ * A streamed media's sound on this Mac: its original here (`localOriginal`, the file it was imported from, or one an
+ * export fetched), else the original's sound copy an export or smooth playback fetched (`soundKey`). Both are on the
+ * original's clock, as the proxy is. A long video's pieced proxy has no file, so its sound was always read through
+ * the loopback stream, opened again at each play and jump, with the original on the Mac (Nov 21: 20 minutes of sound
+ * read over HTTP for four).
+ */
+function soundHere(cache: string, original: string | undefined): string | null {
+  if (original === undefined || original === "") return null;
+  const here = cloudMedia.localOriginal(cache, original);
+  if (here !== null) return here;
+  const copy = cloudMedia.localPath(cache, cloudMedia.soundKey(original));
+  return isFile(copy) ? copy : null;
+}
+
+/**
  * Each picture media's file for the native preview: its made preview, else
  * its footage; a cloud one's whole preview here, else its footage when that's
  * here, else this server's loopback stream of the preview (and the whole file
@@ -439,7 +454,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
         }
       }
       if (media.kind !== "audio") sources[media.id] = source;
-      if (sound) sounds[media.id] = source;
+      if (sound) sounds[media.id] = source.startsWith("http") ? (soundHere(cache, media.cloud?.original) ?? source) : source;
       continue;
     }
     const paths = app.media.paths(media.path);

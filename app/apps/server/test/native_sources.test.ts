@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { cleanCache } from "../src/cache_cleanup.ts";
-import { localPath } from "../src/cloud_media.ts";
+import { localPath, rememberLocalOriginal, soundKey } from "../src/cloud_media.ts";
 import { pin } from "../src/file_pins.ts";
 import { PLAYBACK_ROUTE } from "../src/cloud_playback.ts";
 import * as localPreviews from "../src/local_previews.ts";
@@ -439,6 +439,45 @@ test("a piece the window plays is cut the moment its picture lands, and the page
     cutting.mockRestore();
     free.mockRestore();
     storage.resetRoom();
+    reset();
+    cleanup();
+  }
+});
+
+test("a streamed media's sound is read from its original or the original's sound copy on this Mac, not the loopback stream", async () => {
+  const { dir, app, store, cleanup } = fixtureHome("native-sources-sound-here");
+  reset();
+  try {
+    const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const cache = store.cacheDir();
+    // A long video: its pieced proxy is never one file, so its picture streams (or reads cut pieces).
+    const longKey = pieces.proxyKeyOf("drive:longSound0001");
+    const longOriginal = "edit/originals/drive/longSound0001/long.mp4";
+    const layout = { ...pieces.plan("drive:longSound0001", longOriginal, 1500, 30, 1920, 1080, true), head: 1, total: 1 };
+    const write = (path: string, text: string) => {
+      fs.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+      fs.writeFileSync(path, text);
+    };
+    write(localPath(cache, `${pieces.baseOf(longKey)!}/layout.json`), JSON.stringify(layout));
+    // Its original was imported from this Mac.
+    write(`${dir}/long.mp4`, "original");
+    rememberLocalOriginal(cache, longOriginal, `${dir}/long.mp4`);
+    // A short one whose preview hasn't come down yet, with its original's sound copy here (an export fetched it).
+    const shortOriginal = "edit/originals/sha256/cd/short.mp4";
+    const copy = localPath(cache, soundKey(shortOriginal));
+    write(copy, "sound");
+    // And one with nothing of it here: the stream.
+    await store.update(id, "test", (p) => {
+      p.media.push({ ...media({ id: "long", name: "long.mp4", path: "https://r2.example/long", kind: "video", duration: 1500, has_audio: true }), cloud: { proxy: longKey, original: longOriginal } } as never);
+      p.media.push({ ...media({ id: "short", name: "short.mp4", path: "https://r2.example/short", kind: "video", duration: 10, has_audio: true }), cloud: { proxy: "edit/proxies/cd/short.mp4", original: shortOriginal } } as never);
+      p.media.push({ ...media({ id: "far", name: "far.mp4", path: "https://r2.example/far", kind: "video", duration: 10, has_audio: true }), cloud: { proxy: "edit/proxies/ef/far.mp4", original: "edit/originals/sha256/ef/far.mp4" } } as never);
+    });
+    const stream = (key: string) => `http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(key)}`;
+    const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string>; sounds: Record<string, string> };
+    expect(answer.sounds).toEqual({ long: `${dir}/long.mp4`, short: copy, far: stream("edit/proxies/ef/far.mp4") });
+    // The pictures are as before: the proxy's stream (the original is full quality, not what the viewer reads).
+    expect(answer.sources).toEqual({ long: stream(longKey), short: stream("edit/proxies/cd/short.mp4"), far: stream("edit/proxies/ef/far.mp4") });
+  } finally {
     reset();
     cleanup();
   }
