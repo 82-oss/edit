@@ -636,7 +636,9 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
   const read = new Set<string>();
   for (const plan of plans) if (found.foundOf(app, plan.source) !== null) read.add(plan.media.id);
   const wanted = (media: Media): boolean =>
-    cleaned.some((plan) => plan.media.id === media.cleans!.media && plan.spans.some(([from, to]) => Math.abs(from - media.cleans!.from) <= 0.05 && Math.abs(to - media.cleans!.to) <= 0.05));
+    // Within a stretch the model cleans now (a strip is cut to whole frames, a few hundredths off its stretch's seconds:
+    // asked to match them, a 3-frame stretch's strip was taken off as soon as it was laid, and cleaned again, round and round).
+    cleaned.some((plan) => plan.media.id === media.cleans!.media && plan.spans.some(([from, to]) => media.cleans!.from >= from - 0.2 && media.cleans!.to <= to + 0.2));
   const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && !wanted(media);
   const count = live.project.media.filter(stale).length;
   if (count === 0) return;
