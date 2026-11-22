@@ -27,12 +27,16 @@ export const ranged = {
   tries: 5,
   /** Waits between a part's tries (tests make them nothing). */
   sleep: (ms: number) => Bun.sleep(ms),
+  /** A part's bytes so far are put on the disk and noted this often, so a kill loses at most this much of each. */
+  noteEvery: 8 << 20,
 };
 
 interface Journal {
   size: number;
   part: number;
   done: number[];
+  /** Bytes of each part not done yet that are on the disk already (from its start), by part. */
+  have?: Record<string, number>;
 }
 
 const journalOf = (dest: string) => `${dest}.parts`;
@@ -80,26 +84,52 @@ export async function download(options: {
   // Asked beside the parts, so it costs no time; a file Drive has no checksum for (a Google Doc, a shortcut) isn't checked.
   const checksum: Promise<string | null> = options.md5 !== undefined ? Promise.resolve(options.md5) : driveMd5(url, options.fetch).catch(() => null);
   const count = Math.ceil(size / ranged.part);
-  // Parts noted for a file that's gone (removed as damaged) are no parts.
-  const journal = (fs.existsSync(dest) ? readJournal(dest, size) : null) ?? { size, part: ranged.part, done: [] };
-  if (journal.done.length === 0) fs.rmSync(dest, { force: true });
+  // Parts noted for a file that's gone (removed as damaged) are no parts; a file with no journal is started afresh.
+  const kept = fs.existsSync(dest) ? readJournal(dest, size) : null;
+  if (kept === null) fs.rmSync(dest, { force: true });
+  const journal = kept ?? { size, part: ranged.part, done: [] };
   const done = new Set(journal.done);
-  const fd = fs.openSync(dest, fs.existsSync(dest) ? "r+" : "w");
   const lengthOf = (n: number) => Math.min(ranged.part, size - n * ranged.part);
-  let down = [...done].reduce((sum, n) => sum + lengthOf(n), 0);
+  // What each part not done has on the disk already: a dropped line or a restart carries a part on from there, not
+  // from its start (Nov 22, the bad-day resume-download: five parts of 32 MB under way, and every cut and the kill
+  // threw away all of each).
+  const have = new Map<number, number>();
+  for (const [n, bytes] of Object.entries(journal.have ?? {})) {
+    const part = Number(n);
+    if (Number.isInteger(part) && !done.has(part) && Number.isInteger(bytes) && bytes > 0 && bytes <= lengthOf(part)) have.set(part, bytes);
+  }
+  const fd = fs.openSync(dest, fs.existsSync(dest) ? "r+" : "w");
+  const note = () => writeAtomic(journalOf(dest), JSON.stringify({ size, part: ranged.part, done: [...done], have: Object.fromEntries(have) }));
+  // Noted from the first byte: killed before a part was whole, the file (already its full length where the last part
+  // writes) read as whole without one, failed Drive's checksum and came down again from nothing.
+  note();
+  let down = [...done].reduce((sum, n) => sum + lengthOf(n), 0) + [...have.values()].reduce((sum, bytes) => sum + bytes, 0);
   const flowing = new Map<number, number>();
   const report = () => options.onBytes?.(down + [...flowing.values()].reduce((sum, bytes) => sum + bytes, 0));
   report();
   const left = Array.from({ length: count }, (_, n) => n).filter((n) => !done.has(n));
   let failure: unknown = null;
 
+  /** Part `n`'s bytes so far on the disk, then noted (`have`). */
+  const keep = async (n: number, bytes: number) => {
+    await new Promise<void>((resolve, reject) => fs.fsync(fd, (error) => (error ? reject(error) : resolve())));
+    if (done.has(n) || bytes <= (have.get(n) ?? 0)) return;
+    down += bytes - (have.get(n) ?? 0);
+    have.set(n, bytes);
+    note();
+  };
+
   const fetchPart = async (n: number): Promise<void> => {
-    const from = n * ranged.part;
-    const to = from + lengthOf(n) - 1;
+    const start = n * ranged.part;
+    const to = start + lengthOf(n) - 1;
+    // Carried on from what it has.
+    const from = start + (have.get(n) ?? 0);
+    if (from > to) return;
     const stall = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, stall.signal]) : stall.signal;
     let idle = setTimeout(() => stall.abort(), ranged.stallMs);
     let at = from;
+    let noted = from;
     try {
       const answer = await options.fetch(url, { headers: { range: `bytes=${from}-${to}` }, signal });
       if ([401, 403, 404].includes(answer.status)) throw new Refused(`Google Drive answered ${answer.status}`);
@@ -112,11 +142,20 @@ export async function download(options: {
         if (at + chunk.length > to + 1) throw new Error(`part ${n} came down longer than asked`);
         fs.writeSync(fd, chunk, 0, chunk.length, at);
         at += chunk.length;
-        flowing.set(n, at - from);
+        // This try's bytes past what's noted of the part.
+        flowing.set(n, at - start - (have.get(n) ?? 0));
         report();
+        if (at - noted >= ranged.noteEvery && at <= to) {
+          noted = at;
+          await keep(n, at - start);
+          flowing.set(n, at - start - (have.get(n) ?? 0));
+        }
       }
-      if (at !== to + 1) throw new Error(`part ${n} ended at ${at - from} of ${to + 1 - from} bytes`);
+      if (at !== to + 1) throw new Error(`part ${n} ended at ${at - start} of ${to + 1 - start} bytes`);
     } catch (error) {
+      // What came of it stays, noted, for its next try.
+      flowing.delete(n);
+      if (at > start + (have.get(n) ?? 0)) await keep(n, at - start).catch(() => {});
       if (stall.signal.aborted && !options.signal?.aborted) throw new Error(`nothing came from Google Drive for ${Math.round(ranged.stallMs / 1000)} s`);
       throw error;
     } finally {
@@ -141,9 +180,10 @@ export async function download(options: {
         }
       }
       done.add(n);
-      down += lengthOf(n);
+      down += lengthOf(n) - (have.get(n) ?? 0);
+      have.delete(n);
       report();
-      writeAtomic(journalOf(dest), JSON.stringify({ size, part: ranged.part, done: [...done] }));
+      note();
     }
   };
 

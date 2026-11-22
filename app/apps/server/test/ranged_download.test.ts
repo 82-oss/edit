@@ -64,7 +64,63 @@ test("a part that fails, comes short or starts elsewhere is asked again; the fil
   await run(dest);
   expect(Buffer.from(fs.readFileSync(dest)).equals(Buffer.from(file))).toBe(true);
   expect(asked.filter((from) => from === 2 * MIB)).toHaveLength(3);
-  expect(asked.filter((from) => from === 4 * MIB)).toHaveLength(2);
+  // The short part asked again only for what it lacked (Nov 22: from its start again).
+  expect(asked.filter((from) => from === 4 * MIB)).toHaveLength(1);
+  expect(asked.filter((from) => from === 4 * MIB + MIB - 101)).toHaveLength(1);
+});
+
+// Nov 22, the bad-day resume-download: a 150 MB file in five 32 MB parts at 8 Mbit/s. Each cut threw away what every
+// part under way had, and Edit killed before any part was whole left a file of its full length with no journal: it
+// read as whole, failed Drive's checksum, and came down again from nothing.
+test("stopped before any part is whole, it carries on from what each part has, never from nothing", async () => {
+  const dest = path.join(dir(), "e.mp4");
+  // Every part comes short and is then refused: the download stops with something of each, and no part whole.
+  // (The stand-in's short answer stops 101 bytes before the part's end; the part's next ask starts there.)
+  for (let n = 0; n <= 5; n++) {
+    const end = Math.min((n + 1) * MIB, file.length) - 1;
+    trouble.set(n * MIB, ["short"]);
+    trouble.set(end - 100, ["refuse"]);
+  }
+  await expect(run(dest)).rejects.toBeInstanceOf(rd.Refused);
+  expect(rd.partlyDone(dest)).toBe(true);
+  const begun = asked.filter((from) => from % MIB === 0);
+  expect(begun.length).toBeGreaterThan(0);
+  trouble.clear();
+  const before = asked.length;
+  const seen: number[] = [];
+  await run(dest, (bytes) => seen.push(bytes));
+  // Each part begun before asked again only from where it stopped (it was noted as far as it got).
+  const again = asked.slice(before);
+  expect(again.filter((from) => begun.includes(from))).toEqual([]);
+  expect(Buffer.from(fs.readFileSync(dest)).equals(Buffer.from(file))).toBe(true);
+  expect(seen[0]).toBeGreaterThan(0);
+  expect(rd.partlyDone(dest)).toBe(false);
+});
+
+test("a part's bytes are noted as they come, so a kill mid-part loses at most a little of it", async () => {
+  const dest = path.join(dir(), "f.mp4");
+  const every = rd.ranged.noteEvery;
+  rd.ranged.noteEvery = 64 * 1024;
+  try {
+    let journalHad = 0;
+    // Watched as the file comes: the most any part not yet whole had noted.
+    await rd.download({
+      url: `http://127.0.0.1:${server.port}/f`,
+      size: file.length,
+      dest,
+      fetch: (url, init) => fetch(url, init),
+      onBytes: () => {
+        try {
+          const kept = JSON.parse(fs.readFileSync(`${dest}.parts`, "utf8")) as { have?: Record<string, number> };
+          journalHad = Math.max(journalHad, ...Object.values(kept.have ?? {}), 0);
+        } catch {}
+      },
+    });
+    expect(journalHad).toBeGreaterThan(0);
+    expect(Buffer.from(fs.readFileSync(dest)).equals(Buffer.from(file))).toBe(true);
+  } finally {
+    rd.ranged.noteEvery = every;
+  }
 });
 
 test("stopped part-way, it carries on with the parts left; a file that's gone starts over", async () => {
