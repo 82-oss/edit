@@ -482,6 +482,7 @@ async function wantedOf(app: App, project: Project): Promise<Wanted[]> {
  */
 async function foundWanted(app: App, project: Project, lesson: removal.Lesson): Promise<Wanted[]> {
   const wanted: Wanted[] = [];
+  const taught = lessonOf(project);
   const ours = reusedMedia(project);
   const pointed = asks.pointedAt(app.store.home, project.id);
   const boxes = asks.markedBoxes(app.store.home, project.id);
@@ -491,7 +492,10 @@ async function foundWanted(app: App, project: Project, lesson: removal.Lesson): 
     const media = project.media.find((one) => one.id === id)!;
     const read = found.foundOf(app, await sourceOf(media));
     const marked = (boxes.get(id) ?? []).flatMap(([a, b, box]) => sections.intersect([[a, b]], shown).map(([x, y]): asks.BoxMark => [x, y, box]));
-    const theirs = read !== null && found.covers(read, shown) ? found.spansOf(read, shown) : [];
+    // Within what runs here: all the timeline shows of the file for a part that runs by itself, what was asked for else
+    // (after the person's Stop, "just the intro" is just the intro).
+    const within = merged(removal.kinds(lesson).blur.flatMap((kind) => asks.scope(taught, app.store.home, project.id, kind, id, shown)));
+    const theirs = read !== null && found.covers(read, shown) ? found.spansOf(read, within) : [];
     // The finder's stretches as they are (each a piece no longer than the model takes); a marked box beyond them its own.
     const beyond = sections.minus(merged(marked.map(([a, b]): [number, number] => [a, b])), merged(theirs));
     const spans = [...theirs, ...beyond].sort((a, b) => a[0] - b[0]);
