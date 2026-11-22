@@ -1,7 +1,8 @@
 // Thumbnails live in mamagi (the `thumbnails` module), reached through the
 // relay's /v1/ideas/convex as ideas are: the team's, so nothing of one is kept
-// only on one Mac. Every change reads it, makes the change and commits it
-// naming the rev it began from; overtaken, it's made again on top. Pictures go
+// only on one Mac. As ideas are, each is read and changed here first and pushed
+// behind (team_docs.ts): a change commits naming the rev it began from;
+// overtaken, it's made again on top. Pictures go
 // to R2 under `edit/thumbnails/<id>/`, the team's overlays under
 // `edit/thumbnails/assets/`.
 
@@ -10,6 +11,7 @@ import { summarize, type Asset, type Thumbnail, type ThumbRow } from "@edit/type
 import * as cloudStorage from "../cloud.ts";
 import * as diag from "../diag.ts";
 import * as relay from "../relay.ts";
+import { TeamDocs } from "../team_docs.ts";
 
 type Answer = { status: "success"; value: unknown } | { status: "error"; errorMessage?: string; errorData?: { code?: string; message?: string } | string };
 
@@ -28,7 +30,7 @@ async function call(kind: "query" | "mutation", path: string, args: Record<strin
 
 type Listed = Omit<ThumbRow, "id"> & { thumbId: string };
 
-export async function list(): Promise<ThumbRow[]> {
+async function listed(): Promise<ThumbRow[]> {
   const rows = (await call("query", "thumbnails:list", {})) as Listed[];
   return rows.map(({ thumbId, ...row }) => ({ id: thumbId, ...row }));
 }
@@ -46,37 +48,60 @@ export function withStops(thumb: Thumbnail): Thumbnail {
   return thumb;
 }
 
-export async function get(id: string): Promise<{ thumb: Thumbnail; rev: number } | null> {
+async function fetched(id: string): Promise<{ body: Thumbnail; rev: number } | null> {
   const found = (await call("query", "thumbnails:get", { thumbId: id })) as { body: Thumbnail; rev: number } | null;
-  return found === null ? null : { thumb: withStops(found.body), rev: found.rev };
+  return found === null ? null : { body: withStops(found.body), rev: found.rev };
 }
 
-export async function commit(thumb: Thumbnail, baseRev: number, by: string): Promise<number> {
+async function committed(thumb: Thumbnail, baseRev: number, by: string): Promise<number> {
   const body = { ...thumb, updatedAt: Date.now() };
   // Its workspace when it has one (the cloud keeps what it had otherwise; none is Interrogation's).
   const answer = (await call("mutation", "thumbnails:commit", { thumbId: thumb.id, baseRev, body, summary: summarize(body), by, ...(thumb.workspace === undefined ? {} : { workspace: thumb.workspace }) })) as { rev: number };
   return answer.rev;
 }
 
-export async function remove(id: string, by: string): Promise<void> {
-  await call("mutation", "thumbnails:remove", { thumbId: id, by });
+const docs = new TeamDocs<Thumbnail, ThumbRow>({
+  kind: "thumbnails",
+  fetch: fetched,
+  list: listed,
+  commit: committed,
+  remove: (id, by) => call("mutation", "thumbnails:remove", { thumbId: id, by }).then(() => undefined),
+  isConflict: (error) => error instanceof Conflict,
+  isMissing: (error) => error instanceof Missing,
+  missing: () => new Missing("This thumbnail was deleted."),
+  rowOf: (thumb, rev, by, old) => ({ createdBy: null, ...old, id: thumb.id, rev, summary: summarize(thumb), updatedAt: thumb.updatedAt, updatedBy: by || old?.updatedBy || "", ...(thumb.workspace === undefined ? {} : { workspace: thumb.workspace }) }),
+});
+
+/** Keeps the copies in Edit's data folder (thumbnails/index.ts); without it, in memory (tests). */
+export const useHome = (home: string | null): void => docs.useHome(home);
+
+/** Lets go of the copies here (tests). */
+export const forget = (): void => docs.forget();
+
+/** Resolves once nothing made here is still going up (tests). */
+export const settled = (): Promise<void> => docs.settled();
+
+export const list = (): Promise<ThumbRow[]> => docs.list();
+
+export async function get(id: string): Promise<{ thumb: Thumbnail; rev: number } | null> {
+  const found = await docs.get(id);
+  return found === null ? null : { thumb: found.body, rev: found.rev };
 }
 
-/** Changes a thumbnail on its newest copy (`change` may answer false: nothing to change); overtaken, made again on top. */
-export async function change(id: string, by: string, change: (thumb: Thumbnail) => boolean | void): Promise<{ thumb: Thumbnail; rev: number }> {
-  for (let attempt = 0; ; attempt++) {
-    const found = await get(id);
-    if (found === null) throw new Missing("This thumbnail was deleted.");
-    const thumb = structuredClone(found.thumb);
-    if (change(thumb) === false) return found;
-    try {
-      const rev = await commit(thumb, found.rev, by);
-      return { thumb: { ...thumb, updatedAt: Date.now() }, rev };
-    } catch (error) {
-      if (!(error instanceof Conflict) || attempt >= 6) throw error;
-      diag.info("thumbnails", `${id}: changed elsewhere meanwhile; making the change again on top`);
-    }
-  }
+/** A new thumbnail: made here at once, in the cloud behind. */
+export async function create(thumb: Thumbnail, by: string): Promise<void> {
+  await docs.create(thumb, by);
+}
+
+/** Commits `thumb` in the cloud as the next rev after `baseRev` (and keeps it here); the new rev. */
+export const commit = (thumb: Thumbnail, baseRev: number, by: string): Promise<number> => docs.commit(thumb, baseRev, by);
+
+export const remove = (id: string, by: string): Promise<void> => docs.remove(id, by);
+
+/** Changes a thumbnail on its newest copy here (`change` may answer false: nothing to change), pushed behind; overtaken, made again on top. `settleMs`: how long to wait for the cloud to take it. */
+export async function change(id: string, by: string, change: (thumb: Thumbnail) => boolean | void, options: { settleMs?: number } = {}): Promise<{ thumb: Thumbnail; rev: number }> {
+  const { body, rev } = await docs.change(id, by, change, options);
+  return { thumb: body, rev };
 }
 
 /** Where bytes go on R2 under `folder`: named by their hash. */

@@ -796,7 +796,7 @@ function Guide({
     upload(imageFiles(event.dataTransfer));
   };
   // One short label, as the guide names the picture (Sphe, Nov 2: "just have a label like "Base" on the bottom left corner and thats about it"):
-  // "First frame", "Base", "Reference", "Original thumbnail"; the person's own pictures and the card's have none.
+  // "First frame", "Second picture", "Base", "Reference", "Original thumbnail"; the person's own pictures and the card's have none.
   const caption = (image: IdeaImage): string | null => {
     if (image.from === "frame") {
       const place = image.name.split(" · ")[0] ?? "frame";
@@ -806,10 +806,10 @@ function Guide({
     if (image.from === "video") return "Original thumbnail";
     return null;
   };
-  // Where a picture comes from, to open: a frame at its second of the video, the approved card, the case's video.
+  // Where a picture comes from, to open: a frame at its second of the video, the approved card, the case's video (a picture the person attached, nowhere).
   const video = idea.sources.find((one) => one.kind === "youtube");
   const linkOf = (image: IdeaImage): string | null => {
-    if (image.from === "frame" && video !== undefined) return `${video.url}${video.url.includes("?") ? "&" : "?"}t=${Math.floor(image.frame?.at ?? 0)}s`;
+    if (image.from === "frame" && image.frame?.attached !== true && video !== undefined) return `${video.url}${video.url.includes("?") ? "&" : "?"}t=${Math.floor(image.frame?.at ?? 0)}s`;
     if (image.from === "base") return idea.base?.cardUrl ?? null;
     if (image.from === "video") return video?.url ?? null;
     return null;

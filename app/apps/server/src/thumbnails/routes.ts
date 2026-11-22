@@ -104,7 +104,7 @@ export function routes(router: Router<App>): void {
       thumb.workspace = workspacesOf()[0] ?? "interrogation";
       if (channel !== null) thumb.channel = channel.key;
       try {
-        await cloud.commit(thumb, 0, who);
+        await cloud.create(thumb, who);
         return json({ id: thumb.id });
       } catch (error) {
         failed(error);

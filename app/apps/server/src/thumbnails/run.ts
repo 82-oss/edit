@@ -953,7 +953,7 @@ export async function chat(context: Context, id: string, text: string, images: s
       if (version !== undefined && version !== thumb.activeVersion && (thumb.versions ?? []).some((one) => one.id === version)) switchVersion(thumb, version);
       thumb.run = { state: "queued", holder: context.holder, by: context.by, startedAt, renewedAt: startedAt, step: "Waiting for a turn" };
       thumb.chat = [...thumb.chat, { role: "you" as const, text: asked, at: Date.now(), by: context.by, ...(images.length > 0 ? { images } : {}) }].slice(-KEPT_TURNS);
-    });
+    }, LEASE_SETTLE);
   } catch (error) {
     runs.delete(id);
     throw error;
@@ -964,6 +964,12 @@ export async function chat(context: Context, id: string, text: string, images: s
   if (restart.preparing) runs.get(id)?.abort.abort();
   void work(context, id, said, images);
 }
+
+/**
+ * A turn's lease is taken in the cloud when it answers, so two Macs never run on one thumbnail: the change waits this
+ * long for it (another Mac's turn said as a refusal), then goes on from the copy here, the cloud out of reach (team_docs.ts).
+ */
+const LEASE_SETTLE = { settleMs: 15_000 };
 
 /** What a turn's job keeps: its lease's holder, who asked, and what (the words and pictures given), to carry it on after a restart (`resumeRun`). */
 type Kept = { holder: string; by: string; startedAt: number; asked?: string; images?: string[] };
@@ -1042,7 +1048,7 @@ async function carryOn(place: Omit<Context, "holder" | "by">, job: jobs.Job): Pr
     ours = run !== null && run.holder === kept.holder && run.startedAt === kept.startedAt && (run.state === "running" || run.state === "queued");
     if (!ours) return false;
     thumb.run = { ...run!, state: "queued", renewedAt: Date.now(), step: "Waiting for a turn" };
-  });
+  }, LEASE_SETTLE);
   if (!ours || runs.has(id)) return false;
   // The same turn: its start kept, so its lease and its ending (saveEnding) still match it.
   runs.set(id, { turn: { text: "", trace: [], startedAt: Date.now() }, abort: new AbortController(), step: "Waiting for a turn", startedAt: kept.startedAt });

@@ -120,6 +120,9 @@ const toolsOf = (turn: live.Turn): IdeaTool[] =>
 
 // ---------------------------------------------------------------- the tools
 
+/** A picture the person attached in the chat: its file here for Claude to Read, and its key in the idea's folder on R2. */
+type Attached = { name: string; key: string; path: string };
+
 type Session = {
   id: string;
   mode: "repackage" | "chat";
@@ -138,6 +141,8 @@ type Session = {
   folder: string;
   /** The frames grabbed this run, by the time they show ("4:12"). */
   grabbed: Map<string, { at: number; path: string }>;
+  /** The pictures the person attached in the chat, numbered as the message lists them ("picture 1"): each can go on the card. */
+  attached: Attached[];
   skipped: string | null;
   saved: { titles: boolean; guide: boolean; summary: boolean };
   calls: number;
@@ -185,17 +190,17 @@ export const TOOLS = [
   {
     name: "save_thumbnail_guide",
     description:
-      "Save the thumbnail guide for the main title: in lowercase, where the editor gets the subject's picture (“take the woman from the original thumbnail.”, “find an image of the woman.”, or “take the father from the second frame.”), then the edits to the base (this case's subject as the evidence supports, at most two scene elements seen in the base, then the caption kept, removed or changed to one to four words, in “quotes”). subject_from: \"case_thumbnail\" when the case's subject is clearly in the case's own YouTube thumbnail (it goes on the card), \"video\" when they come from frames you grabbed, \"find\" when neither has them. frames: the grabbed frames the guide takes (at most 4), each by the time grab_frames gave it (at), as the scene (use \"base\"), a person (\"subject\", with who: \"the father\"), or both in one frame (\"base_and_subject\"); the card shows them in this order, the base first, and the guide names each by its place, never its time (“use the first frame as the base. take the father from the second frame.”). base_card: the link of the approved card whose thumbnail is the base (with a base frame, the one whose idea it follows), from the list in the message. new_from_original (when the case has its own YouTube thumbnail): in a line, what a viewer who saw that thumbnail sees that's new in this one (the environment changed, a different scene of the video, another moment); the same picture again is refused.",
+      "Save the thumbnail guide for the main title: in lowercase, where the editor gets the subject's picture (“take the woman from the original thumbnail.”, “find an image of the woman.”, or “take the father from the second frame.”), then the edits to the base (this case's subject as the evidence supports, at most two scene elements seen in the base, then the caption kept, removed or changed to one to four words, in “quotes”). subject_from: \"case_thumbnail\" when the case's subject is clearly in the case's own YouTube thumbnail (it goes on the card), \"video\" when they come from frames you grabbed, \"picture\" when they come from a picture the person attached in the chat, \"find\" when none has them. frames: what the guide takes onto the card (at most 4), each a frame you grabbed by the time grab_frames gave it (at) or a picture the person attached by its number in the message's list (picture: 2), as the scene (use \"base\"), a person (\"subject\", with who: \"the father\"), or both in one (\"base_and_subject\"); the card shows them in this order, the base first, and the guide names each by its place, a frame as a frame and a picture as a picture, never by its time (“use the first frame as the base. take the father from the second frame.”, “use the first picture as the base. take the mother from the second picture.”). A picture the person gave you for the thumbnail goes on the card this way, so the editor has it; never ask them to attach it themselves. base_card: the link of the approved card whose thumbnail is the base (with a base frame, the one whose idea it follows), from the list in the message. new_from_original (when the case has its own YouTube thumbnail): in a line, what a viewer who saw that thumbnail sees that's new in this one (the environment changed, a different scene of the video, another moment); the same picture again is refused.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         guide: { type: "string" },
-        subject_from: { type: "string", enum: ["case_thumbnail", "video", "find"] },
+        subject_from: { type: "string", enum: ["case_thumbnail", "video", "picture", "find"] },
         frames: {
           type: "array",
           maxItems: 4,
-          items: { type: "object", additionalProperties: false, properties: { at: { type: "string" }, use: { type: "string", enum: ["base", "subject", "base_and_subject"] }, who: { type: "string" } }, required: ["at", "use"] },
+          items: { type: "object", additionalProperties: false, properties: { at: { type: "string" }, picture: { type: "integer", minimum: 1 }, use: { type: "string", enum: ["base", "subject", "base_and_subject"] }, who: { type: "string" } }, required: ["use"] },
         },
         base_card: { type: "string" },
         new_from_original: { type: "string" },
@@ -322,10 +327,11 @@ async function run(session: Session, name: string, args: Args): Promise<string> 
       // "just automatically passed through"; "let's try to find an image of the woman", or "we take the woman from
       // the original thumbnail here"; Nov 2: or from frames of the video).
       const from = args.subject_from;
-      if (from !== "case_thumbnail" && from !== "find" && from !== "video") throw new Error('subject_from is "case_thumbnail" (the subject is in the case\'s own thumbnail), "video" (they come from frames you grabbed) or "find" (neither has them).');
+      if (from !== "case_thumbnail" && from !== "find" && from !== "video" && from !== "picture") throw new Error('subject_from is "case_thumbnail" (the subject is in the case\'s own thumbnail), "video" (they come from frames you grabbed), "picture" (from a picture the person attached) or "find" (none has them).');
       if (from === "case_thumbnail" && session.caseThumbnail === null) throw new Error('This case has no YouTube thumbnail to take the subject from: use subject_from "video" or "find".');
-      if (from === "video" && !taken.some((one) => one.frame.use !== "base")) throw new Error('subject_from "video" takes the subject from a frame: give it in frames with use "subject" (and who) or "base_and_subject".');
-      const said = session.taught ? null : (sourceProblem(guide, from) ?? framesProblem(guide, taken.length) ?? lookProblem(guide, from));
+      if (from === "video" && !taken.some((one) => one.frame.use !== "base" && one.frame.attached !== true)) throw new Error('subject_from "video" takes the subject from a frame: give it in frames with use "subject" (and who) or "base_and_subject".');
+      if (from === "picture" && !taken.some((one) => one.frame.use !== "base" && one.frame.attached === true)) throw new Error('subject_from "picture" takes the subject from a picture the person attached: give it in frames by its number (picture: 1) with use "subject" (and who) or "base_and_subject".');
+      const said = session.taught ? null : (sourceProblem(guide, from) ?? framesProblem(guide, taken.map((one) => (one.frame.attached === true ? "picture" : "frame"))) ?? lookProblem(guide, from));
       // Sphe, Nov 2: "this is way too similar to the original thumbnail. I do like us to have a bit of novelty there…
       // We change up the environments": said on purpose, against the case's own thumbnail.
       const novelty = typeof args.new_from_original === "string" ? args.new_from_original.trim() : "";
@@ -335,9 +341,11 @@ async function run(session: Session, name: string, args: Args): Promise<string> 
       // The frames on the card: put in the idea's folder on R2 before the guide is saved.
       const framed: IdeaImage[] = [];
       for (const one of taken) {
-        const key = await cloud.putPicture(session.id, new Uint8Array(fs.readFileSync(one.path)), "image/jpeg", "jpg");
+        // A picture the person attached is in the idea's folder already; a frame goes up.
+        const key = one.key ?? (await cloud.putPicture(session.id, new Uint8Array(fs.readFileSync(one.path)), "image/jpeg", "jpg"));
         const label = one.frame.use === "base" ? "base" : one.frame.use === "base_and_subject" ? `base, ${one.frame.who ?? "the subject"}` : (one.frame.who ?? "the subject");
-        framed.push({ id: newId(), name: `${one.label} frame · ${label} · ${frames.clock(one.frame.at)}`, key, from: "frame", frame: one.frame });
+        const name = one.frame.attached === true ? `${one.label} picture · ${label}` : `${one.label} frame · ${label} · ${frames.clock(one.frame.at)}`;
+        framed.push({ id: newId(), name, key, from: "frame", frame: one.frame });
       }
       const baseFrame = framed.find((one) => one.frame?.use !== "subject") ?? null;
       const baseLink = typeof args.base_card === "string" && args.base_card.trim() !== "" ? args.base_card.trim() : null;
@@ -370,7 +378,7 @@ async function run(session: Session, name: string, args: Args): Promise<string> 
       session.saved.guide = true;
       return kept
         ? "The person wrote this idea's guide by hand, so theirs stays. Carry on."
-        : `Thumbnail guide saved${baseFrame !== null ? `, on the first frame` : ""}${base !== undefined ? `${baseFrame !== null ? ", following" : ", on the base from"} “${base.title}”` : ""}${framed.length > 0 ? `, with ${framed.length} ${framed.length === 1 ? "frame" : "frames"} on the card` : ""}.`;
+        : `Thumbnail guide saved${baseFrame !== null ? `, on the first ${baseFrame.frame?.attached === true ? "picture" : "frame"}` : ""}${base !== undefined ? `${baseFrame !== null ? ", following" : ", on the base from"} “${base.title}”` : ""}${framed.length > 0 ? `, with ${framed.length} on the card` : ""}.`;
     }
     case "save_summary": {
       const summary = words(args.summary, "summary").trim().replace(/\s+/g, " ");
@@ -409,13 +417,24 @@ function videoOf(session: Session): Promise<frames.Video> {
   return session.video.found;
 }
 
-/** The frames save_thumbnail_guide was given, each one grabbed this run. */
-function framesOf(session: Session, given: unknown): { frame: IdeaFrame; path: string; label: string }[] {
+/** The frames save_thumbnail_guide was given, each one grabbed this run or a picture the person attached (`key`: in the idea's folder already). */
+function framesOf(session: Session, given: unknown): { frame: IdeaFrame; path: string; label: string; key?: string }[] {
   if (given === undefined) return [];
   if (!Array.isArray(given)) throw new Error("frames is a list of the frames the guide takes.");
   if (given.length > 4) throw new Error("At most 4 frames: the base and the people the guide takes.");
-  const out: { frame: IdeaFrame; path: string; label: string }[] = [];
+  const out: { frame: IdeaFrame; path: string; label: string; key?: string }[] = [];
   for (const one of given as Args[]) {
+    if (one.picture !== undefined) {
+      const number = Number(one.picture);
+      const picture = Number.isInteger(number) ? session.attached[number - 1] : undefined;
+      if (picture === undefined) throw new Error(session.attached.length === 0 ? "The person hasn't attached any pictures in the chat: name a grabbed frame by its time (at)." : `There's no picture ${JSON.stringify(one.picture)}: the person attached ${session.attached.length === 1 ? "picture 1" : `pictures 1 to ${session.attached.length}`}.`);
+      const use = one.use;
+      if (use !== "base" && use !== "subject" && use !== "base_and_subject") throw new Error('Each frame\'s use is "base", "subject" or "base_and_subject".');
+      const who = typeof one.who === "string" && one.who.trim() !== "" ? one.who.trim().toLowerCase().slice(0, 40) : undefined;
+      if (use !== "base" && who === undefined) throw new Error(`Picture ${number} is a person: say who (who: "the mother").`);
+      out.push({ frame: { at: 0, use, ...(who !== undefined ? { who } : {}), attached: true }, path: picture.path, label: ORDINALS[out.length]!, key: picture.key });
+      continue;
+    }
     const at = frames.secondsOf(one.at);
     if (at === null) throw new Error('Each frame\'s at is its time as grab_frames gave it ("4:12").');
     // Its time as given back, else the grabbed frame within a second of it.
@@ -428,8 +447,8 @@ function framesOf(session: Session, given: unknown): { frame: IdeaFrame; path: s
     // Named as the card shows it, in this order: "the first frame".
     out.push({ frame: { at: shown.at, use, ...(who !== undefined ? { who } : {}) }, path: shown.path, label: ORDINALS[out.length]! });
   }
-  if (out.filter((one) => one.frame.use !== "subject").length > 1) throw new Error("One base frame at most: the scene the thumbnail is built on.");
-  if (out.length > 1 && out.slice(1).some((one) => one.frame.use !== "subject")) throw new Error("The base frame goes first in frames: the card shows the frames in this order, the base first.");
+  if (out.filter((one) => one.frame.use !== "subject").length > 1) throw new Error("One base at most: the scene the thumbnail is built on.");
+  if (out.length > 1 && out.slice(1).some((one) => one.frame.use !== "subject")) throw new Error("The base goes first in frames: the card shows them in this order, the base first.");
   return out;
 }
 
@@ -609,18 +628,28 @@ async function placePicture(id: string, source: string, roots: string[]): Promis
   return `${base}/files/${key.split("/").pop()}`;
 }
 
-/** The pictures attached to the latest message, saved in `folder` for Claude to Read: their paths. */
-async function attachedPictures(idea: Idea, folder: string): Promise<string[]> {
-  const last = [...idea.chat].reverse().find((turn) => turn.role === "you");
-  const out: string[] = [];
-  for (const [index, image] of (last?.images ?? []).entries()) {
-    if (image.key === undefined) continue;
+/** How many of the person's chat pictures a turn is given, the latest. */
+const ATTACHED_MOST = 8;
+
+/**
+ * The pictures the person attached in the chat (the latest eight, in the order
+ * sent), saved in `folder` for Claude to Read, each able to go on the card
+ * (save_thumbnail_guide's frames, `picture: n`). Only the latest message's were
+ * given, and only to look at: Sphe's, Nov 22, two pictures for the thumbnail
+ * ("take the mother from the first, place her in the second"), and Claude
+ * could only ask them to attach the second to the card themselves.
+ */
+async function attachedPictures(idea: Idea, folder: string): Promise<Attached[]> {
+  const given = new Map<string, IdeaImage>();
+  for (const turn of idea.chat) if (turn.role === "you") for (const image of turn.images ?? []) if (image.key !== undefined && !given.has(image.key)) given.set(image.key, image);
+  const out: Attached[] = [];
+  for (const [key, image] of [...given].slice(-ATTACHED_MOST)) {
     try {
-      const answer = await fetch(await cloudStorage.presign(image.key, "GET"), { signal: AbortSignal.timeout(60_000) });
+      const answer = await fetch(await cloudStorage.presign(key, "GET"), { signal: AbortSignal.timeout(60_000) });
       if (!answer.ok) throw new Error(`the cloud answered ${answer.status}`);
-      const path = join(folder, `attached-${index + 1}${image.key.slice(image.key.lastIndexOf("."))}`);
+      const path = join(folder, `picture-${out.length + 1}${key.slice(key.lastIndexOf("."))}`);
       fs.writeFileSync(path, new Uint8Array(await answer.arrayBuffer()));
-      out.push(`“${image.name}”: ${path}`);
+      out.push({ name: image.name, key, path });
     } catch (error) {
       diag.warn("ideas", `an attached picture (${image.name}) for ${idea.id}: ${diag.messageOf(error)}`);
     }
@@ -680,7 +709,7 @@ Edit has already done the fetching: the case's details (title, description, view
 
 1. Read the case's details and the transcript (or the article). If the message has no usable transcript or article text, call \`skip_case\` with the reason, and stop.
 2. Write the titles and save them with \`save_titles\`, strongest first: the first names the card.
-3. Write the thumbnail guide for the main title and save it with \`save_thumbnail_guide\`: where the subject's picture comes from (\`subject_from\`: "case_thumbnail", "video" with the frames you grabbed in \`frames\`, the base first, or "find"), the approved card you follow as \`base_card\` when one fits, and in \`new_from_original\` what's new against the case's own thumbnail. The card shows the frames in that order.
+3. Write the thumbnail guide for the main title and save it with \`save_thumbnail_guide\`: where the subject's picture comes from (\`subject_from\`: "case_thumbnail", "video" with the frames you grabbed in \`frames\`, "picture" with the pictures the person attached in \`frames\` (the base first either way), or "find"), the approved card you follow as \`base_card\` when one fits, and in \`new_from_original\` what's new against the case's own thumbnail. The card shows the frames in that order.
 4. When asked, write the summary and save it with \`save_summary\`.
 5. End with one short line saying what you wrote. Nothing else: the titles and guide are on the page.
 
@@ -745,6 +774,12 @@ const jobOf = (id: string): string => jobs.keyOf("idea", id);
 type Kept = { holder: string; by: string; what: IdeaRun["what"]; startedAt: number; options?: Options; asked?: string | null };
 type Options = { improve?: boolean; changes?: boolean };
 
+/**
+ * A run's lease is taken in the cloud when it answers, so two Macs never run on one idea: the change waits this long
+ * for it (another Mac's run said as a refusal), then goes on from the copy here, the cloud out of reach (team_docs.ts).
+ */
+const LEASE_SETTLE = { settleMs: 15_000 };
+
 /** Marks the run queued in the cloud (refused while another Mac holds one), and lists it with what was asked. */
 async function begin(context: Context, id: string, what: IdeaRun["what"], asked: Pick<Kept, "options" | "asked">, also: (idea: Idea) => void): Promise<void> {
   // The last run's ending first, if it hasn't landed: the new run would take its place.
@@ -755,7 +790,7 @@ async function begin(context: Context, id: string, what: IdeaRun["what"], asked:
     if (runLease.heldElsewhere(other, context.holder)) throw new Error(`Claude is working on this idea on ${other!.holder}: wait for it there.`);
     idea.run = { what, state: "queued", holder: context.holder, by: context.by, startedAt, renewedAt: startedAt, step: "Waiting for a turn" };
     also(idea);
-  });
+  }, LEASE_SETTLE);
   jobs.begin(context.home, "idea", id, { holder: context.holder, by: context.by, what, startedAt, ...asked } satisfies Kept, "", "queued");
   runs.set(id, { turn: { text: "", trace: [], startedAt }, abort: new AbortController(), step: "Waiting for a turn", startedAt });
   // Asked as Edit restarts: left for the next start to carry on.
@@ -841,7 +876,7 @@ async function carryOn(place: Pick<Context, "home" | "port">, job: jobs.Job): Pr
     ours = run !== null && run.holder === kept.holder && run.startedAt === kept.startedAt && (run.state === "running" || run.state === "queued");
     if (!ours) return false;
     idea.run = { ...run!, state: "queued", renewedAt: Date.now(), step: "Waiting for a turn" };
-  });
+  }, LEASE_SETTLE);
   if (!ours || runs.has(id)) return false;
   // The same run: its start kept, so its lease and its ending (saveEnding) still match it.
   runs.set(id, { turn: { text: "", trace: [], startedAt: Date.now() }, abort: new AbortController(), step: "Waiting for a turn", startedAt: kept.startedAt });
@@ -897,8 +932,8 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         return { state: "done" as const, text: prepared };
       }
       folder = prepared.folder;
-      // The pictures attached to this message, beside the run's own (Read them).
-      const attached = what === "chat" ? await attachedPictures(idea, prepared.folder) : [];
+      // The pictures the person attached in the chat, beside the run's own (Read them; each can go on the card).
+      const attached = await attachedPictures(idea, prepared.folder);
       const working = what === "chat" ? "Claude is working" : "Writing titles";
       await step(working);
       const youtube = idea.sources.find((one) => one.kind === "youtube");
@@ -913,6 +948,7 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         video: youtube?.kind === "youtube" ? { id: youtube.videoId, found: null } : null,
         folder: prepared.folder,
         grabbed: new Map(),
+        attached,
         skipped: null,
         saved: { titles: false, guide: false, summary: false },
         calls: 0,
@@ -932,7 +968,9 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         options.changes && idea.changes !== null ? `# The reviewers' comments on its card\n${idea.changes.comments.map((one) => `- ${one.author}: ${one.text}`).join("\n")}` : "",
         recent.length > 0 ? `# The conversation so far\n${recent.join("\n\n")}` : "",
         "# The chat\nThe person reads your words as Markdown, and it shows pictures: ![what it is](a picture's file path or image id).",
-        attached.length > 0 ? `# Pictures the person attached to this message (Read them)\n${attached.map((one) => `- ${one}`).join("\n")}` : "",
+        attached.length > 0
+          ? `# Pictures the person attached in the chat (Read them)\nWhen the person means one for the thumbnail (its base, or a person in it), put it on the card in save_thumbnail_guide's frames by its number (picture: 1), and the guide names it by its place on the card (“the first picture”).\n${attached.map((one, index) => `- picture ${index + 1} (“${one.name}”): ${one.path}`).join("\n")}`
+          : "",
         carried ? "# Carrying on\nEdit restarted while you were on this. What you saved before it is in the idea as it is now; carry on from there rather than doing it again." : "",
         what === "chat"
           ? `# The person asks\n${asked}`

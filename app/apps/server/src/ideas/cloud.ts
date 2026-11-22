@@ -1,15 +1,16 @@
 // Ideas live in mamagi (the `ideas` module), reached through the relay's
 // /v1/ideas/convex: the team's, so nothing of an idea is kept only on one Mac
-// (the user, Oct 29: "everything on the cloud!"). Every change reads the idea,
-// makes the change and commits it naming the rev it began from; overtaken by
-// another Mac's (or this Mac's own run), it reads again and makes the change
-// on top, so neither is lost.
+// (the user, Oct 29: "everything on the cloud!"). Each is read and changed
+// here first, a copy kept on this computer and pushed behind (team_docs.ts,
+// Nov 22: a moment the relay couldn't answer was an error on the page or a
+// failed chat): a change commits naming the rev it began from, and overtaken
+// by another Mac's it's made again on top, so neither is lost.
 
 import { footageIn, type Idea, type IdeaRow, type IdeaSummary } from "@edit/types/ideas";
 
-import * as diag from "../diag.ts";
 import * as cloudStorage from "../cloud.ts";
 import * as relay from "../relay.ts";
+import { TeamDocs } from "../team_docs.ts";
 
 type Answer = { status: "success"; value: unknown } | { status: "error"; errorMessage?: string; errorData?: { code?: string; message?: string } | string };
 
@@ -30,17 +31,18 @@ async function call(kind: "query" | "mutation", path: string, args: Record<strin
 }
 
 type Listed = Omit<IdeaRow, "id" | "place"> & { ideaId: string };
+type Row = Omit<IdeaRow, "place">;
 
-/** Every idea, newest change first, without their bodies. */
-export async function list(): Promise<Omit<IdeaRow, "place">[]> {
+/** Every idea in the cloud, newest change first, without their bodies. */
+async function listed(): Promise<Row[]> {
   const rows = (await call("query", "ideas:list", {})) as Listed[];
   return rows.map(({ ideaId, ...row }) => ({ id: ideaId, ...row, workspace: row.workspace ?? "interrogation" }));
 }
 
-/** One idea and the rev it's at, or null. */
-export async function get(id: string): Promise<{ idea: Idea; rev: number } | null> {
+/** One idea in the cloud and its rev, or null. */
+async function fetched(id: string): Promise<{ body: Idea; rev: number } | null> {
   const found = (await call("query", "ideas:get", { ideaId: id })) as { body: Idea; rev: number } | null;
-  return found === null ? null : { idea: { ...found.body, workspace: found.body.workspace ?? "interrogation", footage: footageOf(found.body.footage) }, rev: found.rev };
+  return found === null ? null : { body: { ...found.body, workspace: found.body.workspace ?? "interrogation", footage: footageOf(found.body.footage) }, rev: found.rev };
 }
 
 /** An idea's footage as a list: until Nov 2 it was one Drive folder's link. */
@@ -49,37 +51,63 @@ function footageOf(given: unknown): Idea["footage"] {
   return typeof given === "string" ? footageIn(given, () => Math.random().toString(36).slice(2, 10)).footage : [];
 }
 
-/** Commits `idea` as the next rev after `baseRev`; the new rev. */
-export async function commit(idea: Idea, baseRev: number, by: string): Promise<number> {
-  const at = Date.now();
-  const body = { ...idea, updatedAt: at };
+/** Commits `idea` in the cloud as the next rev after `baseRev`; the new rev. */
+async function committed(idea: Idea, baseRev: number, by: string): Promise<number> {
+  const body = { ...idea, updatedAt: Date.now() };
   const answer = (await call("mutation", "ideas:commit", { ideaId: idea.id, workspace: idea.workspace, baseRev, body, summary: summarize(body), by })) as { rev: number };
   return answer.rev;
 }
 
-export async function remove(id: string, by: string): Promise<void> {
-  await call("mutation", "ideas:remove", { ideaId: id, by });
+const docs = new TeamDocs<Idea, Row>({
+  kind: "ideas",
+  fetch: fetched,
+  list: listed,
+  commit: committed,
+  remove: (id, by) => call("mutation", "ideas:remove", { ideaId: id, by }).then(() => undefined),
+  isConflict: (error) => error instanceof Conflict,
+  isMissing: (error) => error instanceof Missing,
+  missing: () => new Missing("This idea was deleted."),
+  rowOf: (idea, rev, by, old) => ({ createdBy: null, ...old, id: idea.id, workspace: idea.workspace, rev, summary: summarize(idea), updatedAt: idea.updatedAt, updatedBy: by || old?.updatedBy || "" }),
+});
+
+/** Keeps the copies in Edit's data folder (ideas/index.ts); without it, in memory (tests). */
+export const useHome = (home: string | null): void => docs.useHome(home);
+
+/** Lets go of the copies here (tests). */
+export const forget = (): void => docs.forget();
+
+/** Resolves once nothing made here is still going up (tests). */
+export const settled = (): Promise<void> => docs.settled();
+
+/** Every idea, newest change first, without their bodies. */
+export const list = (): Promise<Row[]> => docs.list();
+
+/** One idea and the rev it's at, or null. */
+export async function get(id: string): Promise<{ idea: Idea; rev: number } | null> {
+  const found = await docs.get(id);
+  return found === null ? null : { idea: found.body, rev: found.rev };
 }
 
+/** A new idea: made here at once, in the cloud behind. */
+export async function create(idea: Idea, by: string): Promise<void> {
+  await docs.create(idea, by);
+}
+
+/** Commits `idea` in the cloud as the next rev after `baseRev` (and keeps it here); the new rev. */
+export const commit = (idea: Idea, baseRev: number, by: string): Promise<number> => docs.commit(idea, baseRev, by);
+
+/** Deletes an idea: the cloud has to answer. */
+export const remove = (id: string, by: string): Promise<void> => docs.remove(id, by);
+
 /**
- * Changes an idea: `change` makes the change on the newest copy (and may
- * answer false: nothing to change). Overtaken, it's made again on the newer
- * one, up to five times.
+ * Changes an idea: `change` makes the change on the newest copy here (and
+ * may answer false: nothing to change); it goes up behind, made again on a
+ * newer copy if another Mac's overtook it. `settleMs`: how long to wait for
+ * the cloud to take it (a run's lease), a refusal thrown.
  */
-export async function change(id: string, by: string, change: (idea: Idea) => boolean | void): Promise<{ idea: Idea; rev: number }> {
-  for (let attempt = 0; ; attempt++) {
-    const found = await get(id);
-    if (found === null) throw new Missing("This idea was deleted.");
-    const idea = structuredClone(found.idea);
-    if (change(idea) === false) return found;
-    try {
-      const rev = await commit(idea, found.rev, by);
-      return { idea: { ...idea, updatedAt: Date.now() }, rev };
-    } catch (error) {
-      if (!(error instanceof Conflict) || attempt >= 4) throw error;
-      diag.info("ideas", `${id}: changed elsewhere meanwhile; making the change again on top`);
-    }
-  }
+export async function change(id: string, by: string, change: (idea: Idea) => boolean | void, options: { settleMs?: number } = {}): Promise<{ idea: Idea; rev: number }> {
+  const { body, rev } = await docs.change(id, by, change, options);
+  return { idea: body, rev };
 }
 
 /** A source's key: a video by its id, an article by its link. */

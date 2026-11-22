@@ -57,7 +57,13 @@ export type IdeaImage = {
 };
 
 /** What a frame of the case's video is for (Sphe, Nov 2: "we pick the base frame e.g outside the house… and we pick the subjects, e.g the father, the child"). */
-export type IdeaFrame = { at: number; use: "base" | "subject" | "base_and_subject"; who?: string };
+export type IdeaFrame = {
+  at: number;
+  use: "base" | "subject" | "base_and_subject";
+  who?: string;
+  /** A picture the person attached in the chat, not a frame of the video (Sphe, Nov 22: "it just doesn't use my images"): no second to open. */
+  attached?: true;
+};
 
 /**
  * A piece of the footage for the script, as New project takes it (Sphe, Nov 2:

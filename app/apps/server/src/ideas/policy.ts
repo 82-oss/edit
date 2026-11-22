@@ -118,9 +118,10 @@ export function guideProblem(guide: string, frames = 0): string | null {
  * tool was told: "take the woman from the original thumbnail" or "find an
  * image of the woman" (the user, Nov 1).
  */
-export function sourceProblem(guide: string, from: "case_thumbnail" | "find" | "video"): string | null {
+export function sourceProblem(guide: string, from: "case_thumbnail" | "find" | "video" | "picture"): string | null {
   const text = guide.toLowerCase();
   if (from === "video") return /\b(?:first|second|third|fourth) frame\b/.test(text) ? null : "doesn't say which frame the subject comes from (“take the father from the second frame.”)";
+  if (from === "picture") return /\b(?:first|second|third|fourth) picture\b/.test(text) ? null : "doesn't say which picture the subject comes from (“take the mother from the second picture.”)";
   if (from === "case_thumbnail") return /\bfrom the original thumbnail\b/.test(text) ? null : "doesn't say to take the subject from the original thumbnail (“take the woman from the original thumbnail.”)";
   return /\bfind (?:an? )?(?:image|picture|photo) of\b/.test(text) ? null : "doesn't say to find an image of the subject (“find an image of the woman.”)";
 }
@@ -131,11 +132,11 @@ export function sourceProblem(guide: string, from: "case_thumbnail" | "find" | "
  * dark curly hair… in a grey sweatshirt" told them what the frame showed. Only
  * "find an image of…" needs the subject's look written.
  */
-export function lookProblem(guide: string, from: "case_thumbnail" | "find" | "video"): string | null {
+export function lookProblem(guide: string, from: "case_thumbnail" | "find" | "video" | "picture"): string | null {
   if (from === "find") return null;
   const said = /\bmake (?:the [a-z' -]{1,30}?|her|him|them) (?:an?|into an?) [^.]*?\b(?:man|woman|girl|boy|teen|teenager|child|kid|person|lady|guy|mother|father|mom|dad)\b[^.]*/i.exec(guide.replace(/[“"][^”"]*[”"]/g, ""));
   if (said === null) return null;
-  return `describes how the subject looks (“${said[0].trim()}”), but the editor takes them from ${from === "video" ? "a frame" : "the original thumbnail"}, which shows it: say only what changes`;
+  return `describes how the subject looks (“${said[0].trim()}”), but the editor takes them from ${from === "video" ? "a frame" : "the original thumbnail"}, which shows it: say only what changes`.replace("from the original thumbnail, which", from === "picture" ? "from a picture you were given, which" : "from the original thumbnail, which");
 }
 
 /** How the card's frames are named, in the order they're shown. */
@@ -145,16 +146,26 @@ export const ORDINALS = ["first", "second", "third", "fourth"] as const;
  * Whether the guide names each frame it takes by its place on the card ("the
  * first frame", "the second frame"), and only those (Sphe, Nov 2: "it should
  * rather say, "use the first frame here..." it should know the order in which
- * the frames will be shown"): never by its time.
+ * the frames will be shown"): never by its time. A picture the person attached
+ * is named the same way, as a picture ("take the mother from the second
+ * picture."). `taken`: the frames' count, or each one's noun in the card's order.
  */
-export function framesProblem(guide: string, count: number): string | null {
+export function framesProblem(guide: string, taken: number | ("frame" | "picture")[]): string | null {
   const text = guide.toLowerCase();
+  const nouns = typeof taken === "number" ? Array.from({ length: taken }, () => "frame" as const) : taken;
   if (/\bframes? at \d/.test(text)) return "names a frame by its time: name it by its place on the card (“use the first frame as the base.”, “take the father from the second frame.”)";
-  const names = ORDINALS.slice(0, count);
-  const missing = names.filter((one) => !new RegExp(`\\b${one} frame\\b`).test(text));
-  if (missing.length > 0) return `doesn't say what the ${missing[0]} frame is for (“use the first frame as the base.” or “take the father from the ${missing[0]} frame.”)`;
-  const extra = ORDINALS.slice(count).find((one) => new RegExp(`\\b${one} frame\\b`).test(text));
-  if (extra !== undefined) return `names the ${extra} frame, but the card has ${count === 1 ? "one frame" : `${count} frames`}`;
+  const missing = nouns.findIndex((noun, index) => !new RegExp(`\\b${ORDINALS[index]} ${noun}\\b`).test(text));
+  if (missing >= 0) {
+    const name = `${ORDINALS[missing]} ${nouns[missing]}`;
+    return `doesn't say what the ${name} is for (“use the first ${nouns[0]} as the base.” or “take the father from the ${name}.”)`;
+  }
+  for (const [index, one] of ORDINALS.entries()) {
+    const named = (["frame", "picture"] as const).find((noun) => noun !== nouns[index] && new RegExp(`\\b${one} ${noun}\\b`).test(text));
+    if (named === undefined) continue;
+    if (index < nouns.length) return `names the ${one} ${named}, but the card's ${one} is a ${nouns[index]}`;
+    const all = nouns.every((noun) => noun === nouns[0]) ? (nouns[0] ?? named) : "picture";
+    return `names the ${one} ${named}, but the card has ${nouns.length === 0 ? `no ${named}s` : nouns.length === 1 ? `one ${all}` : `${nouns.length} ${all}s`}`;
+  }
   return null;
 }
 

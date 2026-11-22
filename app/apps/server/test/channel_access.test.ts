@@ -13,6 +13,8 @@ import type { Idea } from "@edit/types/ideas";
 import * as accounts from "../src/accounts.ts";
 import * as addons from "../src/addons.ts";
 import * as ideasCloud from "../src/ideas/cloud.ts";
+import * as teamDocs from "../src/team_docs.ts";
+import * as thumbsCloud from "../src/thumbnails/cloud.ts";
 import { mayIdea, mayIdeas } from "../src/ideas/routes.ts";
 import * as run from "../src/ideas/run.ts";
 import { respond } from "../src/http/server.ts";
@@ -35,7 +37,10 @@ let renewed: ReturnType<typeof spyOn>;
 const ideaRows = new Map<string, { body: Idea; rev: number; workspace: string }>();
 const thumbRows = new Map<string, { body: Record<string, unknown>; rev: number; workspace: string }>();
 
+const savedSettle = teamDocs.timing.settleMs;
+
 beforeAll(() => {
+  teamDocs.timing.settleMs = 5_000;
   mock = MockServer.start();
   restore = mock.useEnv({ EDIT_RELAY_TOKEN: "cloud-token" });
   // The import after an edit is made (footage, words, layout) isn't what's tested here.
@@ -71,6 +76,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  teamDocs.timing.settleMs = savedSettle;
   started.mockRestore();
   renewed.mockRestore();
   restore();
@@ -81,6 +87,8 @@ afterEach(() => {
   mock.cloud.convex.channels = [];
   ideaRows.clear();
   thumbRows.clear();
+  ideasCloud.forget();
+  thumbsCloud.forget();
   v2cloud.useSkillsForTests([]);
   accounts.resetForTests();
 });

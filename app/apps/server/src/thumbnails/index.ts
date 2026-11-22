@@ -7,11 +7,14 @@ import type { App } from "../app.ts";
 import * as openart from "./openart.ts";
 import type * as jobs from "../jobs.ts";
 import * as update from "../update.ts";
+import * as cloud from "./cloud.ts";
 import { contextOf } from "./routes.ts";
 import { prepareRestart, resumeRun as resumeOne } from "./run.ts";
 
 export function start(app: App): void {
   openart.useHome(app.store.home);
+  // Each thumbnail kept here as well as in the cloud (team_docs.ts): what a restart left unsent goes up now.
+  cloud.useHome(app.store.home ?? null);
   // Registered before serve.ts's own, which stops every program Edit started (Claude Code among them) after it.
   update.onPrepare(() => prepareRestart());
 }

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { placesOf as graphicsPlaces, repoint } from "../src/thumbnails/graphics.ts";
@@ -9,6 +9,7 @@ import type { Model } from "../src/thumbnails/openart.ts";
 import { paramsOf, stateOf } from "../src/thumbnails/openart.ts";
 import * as cloud from "../src/thumbnails/cloud.ts";
 import { withStops } from "../src/thumbnails/cloud.ts";
+import * as teamDocs from "../src/team_docs.ts";
 import * as jobs from "../src/jobs.ts";
 import * as run from "../src/thumbnails/run.ts";
 import { scratch } from "./helpers/home.ts";
@@ -19,6 +20,16 @@ import { sizeOf } from "../src/thumbnails/size.ts";
 import * as frames from "../src/ideas/frames.ts";
 
 const sources = new Set(["img1", "asset:bodycam-rec"]);
+
+// Each change waits for the stand-in cloud to take it, as writing through did (team_docs.test.ts has the copies here).
+const savedSettle = teamDocs.timing.settleMs;
+beforeAll(() => {
+  teamDocs.timing.settleMs = 5_000;
+});
+afterEach(() => cloud.forget());
+afterAll(() => {
+  teamDocs.timing.settleMs = savedSettle;
+});
 
 test("a layer as given takes the house's defaults and is checked", () => {
   const overlay = layerOf({ kind: "image", source: "asset:bodycam-rec" }, undefined, sources);
@@ -454,6 +465,8 @@ test("an update stops a thumbnail's turn without an ending, and the next start c
     };
     await run.resumeRun({ origin: context.origin, port: context.port, cacheDir: context.cacheDir, home }, jobs.get(home, key)!);
     for (let tries = 0; tries < 200 && (run.isRunning("t-restart") || jobs.get(home, key) !== undefined); tries++) await Bun.sleep(10);
+    // Its ending is kept here at once and goes up behind (team_docs.ts).
+    await cloud.settled();
     expect(asks).toBe(2);
     expect(prompt).toContain("# Carrying on\nEdit restarted while you were on this turn.");
     expect(prompt).toContain("# The person asks\nmake him look guiltier");

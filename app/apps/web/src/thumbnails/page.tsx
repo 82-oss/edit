@@ -132,6 +132,9 @@ function settleCaptions(design: Design): Design {
 
 // ---------------------------------------------------------------- the screen
 
+/** A thumbnail's revision as the page tells them apart: the cloud's rev, and its last change (one made here keeps the rev until it's gone up). */
+const revOf = (thumb: Thumbnail, rev: number): string => `${rev}:${thumb.updatedAt}`;
+
 export function ThumbnailScreen({ id }: { id: string }) {
   const [thumb, setThumb] = useState<Thumbnail | null>(null);
   /** Why the thumbnail couldn't be read (null: read, or not yet). */
@@ -139,10 +142,11 @@ export function ThumbnailScreen({ id }: { id: string }) {
   const toastError = useEditor((state) => state.toastError);
   const canvas = useRef<HTMLCanvasElement>(null);
 
-  // The last revision shown: a poll that brings the same one back changes nothing (and redraws nothing).
-  const shownRev = useRef<number | null>(null);
+  // The last revision shown: a poll that brings the same one back changes nothing (and redraws nothing). By its change
+  // too: one made on this computer keeps the cloud's rev until it's gone up (team_docs.ts).
+  const shownRev = useRef<string | null>(null);
   const show = useCallback((next: Thumbnail, rev: number) => {
-    shownRev.current = rev;
+    shownRev.current = revOf(next, rev);
     setThumb({ ...next, design: settleCaptions(next.design) });
   }, []);
   // Changes made here (a version shown, a comment) not yet answered for: a poll meanwhile would show what was before.
@@ -153,7 +157,7 @@ export function ThumbnailScreen({ id }: { id: string }) {
         .get(id)
         .then(({ thumb, rev }) => {
           setMissing(null);
-          if (rev !== shownRev.current && switching.current === 0) show(thumb, rev);
+          if (revOf(thumb, rev) !== shownRev.current && switching.current === 0) show(thumb, rev);
         })
         .catch((error: unknown) => setMissing(error ?? new Error("Can't reach Edit's server"))),
     [id, show],

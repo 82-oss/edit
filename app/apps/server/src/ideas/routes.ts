@@ -415,7 +415,7 @@ async function fromCard(given: string, workspace: Workspace): Promise<string> {
   idea.status = "sent";
   idea.card = { cardId: card.id, url: card.url, lane, list: card.list, sentAt: Date.now(), sentBy: who };
   idea.changes = card.changes ? { comments: board.commentsOf(card), at: Date.now() } : null;
-  await cloud.commit(idea, 0, who);
+  await cloud.create(idea, who);
   return idea.id;
 }
 
@@ -467,7 +467,7 @@ export function routes(router: Router<App>): void {
             }
             const source = await sourceOf(link);
             const idea = run.fresh(newId(), who, { workspace, ...(channel !== null ? { channel: channel.key } : {}), sources: [source], steer, wantsSummary: body.summary === true, footage: links.length === 1 ? footage : [] });
-            await cloud.commit(idea, 0, who);
+            await cloud.create(idea, who);
             made.push({ id: idea.id, link });
           } catch (error) {
             refused.push({ link, why: diag.messageOf(error) });

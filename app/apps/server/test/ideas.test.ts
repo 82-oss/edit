@@ -15,6 +15,7 @@ import { cleanGuide, cleanTitle, closest, framesProblem, guideProblem, lookProbl
 import { applyPatch, linksIn, mayIdeas, mayWorkspace, readiness, workspacesOf } from "../src/ideas/routes.ts";
 import * as jobs from "../src/jobs.ts";
 import * as runLease from "../src/run_lease.ts";
+import * as teamDocs from "../src/team_docs.ts";
 import * as run from "../src/ideas/run.ts";
 import * as sources from "../src/ideas/sources.ts";
 import * as live from "../src/writer/live.ts";
@@ -27,6 +28,7 @@ let mock: MockServer;
 let restore: () => void;
 let home: string;
 let cleanup: () => void;
+const savedTiming = { ...teamDocs.timing };
 
 /** mamagi's ideas functions, in memory, refusing a stale rev as the real ones do. */
 const rows = new Map<string, { body: Idea; rev: number }>();
@@ -35,6 +37,10 @@ let conflicts = 0;
 let down = 0;
 
 beforeAll(() => {
+  // Each change waits for the stand-in cloud to take it, as writing through did (team_docs.test.ts has the copies here).
+  Object.assign(savedTiming, teamDocs.timing);
+  teamDocs.timing.settleMs = 5_000;
+  teamDocs.timing.retryMs = [10, 20, 30];
   mock = MockServer.start();
   restore = mock.useEnv({ EDIT_RELAY_TOKEN: "test-token" });
   ({ dir: home, cleanup } = scratch("ideas"));
@@ -70,12 +76,14 @@ beforeAll(() => {
 
 afterEach(() => {
   rows.clear();
+  cloud.forget();
   conflicts = 0;
   down = 0;
   board.forget();
 });
 
 afterAll(() => {
+  Object.assign(teamDocs.timing, savedTiming);
   restore();
   mock.stop();
   cleanup();
@@ -450,6 +458,15 @@ test("a guide with frames names each by its place on the card, and keeps the tea
   expect(lookProblem("take the woman from the original thumbnail. make the woman a 60-year-old woman.", "case_thumbnail")).toContain("the original thumbnail");
   expect(lookProblem("find an image of the man. make the man a middle-aged man with a shaved head.", "find")).toBeNull();
   expect(lookProblem("use the first frame. make the mom look tired and upset.", "video")).toBeNull();
+  // A picture the person attached is named as a picture, a frame as a frame, by their places on the card.
+  const pictured = "use the second picture as the base. take the mother from the first picture.";
+  expect(sourceProblem(pictured, "picture")).toBeNull();
+  expect(sourceProblem("find an image of the mother.", "picture")).toContain("which picture");
+  expect(framesProblem(pictured, ["picture", "picture"])).toBeNull();
+  expect(framesProblem("use the first frame as the base. take the mother from the second picture.", ["frame", "picture"])).toBeNull();
+  expect(framesProblem("use the first frame as the base. take the mother from the second frame.", ["frame", "picture"])).toContain("what the second picture is for");
+  expect(framesProblem(pictured, ["picture"])).toContain("names the second picture, but the card has one picture");
+  expect(lookProblem("use the first picture. make the mother a young woman with red hair.", "picture")).toContain("a picture you were given");
   // Repack's base caption is quoted as it is on the base.
   expect(guideProblem("find an image of the man. remove the current “CAUGHT” text.")).toBeNull();
 });
@@ -501,7 +518,7 @@ test("a repackaging looks through the case's video and puts the frames its guide
     expect(seen.answers[4]).toContain('say who (who: "the father")');
     // A time it didn't give back, past a second of every frame grabbed.
     expect(seen.answers[5]).toContain("No frame at 0:09");
-    expect(seen.answers[6]).toContain("The base frame goes first");
+    expect(seen.answers[6]).toContain("The base goes first");
     expect(now.thumbnailGuide).toBe("use the first frame as the base. take the mom from the second frame.");
     expect(now.images.map((one) => [one.from, one.name.replace(/ · 0:0\d$/, ""), one.frame?.use])).toEqual([
       ["frame", "first frame · base", "base"],
@@ -509,37 +526,60 @@ test("a repackaging looks through the case's video and puts the frames its guide
     ]);
     // On R2, as the person's own pictures are, so the board can attach them.
     for (const one of now.images) expect(mock.objects.get(one.key!)?.slice(0, 2)).toEqual(new Uint8Array([0xff, 0xd8]));
-    expect(seen.answers[7]).toContain("on the first frame, with 2 frames on the card");
+    expect(seen.answers[7]).toContain("on the first frame, with 2 on the card");
   } finally {
     Object.assign(frames.looks, before);
   }
 });
 
-test("a run's ending survives a cloud save that fails: kept in jobs.json, and saved when the cloud's back, so the page never keeps it running", async () => {
-  const retry = runLease.lease.retryMs;
-  runLease.lease.retryMs = () => 30;
-  try {
-    await cloud.commit(videoIdea("i12-test"), 0, "Sphe");
-    run.asking.ask = async () => {
-      // The cloud goes as Claude answers: the ending can't be saved.
-      down = 1000;
-      return { structured: null, text: "Here's what I think.", session: null, costUsd: 0, result: {}, replies: 1, biggestReply: 0 };
-    };
-    await run.chat(context(), "i12-test", "what do you think?");
-    await settled("i12-test");
-    const key = jobs.keyOf("idea", "i12-test");
-    expect(jobs.get(home, key)).toMatchObject({ state: "waiting", step: "saving how it ended", args: { ending: { state: "done", text: "Here's what I think." } } });
-    expect(rows.get("i12-test")!.body.run!.state).not.toBe("done");
-    // The cloud back: the next try saves it, and the job's crossed off.
-    down = 0;
-    for (let tries = 0; tries < 100 && jobs.get(home, key) !== undefined; tries++) await Bun.sleep(10);
-    expect(jobs.get(home, key)).toBeUndefined();
-    const idea = rows.get("i12-test")!.body;
-    expect(idea.run).toMatchObject({ state: "done", holder: "test-mac" });
-    expect(idea.chat.at(-1)).toMatchObject({ role: "claude", text: "Here's what I think." });
-  } finally {
-    runLease.lease.retryMs = retry;
-  }
+test("a run's ending with the cloud out of reach is kept here at once, the page never left running, and goes up once it's back", async () => {
+  await cloud.commit(videoIdea("i12-test"), 0, "Sphe");
+  run.asking.ask = async () => {
+    // The cloud goes as Claude answers: the ending can't go up.
+    down = 1000;
+    return { structured: null, text: "Here's what I think.", session: null, costUsd: 0, result: {}, replies: 1, biggestReply: 0 };
+  };
+  await run.chat(context(), "i12-test", "what do you think?");
+  await settled("i12-test");
+  // Ended here (what the page reads), its job crossed off; the cloud's copy still waits for it.
+  expect(jobs.get(home, jobs.keyOf("idea", "i12-test"))).toBeUndefined();
+  const here = (await cloud.get("i12-test"))!.idea;
+  expect(here.run).toMatchObject({ state: "done", holder: "test-mac" });
+  expect(here.chat.at(-1)).toMatchObject({ role: "claude", text: "Here's what I think." });
+  expect(rows.get("i12-test")!.body.run!.state).not.toBe("done");
+  // The cloud back: it goes up by itself.
+  down = 0;
+  await until(() => rows.get("i12-test")!.body.run?.state === "done");
+  expect(rows.get("i12-test")!.body.chat.at(-1)).toMatchObject({ role: "claude", text: "Here's what I think." });
+});
+
+test("the pictures the person attached in the chat go on the card when the guide takes them, the base first, named as pictures", async () => {
+  await cloud.commit(videoIdea("i20-test"), 0, "Sphe");
+  // Sent with an earlier message: still the person's, numbered in the order sent.
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const pictures = ["mom-and-son.jpg", "front-yard.jpg"].map((name, n) => {
+    const key = `edit/ideas/i20-test/p${n}.jpg`;
+    mock.objects.set(key, jpeg);
+    return { id: `p${n}`, name, key, from: "upload" as const };
+  });
+  claudeCalls([]);
+  await run.chat(context(), "i20-test", "", pictures);
+  await settled("i20-test");
+  const seen = claudeCalls([
+    { name: "save_thumbnail_guide", arguments: { guide: "use the first picture as the base. take the mother from the second picture.", subject_from: "picture", frames: [{ picture: 3, use: "base" }, { picture: 1, use: "subject", who: "the mother" }] } },
+    { name: "save_thumbnail_guide", arguments: { guide: "use the first picture as the base. take the mother from the second picture.", subject_from: "picture", frames: [{ picture: 2, use: "base" }, { picture: 1, use: "subject", who: "the mother" }] } },
+  ]);
+  await run.chat(context(), "i20-test", "take the mother from the first picture and put her in the second, shocked");
+  const now = await settled("i20-test");
+  expect(seen.prompt).toContain("# Pictures the person attached in the chat");
+  expect(seen.prompt).toMatch(/- picture 1 \(“mom-and-son\.jpg”\): \S+picture-1\.jpg\n- picture 2 \(“front-yard\.jpg”\): \S+picture-2\.jpg/);
+  expect(seen.answers[0]).toContain("There's no picture 3: the person attached pictures 1 to 2");
+  expect(seen.answers[1]).toContain("on the first picture, with 2 on the card");
+  // The person's own files on the card, as they sent them: nothing put up again.
+  expect(now.images.map((one) => [one.name, one.key, one.frame?.attached])).toEqual([
+    ["first picture · base", "edit/ideas/i20-test/p1.jpg", true],
+    ["second picture · the mother", "edit/ideas/i20-test/p0.jpg", true],
+  ]);
 });
 
 test("a run a restart cut short from a build that didn't keep what was asked is marked stopped by its resumer, without a turn of Claude's", async () => {
