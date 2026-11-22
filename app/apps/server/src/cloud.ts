@@ -1513,8 +1513,16 @@ export class ConvexFailure extends Error {
  * like "edit:getProject"; the function's value, or its error.
  */
 export function convex(kind: string, path: string, args: unknown): Promise<unknown> {
-  return convexCall(kind, path, args, 120);
+  return convexCall(kind, path, args, kind === "query" ? convexWaits.querySeconds : convexWaits.otherSeconds);
 }
+
+/**
+ * How long one call to the cloud's records waits for its answer (seconds). A query is a small answer (a record, a
+ * page of notes: well under a second at JJ's 8 Mbit/s) and is tried three times: at 120 s each, a relay that hung
+ * instead of refusing held the work behind `getRecord` for six minutes (Nov 22). A mutation or an action is tried
+ * once and may do real work (a publish with its 512 KB of details, a long action), so it keeps its two minutes.
+ */
+export const convexWaits = { querySeconds: 30, otherSeconds: 120 };
 
 // ── Convex as an Effect (since Nov 1) ──
 //
