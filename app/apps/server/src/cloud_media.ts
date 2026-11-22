@@ -1976,8 +1976,11 @@ const readFiles = new Map<string, ReadFile>();
 const readerSecret = randomUUID();
 let readerPort: Promise<number> | null = null;
 
+/** How long the reader waits on the cloud to say a file's layout (`layoutOf`): a hook for its test. */
+export const readerTiming = { layoutMs: 30_000 };
+
 /** The reader's address for `original` (read from `url`, R2's signed address), held until `release`. */
-async function readerFor(original: Original, url: string): Promise<Reader> {
+export async function readerFor(original: Original, url: string): Promise<Reader> {
   const id = createHash("sha256").update(`${readerSecret}\u0000${original.key}`).digest("hex").slice(0, 32);
   let file = readFiles.get(id);
   if (file === undefined) {
@@ -2071,9 +2074,14 @@ function layoutOf(file: ReadFile): Promise<Layout> {
     let type = "application/octet-stream";
     let moov: [number, number] | null = null;
     let at = 0;
+    // A time limit for all of it (a few 16-byte reads): a cloud that took the request and never answered held every
+    // cut waiting on this file for good, the reads after it joining the same wait (Nov 21 audit).
+    const signal = AbortSignal.timeout(readerTiming.layoutMs);
     for (let boxes = 0; boxes < 64; boxes++) {
-      const answer = await upstream(file.url, at, at + 15);
-      const head = new Uint8Array(await answer.arrayBuffer());
+      const answer = await upstream(file.url, at, at + 15, signal);
+      const head = new Uint8Array(await answer.arrayBuffer().catch((error: unknown) => {
+        throw new Upstream(`couldn't read the footage in the cloud: ${diag.messageOf(error)}`, null);
+      }));
       if (size === null) {
         size = Number(/\/(\d+)$/u.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
         // What FFmpeg was told by the cloud's own address (a hint to what the file is).
