@@ -19,7 +19,8 @@ import type { Clip, Script } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
-import { QUOTA_RETRY_MS, retryAt, whyOf } from "../import_steps.ts";
+import { QUOTA_EVERY_MS, kindOf } from "../failure.ts";
+import { retryAt } from "../import_steps.ts";
 import * as table from "../jobs.ts";
 import { parent } from "../paths.ts";
 import { isFile } from "../paths.ts";
@@ -47,7 +48,7 @@ const creditKey = (id: string): string => table.keyOf("script", id, "exact");
 
 /**
  * A hearing the transcription plan's credit refused, tried again by itself
- * every 30 minutes (import_steps.ts `QUOTA_RETRY_MS`, as an import's files
+ * every 30 minutes (failure.ts `QUOTA_EVERY_MS`, as an import's files
  * wait) until it's heard or nothing is left to hear. Kept in the job table
  * (`<home>/jobs.json`, `script:<id>:exact`), so a quit or an update in between
  * loses nothing: the script keeps its rough cut and its chosen clips, and the
@@ -56,7 +57,7 @@ const creditKey = (id: string): string => table.keyOf("script", id, "exact");
 export function afterCredit(data: string, id: string): void {
   const home = homeOf(data);
   const key = table.begin(home, "script", id, { waiting_on: "exact" }, "exact", "waiting for credit");
-  table.settle(home, key, "waiting", { step: "waiting for credit", retry_at: retryAt("quota", Date.now()) ?? Date.now() + QUOTA_RETRY_MS.value, args: { waiting_on: "exact" } });
+  table.settle(home, key, "waiting", { step: "waiting for credit", retry_at: retryAt("quota", Date.now()) ?? Date.now() + QUOTA_EVERY_MS.value, args: { waiting_on: "exact" } });
 }
 
 /** The wait is over: the chosen footage was heard (nothing when there was none). */
@@ -165,7 +166,7 @@ async function once(data: string, id: string): Promise<void> {
   try {
     report = await exact.run(work, dir, source.footage, work.clips, () => {});
   } catch (error) {
-    if (whyOf(error) === "quota") afterCredit(data, id);
+    if (kindOf(error) === "quota") afterCredit(data, id);
     throw error;
   }
   // The credit's wait, if it had one, is over when the pass ends (`soon`): until it lands, a restart hears it again.

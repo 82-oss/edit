@@ -142,7 +142,7 @@ function run(app: App, key: string, id: string, url: string, place: boolean, ori
       ? importDriveNow(app, key, id, url, place, origin, resumed)
       : downloadedAgain(app, key, id, retry.paths).then((paths) => importDownloaded(app, key, id, paths, place, origin, true, retry));
   const work = now.catch((error: unknown) => {
-    if (steps.whyOf(error) === "limit") {
+    if (failure.kindOf(error) === "limit") {
       const at = steps.retryAt("limit", Date.now(), error)!;
       diag.warn("drive", `${id}: Google Drive's download limit is used up for ${url}; tried again by itself at ${new Date(at).toLocaleString()}`);
       jobs.settle(app.store.home, key, "waiting", { step: "waiting for Google Drive", retry_at: at });

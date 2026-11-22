@@ -62,8 +62,8 @@ export const timing = {
   retryWaits: [60_000, 5 * 60_000],
 };
 
-/** Whether a failure may pass if tried again (import_steps.ts `whyOf`: anything but the person's). */
-export const passing = steps.passing;
+/** Whether a failure may pass if tried again (failure.ts: anything but the person's and Edit's own bug). */
+export const passing = (error: unknown): boolean => failure.waitsByItself(failure.kindOf(error));
 
 /** The footage files a script names, with what the person knows each by (its case, its file name). */
 export function footageLabel(project: Project, file: string): string {
@@ -1542,7 +1542,7 @@ interface CaseArgs {
 /**
  * At start, before the job table carries work on: an import left waiting for
  * the person only over files this build doesn't ask about (a step past its
- * time, a cut that came out wrong: `steps.whyOf` now takes them as passing)
+ * time, a cut that came out wrong: `failure.kindOf` now takes them as passing)
  * waits by itself instead, woken at once, so nobody is asked about a file
  * that's there and reads. Nov 19: JJ's Scissors Attack import on nightly-89
  * asked him about MartyBlank_202604201718 ("Finding the excerpt's keyframe
@@ -1556,7 +1556,7 @@ export function wakeWhatPasses(home: string): string[] {
     const kept = (durable.args as CaseArgs).import;
     if (kept === undefined || !Array.isArray(kept.files)) continue;
     const asked = kept.files.filter((file) => file.state === "failed");
-    if (asked.length === 0 || asked.some((file) => !steps.waitsByItself(steps.whyOf(file.error ?? "")))) continue;
+    if (asked.length === 0 || asked.some((file) => !steps.waitsByItself(failure.kindOf(file.error ?? "")))) continue;
     const job = structuredClone(kept);
     for (const file of job.files) {
       if (file.state !== "failed") continue;
@@ -2716,7 +2716,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
         diag.info("script", `${title}: file ${index + 1} of ${files.length} ready (${name ?? file}, ${cut.length} ${cut.length === 1 ? "piece" : "excerpts"}, ${diag.human(timing.now() - fileBegan)})`);
       } catch (error) {
         if (isBug(error)) throw error;
-        const why = steps.whyOf(error);
+        const why = failure.kindOf(error);
         diag.warn("script", `${title}: file ${index + 1} of ${files.length} (${file}) failed after ${diag.human(timing.now() - fileBegan)} (${why}): ${diag.messageOf(error)}`);
         errors[index] = error;
         app.scripts.set(app, id, (job) => {
@@ -2745,7 +2745,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     // connection is back (jobs.wakePassing), or by the person's answer.
     const missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
     if (missing.length > 0 && !inserting) {
-      const whys = missing.map((index) => steps.whyOf(errors[index] ?? ""));
+      const whys = missing.map((index) => failure.kindOf(errors[index] ?? ""));
       // Only the person's (a file deleted, never shared, a private video) is asked about: another link, or go on
       // without it. Anything else waits by itself, woken by the job table: credit, Drive's download limit, the encoder,
       // a full disk, and whatever passes (a dropped connection, a busy Google, a step that stood still), tried again
@@ -3332,7 +3332,7 @@ async function place(app: App, id: string, done: [string, Excerpt[]][], recut: b
   const said: Unheard = { late: [], credit: [] };
   const heard = await transcripts(app, live.project, undefined, false, said);
   // The plan out of credit: the words decide every cut, so it waits for them (the job table tries again).
-  if (said.credit.length > 0) throw new CreditWait(`The transcription plan is out of credit: ${said.credit.length === 1 ? "1 file waits" : `${said.credit.length} files wait`} for ${said.credit.length === 1 ? "its" : "their"} words before the edit is laid out; Edit tries again every ${Math.round(steps.QUOTA_RETRY_MS.value / 60_000)} min.`);
+  if (said.credit.length > 0) throw new CreditWait(`The transcription plan is out of credit: ${said.credit.length === 1 ? "1 file waits" : `${said.credit.length} files wait`} for ${said.credit.length === 1 ? "its" : "their"} words before the edit is laid out; Edit tries again every ${Math.round(failure.QUOTA_EVERY_MS.value / 60_000)} min.`);
 
   const cases = await reusedCases(app, live.project);
   if (cases.size > 0) {
@@ -3551,7 +3551,7 @@ async function transcripts(app: App, project: Project, within: (block: ScriptBlo
       }
       if (stage === "failed") {
         const why = app.media.status(item.path).transcript_error;
-        if (why !== undefined && steps.whyOf(why) === "quota") unheard.credit.push(item.name);
+        if (why !== undefined && failure.kindOf(why) === "quota") unheard.credit.push(item.name);
         return null;
       }
       if (timing.now() - started > steps.LIMITS.transcript) {
@@ -3581,7 +3581,7 @@ async function transcripts(app: App, project: Project, within: (block: ScriptBlo
         }
       } catch (error) {
         const why = diag.messageOf(error);
-        if (steps.whyOf(why) === "quota") unheard.credit.push(item.name);
+        if (failure.kindOf(why) === "quota") unheard.credit.push(item.name);
         diag.warn("script", `${item.name}: the ranges it keeps weren't heard exactly (${why}); cut on its rough words`);
       }
     }

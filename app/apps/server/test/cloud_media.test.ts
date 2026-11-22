@@ -1367,7 +1367,7 @@ test("a proxy encode that never answers is stopped at its limit and leaves nothi
     fs.writeFileSync(video, "footage");
     const failed = await cloudMedia.importLocal(fixture.store.cacheDir(), video, VIDEO, "clip.mov").catch((error: unknown) => error);
     expect(failed).toBeInstanceOf(steps.StepTimedOut);
-    expect(steps.whyOf(failed)).toBe("passing");
+    expect(failure.kindOf(failed)).toBe("passing");
     const proxies = `${fixture.store.cacheDir()}/cloud/proxies`;
     const left = fs.existsSync(proxies) ? fs.readdirSync(proxies, { recursive: true }).filter((name) => String(name).endsWith(".mp4")) : [];
     expect(left).toEqual([]);

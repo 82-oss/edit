@@ -1,35 +1,14 @@
 // The script import's footage pipeline rules, in one place (Nov 8 audit,
-// item F): how long each step may take, what a failure means, and when Edit
-// tries again by itself. The disk import and the cloud import differ only by
-// where the original is (script.ts `footageToDisk` / `footageToCloud`); both
-// read these.
+// item F): how long each step may take, and when a step that stood still or
+// ran past its time is taken as stuck. The disk import and the cloud import
+// differ only by where the original is (script.ts `footageToDisk` /
+// `footageToCloud`); both read these.
 //
-// Every step is bounded. A hung FFmpeg, an addon encode that never answered
-// or a relay copy polled for ever used to keep the import RUNNING with nothing
-// moving, which is exactly what blocked Retry, another link and skip. Now a
-// step past its time lands its file in `failed` with a passing reason, so the
-// person's Retry works and Edit tries it again by itself.
-//
-// What a failure is, in four words (`whyOf`), read from the error's class
-// first and its words only for text from outside Edit (Drive's pages, yt-dlp):
-// - passing: may go if tried again (a dropped connection, a busy Google, a
-//   step past its time). Edit tries again by itself (`RETRY_WAITS`), then
-//   waits by itself and tries every `PASSING_RETRY_MS` until it comes in: the
-//   person is never asked about it.
-// - person: only the person can fix it (a file nobody shared, a private
-//   video): another link, or go on without it.
-// - quota: the transcription plan is out of credit, or the relay's allowance
-//   is used up. Not an error to retry by hand: the file waits, tried again
-//   every `QUOTA_RETRY_MS`, and the report's "Needs attention" says so once.
-// - encoder: an encode ran out of time while an export or another encode held
-//   the hardware encoder (encoder.ts). It waits until the encoder is free.
-// - limit: Google Drive's download limit for the file is used up for the day.
-//   It waits (Google's own hint, else `LIMIT_RETRY_MS`) and is tried again by
-//   itself; a copy's link carries it on sooner.
-//
-// A daily allowance (the relay's: "… for today is used up; it resets at
-// midnight UTC") waits for its reset, not half an hour: asking before then
-// only hears the same refusal.
+// A step past its time (or one standing still, `whileMoving`) fails as
+// passing, so the file waits and is tried again by itself rather than keeping
+// the import running with nothing moving. What a failure is, and when it's
+// tried again, is failure.ts's (`kindOf`, `nextTry`): passing, the person's,
+// the plan's credit, the encoder, Drive's daily limit, room, a sign-in.
 
 import * as fs from "node:fs";
 
@@ -63,20 +42,10 @@ export const LIMITS = {
   transcript: 30 * 60_000,
 };
 
-/** A file waiting on the transcription plan's credit is tried again this often (failure.ts's own). */
-export const QUOTA_RETRY_MS = failure.QUOTA_EVERY_MS;
-/** A file at Google Drive's download limit is tried again this long after, when Google gives no time of its own (failure.ts's own). */
-export const LIMIT_RETRY_MS = failure.LIMIT_WAIT_MS;
 /** What a failure is: failure.ts's kinds, the one rule both imports read. */
 export type Why = failure.Kind;
 
 export { DriveLimit, NeedsPerson, nextMidnightUtc, StepTimedOut, StoodStill } from "./failure.ts";
-
-/** What a failure is (failure.ts `kindOf`): the editor's import and Script mode's read the same answer. */
-export const whyOf = (error: unknown): Why => failure.kindOf(error);
-
-/** Whether Edit may try it again by itself, or Retry may help: anything but the person's and Edit's own bug. */
-export const passing = (error: unknown): boolean => failure.waitsByItself(failure.kindOf(error));
 
 /** Whether a failure of this kind waits by itself (everything but the person's and Edit's own bug). */
 export const waitsByItself = failure.waitsByItself;

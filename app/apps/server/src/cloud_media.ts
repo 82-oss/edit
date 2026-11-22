@@ -937,7 +937,7 @@ export function uploadLater(home: string, upload: Upload): void {
       },
       (error: unknown) => {
         // Its file gone (the only thing that can't change): crossed off. Anything else (offline, signed out, the relay
-        // down) is put off and tried again by itself, an hour and then a day later (jobs.ts putOff), or at the next start.
+        // down) is put off and tried again by itself on failure.ts's schedule (jobs.ts putOff), or at the next start.
         const gone = (upload.uploadOriginal && !isFile(upload.file)) || (upload.local !== null && !isFile(upload.local));
         diag.error("cloud", `uploading ${upload.file}: ${scrub(failure(error))}${gone ? " (its file is gone: not tried again)" : ""}`);
         if (gone) {

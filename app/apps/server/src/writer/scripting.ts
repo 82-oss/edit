@@ -40,7 +40,7 @@ import * as store from "./store.ts";
 import { keepPeaks, readPeaks } from "./tidy.ts";
 import * as versions from "./versions.ts";
 import { THIS_MACHINE } from "../machine.ts";
-import { whyOf } from "../import_steps.ts";
+import { kindOf } from "../failure.ts";
 
 const CHANGED = "The script changed while Claude was editing it, so nothing was applied. Ask again.";
 
@@ -342,7 +342,7 @@ async function cutExactly(app: App, data: string, dir: string, script: Script, p
     checkStopped(job);
     const why = unsigned(diag.messageOf(error));
     const name = named(script.id, script.title);
-    if (whyOf(error) === "quota") {
+    if (kindOf(error) === "quota") {
       diag.warn("writer", `${name}: heard roughly; the exact hearing of ${exact.share(wanted, script.durationMs)} waits for the transcription plan's credit: ${why}`);
       afterCredit(data, script.id);
       return [clips, `Heard roughly; the exact hearing waits for the transcription plan's credit (${clock(wanted)} of the chosen footage to hear). Edit tries again every 30 minutes by itself.`];

@@ -42,7 +42,7 @@
 //   it and never while it's cut from (`ledger.scriptCopies`).
 //
 // The disk is kept with what Edit keeps free on it (storage.ts
-// `keepFreeBytes`: 15 GB or a tenth of the disk); only with it under the
+// `keepFreeBytes`: 15 GB); only with it under the
 // cache's hard floor does a project in work give up copies, never one open in
 // the last ten minutes nor one with work running. Whole proxy copies are the
 // footage this Mac plays and renders from: they go only this way, never

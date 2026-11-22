@@ -7,7 +7,7 @@
 // edit made from it read it back from R2 for every picture and export (JJ's
 // Mac: the agent waited 47 minutes in 2.5 days on pictures decoded from the
 // cloud). Now footage goes only while the disk has less free than Edit keeps
-// (storage.ts `keepFreeBytes`: 15 GB or a tenth of the disk, since Nov 18),
+// (storage.ts `keepFreeBytes`: 15 GB, since Nov 18),
 // the scripts left alone longest first. A script that goes has its
 // recordings shared with Edit's originals first if they aren't yet
 // (handoff.ts: a script brought in from Writer, or one whose share failed),
@@ -238,8 +238,8 @@ const sayOnce = (said: Said, error: FootageStays) =>
 
 /**
  * How many bytes of footage must go for the disk holding Edit's cache (`cache`)
- * to keep what Edit keeps free on it (storage.ts `keepFreeBytes`: 15 GB or a
- * tenth of the disk); 0 or less when it does. Until Nov 18 the scripts'
+ * to keep what Edit keeps free on it (storage.ts `keepFreeBytes`: 15 GB); 0
+ * or less when it does. Until Nov 18 the scripts'
  * footage and the cache were held to a quarter of the room, at most 50 GB,
  * walked whole at every ask.
  */

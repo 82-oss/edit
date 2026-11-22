@@ -6,7 +6,6 @@ import { afterEach, expect, test } from "bun:test";
 
 import * as service from "../src/effect/service.ts";
 import * as failure from "../src/failure.ts";
-import * as steps from "../src/import_steps.ts";
 import { DownloadFailed } from "../src/youtube.ts";
 import { AllowanceUsedUp } from "../src/transcribe.ts";
 import { DriveNotShared, DownloadShort } from "../src/writer/drive.ts";
@@ -58,8 +57,6 @@ test("each error class and outside phrase has one kind; anything unknown is pass
     [new Error("something nobody has seen before"), "passing"],
   ];
   for (const [error, kind] of cases) expect([String((error as Error).message ?? error), failure.kindOf(error)]).toEqual([String((error as Error).message ?? error), kind]);
-  // The editor's import reads the same answer.
-  for (const [error] of cases) expect(steps.whyOf(error)).toBe(failure.kindOf(error));
 });
 
 test("each kind's next try: passing after 1, 5, 15 min then every 30, room 5 min, credit 30 min or the day's reset, Drive at Google's time, the person's looked at again in 30, broken never", () => {

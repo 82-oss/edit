@@ -45,7 +45,7 @@ const store = await import("../../src/writer/store.ts");
 const exactAfter = await import("../../src/writer/exact_after.ts");
 const voices = await import("../../src/voices.ts");
 const table = await import("../../src/jobs.ts");
-const steps = await import("../../src/import_steps.ts");
+const failure = await import("../../src/failure.ts");
 
 const ffmpeg = Bun.which("ffmpeg");
 let server: MockServer;
@@ -192,7 +192,7 @@ test.skipIf(ffmpeg === null)("with the plan out of credit the build keeps the ro
   const { dir: home, cleanup } = scratch("rough-quota");
   const data = store.dataDir(home);
   sonnet.standIn = true;
-  const retryWas = steps.QUOTA_RETRY_MS.value;
+  const retryWas = failure.QUOTA_EVERY_MS.value;
   const quota = () => Response.json({ error: 'ElevenLabs transcription failed (401): {"detail":{"status":"quota_exceeded","message":"This request exceeds your quota of 0. You have 0 credits remaining."}}' }, { status: 401 });
   try {
     const one = built("");
@@ -223,7 +223,7 @@ test.skipIf(ffmpeg === null)("with the plan out of credit the build keeps the ro
     expect(table.takeOver(home)).toEqual([]);
     expect(table.get(home, key)?.state).toBe("waiting");
     // Still no credit when woken: it waits again, with a new time.
-    steps.QUOTA_RETRY_MS.value = 0;
+    failure.QUOTA_EVERY_MS.value = 0;
     table.settle(home, key, "waiting", { retry_at: Date.now() - 1 });
     server.on("POST", "/v1/transcribe", quota, 10);
     const woken: string[] = [];
@@ -267,7 +267,7 @@ test.skipIf(ffmpeg === null)("with the plan out of credit the build keeps the ro
     expect(exactAfter.pending(data, one.id)).toBe(false);
     expect(exactAfter.waitsForCredit(data, one.id)).toBe(false);
   } finally {
-    steps.QUOTA_RETRY_MS.value = retryWas;
+    failure.QUOTA_EVERY_MS.value = retryWas;
     sonnet.standIn = false;
     cleanup();
   }

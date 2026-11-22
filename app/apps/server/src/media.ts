@@ -26,6 +26,7 @@ import * as tools from "./tools.ts";
 import { FIRST_PASS_FROM_S, firstWords } from "./first_hearing.ts";
 import * as log from "./hearing_log.ts";
 import * as steps from "./import_steps.ts";
+import * as failure from "./failure.ts";
 import { hearJoined, merged, readKept, toHear, WHOLE_SHARE } from "./kept_hearing.ts";
 import * as transcribe from "./transcribe.ts";
 import * as voices from "./voices.ts";
@@ -591,7 +592,7 @@ export class Processor {
           }
           // The plan out of credit, or the day's allowance used up: it waits, said plainly, and is heard by itself
           // at its time (the plan's half hour, the allowance's reset). It failed for good, its reason lost (Nov 16 audit).
-          if (!isBug(error) && steps.whyOf(error) === "quota") {
+          if (!isBug(error) && failure.kindOf(error) === "quota") {
             const at = steps.retryAt("quota", Date.now(), error)!;
             diag.warn("media", `${diag.scrub(source)}: transcription waits until ${new Date(at).toLocaleString()}: ${diag.messageOf(error)}`);
             this.set(source, (status) => {

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import { isImagePath, isLocalCopy, isMediaPath, makeThumbs, Processor, Semaphore } from "../src/media.ts";
 import type { MediaStatus } from "../src/media.ts";
 import type { CachePaths } from "../src/native/index.ts";
-import * as steps from "../src/import_steps.ts";
+import * as failure from "../src/failure.ts";
 import * as tools from "../src/tools.ts";
 import { timing } from "../src/transcribe.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -172,11 +172,11 @@ test.skipIf(ffmpeg === null)("footage gets thumbnails, a waveform, previews and 
 test.skipIf(ffmpeg === null)("the transcription plan out of credit: the file waits, says why and when, and is heard by itself once it's back", async () => {
   // It failed for good with the raw words (Nov 16 audit): the agent read "couldn't be transcribed", nothing tried again.
   const { dir, app, store, cleanup } = fixtureHome("media-credit");
-  const every = steps.QUOTA_RETRY_MS.value;
+  const every = failure.QUOTA_EVERY_MS.value;
   try {
     const source = `${dir}/tone.wav`;
     expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", source]).exitCode).toBe(0);
-    steps.QUOTA_RETRY_MS.value = 300;
+    failure.QUOTA_EVERY_MS.value = 300;
     const asked = mock.calls("/v1/transcribe").length;
     mock.on("POST", "/v1/transcribe", () => Response.json({ error: "ElevenLabs transcription failed (401): This request exceeds your quota of 0. You have 0 credits remaining. (quota_exceeded)" }, { status: 401 }), 1);
     const waiting = settled(store, source, (s) => s.transcript === "waiting" || s.transcript === "failed" || s.transcript === "ready");
@@ -196,7 +196,7 @@ test.skipIf(ffmpeg === null)("the transcription plan out of credit: the file wai
     expect(heard.transcript_error).toBeUndefined();
     expect(mock.calls("/v1/transcribe").length).toBe(asked + 2);
   } finally {
-    steps.QUOTA_RETRY_MS.value = every;
+    failure.QUOTA_EVERY_MS.value = every;
     cleanup();
   }
 }, 30_000);

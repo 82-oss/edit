@@ -154,7 +154,7 @@ test("a step past its time lands its file with a passing reason and the import w
     expect(job.files[1]!.error).toContain("took more than 10 min");
     expect(job.retry_at).toBeGreaterThan(Date.now());
     expect(scripts.working(id)).toBe(false);
-    expect(steps.passing(job.files[1]!.error!)).toBe(true);
+    expect(failure.waitsByItself(failure.kindOf(job.files[1]!.error!))).toBe(true);
     expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", args: { waiting_on: "passing" } });
     expect(caseJob(fixture.home, id)!.until).toBeUndefined();
   } finally {
@@ -178,7 +178,7 @@ test("JJ's dropped connection: the file waits and is tried again by itself until
     failure.PASSING_WAITS.value = [0, 0, 0, 0, 0, 0, 0, 0];
     await start(fixture.app, id, false);
     const waiting = await settled(scripts, id);
-    expect(steps.whyOf(dropped)).toBe("passing");
+    expect(failure.kindOf(dropped)).toBe("passing");
     expect(waiting.state).toBe("waiting");
     // Nothing for the person: no file failed (what the page asks about), one waiting with its next try.
     expect(waiting.files.map((file) => [file.state, file.why ?? null])).toEqual([["done", null], ["waiting", "passing"]]);
@@ -262,11 +262,11 @@ test("going on without a file that's really gone keeps its ranges in place as bl
 test("steps are bounded: past its time a step fails as passing, or as the encoder's when an export holds it", async () => {
   await expect(steps.bounded("Reading the footage's length", 20, () => new Promise(() => {}))).rejects.toBeInstanceOf(steps.StepTimedOut);
   const passing = await steps.bounded("a probe", 20, () => new Promise(() => {})).catch((error: unknown) => error);
-  expect(steps.whyOf(passing)).toBe("passing");
+  expect(failure.kindOf(passing)).toBe("passing");
   const export_ = encoder.register(() => "an export");
   try {
     const shared = await steps.encoding("a proxy", 20, () => new Promise(() => {})).catch((error: unknown) => error);
-    expect(steps.whyOf(shared)).toBe("encoder");
+    expect(failure.kindOf(shared)).toBe("encoder");
     expect((shared as Error).message).toContain("the hardware encoder was busy");
   } finally {
     export_();
@@ -310,7 +310,7 @@ test("an encode that ran out of time beside an export waits for the encoder, and
 test("the transcription plan out of credit: the import waits, said once in Needs attention, and is tried again later", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-credit", { services: { scripts } });
-  const every = steps.QUOTA_RETRY_MS.value;
+  const every = failure.QUOTA_EVERY_MS.value;
   try {
     const id = await twoFiles(fixture);
     cloudFootage(HEARD);
@@ -344,7 +344,7 @@ test("the transcription plan out of credit: the import waits, said once in Needs
     expect(fixture.store.get(id)!.project.clips.length).toBeGreaterThan(0);
     expect(waitingByItself(fixture.home)).toEqual([]);
   } finally {
-    steps.QUOTA_RETRY_MS.value = every;
+    failure.QUOTA_EVERY_MS.value = every;
     fixture.cleanup();
   }
 });
@@ -393,28 +393,28 @@ test("a transcription still running when its wait runs out is said: laid out wit
 });
 
 test("failures read as one vocabulary: the person's, passing, the plan's credit, the encoder's", () => {
-  expect(steps.whyOf(new steps.NeedsPerson("This Drive file isn't shared."))).toBe("person");
-  expect(steps.whyOf(new Error("Download stopped ((28) Google Drive sent nothing for 60 s)."))).toBe("passing");
-  expect(steps.whyOf("transcription failed (401): exceeds your quota … 15 credits remaining")).toBe("quota");
-  expect(steps.whyOf({ _tag: "AllowanceUsedUp", message: "transcription failed (429): allowance" })).toBe("quota");
-  expect(steps.whyOf({ _tag: "DownloadFailed", reason: "VideoGone", message: "gone" })).toBe("person");
-  expect(steps.whyOf(new steps.StepTimedOut("a proxy", 1000, true))).toBe("encoder");
+  expect(failure.kindOf(new steps.NeedsPerson("This Drive file isn't shared."))).toBe("person");
+  expect(failure.kindOf(new Error("Download stopped ((28) Google Drive sent nothing for 60 s)."))).toBe("passing");
+  expect(failure.kindOf("transcription failed (401): exceeds your quota … 15 credits remaining")).toBe("quota");
+  expect(failure.kindOf({ _tag: "AllowanceUsedUp", message: "transcription failed (429): allowance" })).toBe("quota");
+  expect(failure.kindOf({ _tag: "DownloadFailed", reason: "VideoGone", message: "gone" })).toBe("person");
+  expect(failure.kindOf(new steps.StepTimedOut("a proxy", 1000, true))).toBe("encoder");
   // Words kept from an older build still read the same way.
-  expect(steps.whyOf("YouTube video abcdefghijk couldn't be downloaded: Private video")).toBe("person");
+  expect(failure.kindOf("YouTube video abcdefghijk couldn't be downloaded: Private video")).toBe("person");
   // Drive's download limit waits by itself (it said "try later" and Edit never did).
-  expect(steps.whyOf("Google Drive's download limit for this file is used up for today. Try later, or upload a copy.")).toBe("limit");
-  expect(steps.whyOf(new steps.DriveLimit("Google Drive's download limit for this file is used up for today."))).toBe("limit");
+  expect(failure.kindOf("Google Drive's download limit for this file is used up for today. Try later, or upload a copy.")).toBe("limit");
+  expect(failure.kindOf(new steps.DriveLimit("Google Drive's download limit for this file is used up for today."))).toBe("limit");
   // The relay's daily refusals are the plan's kind, never the person's.
-  expect(steps.whyOf("transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe("quota");
+  expect(failure.kindOf("transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe("quota");
   // A used-up Claude plan isn't the transcription plan.
-  expect(steps.whyOf("Your Claude plan is used up until 11:51 PM.")).toBe("passing");
+  expect(failure.kindOf("Your Claude plan is used up until 11:51 PM.")).toBe("passing");
 });
 
 test("each wait has its own time: credit every half hour, a daily allowance at its reset, Drive's limit a day on or at Google's word", () => {
   const now = Date.UTC(2026, 10, 16, 21, 30);
-  expect(steps.retryAt("quota", now, "This request exceeds your quota of 0. You have 0 credits remaining.")).toBe(now + steps.QUOTA_RETRY_MS.value);
+  expect(steps.retryAt("quota", now, "This request exceeds your quota of 0. You have 0 credits remaining.")).toBe(now + failure.QUOTA_EVERY_MS.value);
   expect(steps.retryAt("quota", now, "transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe(Date.UTC(2026, 10, 17) + 60_000);
-  expect(steps.retryAt("limit", now, new steps.DriveLimit("limit"))).toBe(now + steps.LIMIT_RETRY_MS.value);
+  expect(steps.retryAt("limit", now, new steps.DriveLimit("limit"))).toBe(now + failure.LIMIT_WAIT_MS.value);
   expect(steps.retryAt("limit", now, new Error("wrapped", { cause: new steps.DriveLimit("limit", 3_600_000) }))).toBe(now + 3_600_000);
   // The person's is looked at again in half an hour, in case it was put right (failure.ts).
   expect(steps.retryAt("person", now)).toBe(now + 30 * 60_000);
@@ -749,7 +749,7 @@ test("a keyframe that can't be read is a failure tried again, never the file's s
     fs.writeFileSync(path, new Uint8Array(200_000).map((_, at) => (at * 31) % 256));
     const failed = await keyframeBefore(path, 30).then(() => null, (error: unknown) => error as Error);
     expect(failed?.message).toStartWith("Finding the excerpt's keyframe: the footage couldn't be read");
-    expect(steps.whyOf(failed)).toBe("passing");
+    expect(failure.kindOf(failed)).toBe("passing");
   } finally {
     fixture.cleanup();
   }

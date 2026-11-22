@@ -2,9 +2,8 @@
 // as it writes (cache_cleanup.ts, Script mode's writer/storage.ts and every
 // writer that fills the disk keep to it).
 //
-// A floor, not a share (the local-first plan, Sphe, Nov 18): Edit keeps the
-// larger of 15 GB or a tenth of the disk free (`keepFreeBytes`) and may use
-// the rest. Until then the cache's budget was a quarter of the room, at most
+// A floor, not a share (the local-first plan, Sphe, Nov 18): Edit keeps
+// 15 GB of the disk free (`keepFreeBytes`) and may use the rest. Until then the cache's budget was a quarter of the room, at most
 // 50 GB, with 1 GB kept free: JJ's Mac could have held three times what it
 // was allowed, and Sphe's M4 couldn't hold what it was given (12-18 GB free
 // of 245, ~150 GB not Edit's, disk full at 22:03 on Nov 17). A cache on

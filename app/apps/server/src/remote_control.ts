@@ -11,7 +11,7 @@
 //   help     a dialog over the whole window: who's working on their Edit, why, each step as it goes,
 //            through restarts, until "help-end" (or three hours)
 //   say      a line on their screen
-//   restart  now, whatever runs: everything carries on after it (busy.wouldLose is empty
+//   restart  now, whatever runs: everything carries on after it (nothing is lost to a restart
 //            since Nov 10), but what's `hold`-ed (agents, exports, imports, or job kinds)
 //   update   the newest build now, the same way
 //   hold / release   work kept from starting again, and let go (jobs.ts `held`)
