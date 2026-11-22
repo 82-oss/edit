@@ -13,6 +13,7 @@
  *   /v1/cloud/r2/multipart/complete {key, uploadId, parts: [{partNumber, etag}]} → {ok, size?, etag?}
  *   /v1/cloud/r2/multipart/abort    {key, uploadId}                        → {ok}
  *   /v1/cloud/r2/head               {key}                                  → {exists, size?, etag?}
+ *   /v1/cloud/r2/copy               {from, to}  (one project's export or review file to another) → {ok, size}
  *   /v1/cloud/r2/delete             {keys: [...]}  (at most 40)            → {ok, deleted}
  *   /v1/cloud/r2/list               {prefix, cursor?}  (a page of ≤1000)   → {objects: [{key, size}], cursor?}
  *   /v1/cloud/convex                {kind: query|mutation|action, path: "edit:…", args?}
@@ -329,6 +330,51 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2, access: 
     return json(200, { exists: true, size: Number(answer.headers.get("content-length")), etag: answer.headers.get("etag") ?? undefined, contentType: answer.headers.get("content-type") ?? undefined });
   },
 
+  // One of a project's exports or review files copied to another of its keys inside R2 (Nov 22): a share of an export
+  // already archived, or one that followed a plain export's upload, sent the same gigabytes up a second time (JJ's
+  // 2 Mbit/s up: a 5 GB file is hours). Both keys are checked as writes, so it copies only where the caller could
+  // upload, and only within one project's own exports and reviews, never footage or another project's files.
+  async copy(body, r2, access) {
+    const from = needKey(body.from);
+    const to = needKey(body.to);
+    const project = copyProject(from, to);
+    if (project === null) throw new BadRequest("Only a project's own exports and review files are copied, within that project.");
+    await mayTouch(access, "read", from);
+    await mayTouch(access, "write", from);
+    await mayTouch(access, "write", to);
+    const head = await r2Fetch(r2, "HEAD", from, {}, { allow404: true });
+    if (head.status === 404) return json(404, { error: "Nothing is at that key to copy." });
+    const size = Number(head.headers.get("content-length"));
+    const source = { "x-amz-copy-source": `/${encodePath(r2.bucket)}/${encodePath(from)}` };
+    if (size <= COPY_WHOLE) {
+      const text = await (await r2Fetch(r2, "PUT", to, {}, { signed: source })).text();
+      if (text.includes("<Error>")) throw new Upstream(`R2: ${xmlValue(text, "Code") ?? "Error"}: ${xmlValue(text, "Message") ?? text.slice(0, 300)}`);
+    } else {
+      // Past what one copy takes (5 GiB): copied a part at a time from the source's ranges.
+      const uploadId = xmlValue(await (await r2Fetch(r2, "POST", to, { uploads: "" }, { headers: { "content-type": head.headers.get("content-type") ?? "video/mp4" } })).text(), "UploadId");
+      if (!uploadId) throw new Upstream("R2 gave no upload id.");
+      try {
+        const parts: string[] = [];
+        for (let at = 0, number = 1; at < size; at += COPY_PART, number++) {
+          const range = { ...source, "x-amz-copy-source-range": `bytes=${at}-${Math.min(at + COPY_PART, size) - 1}` };
+          const text = await (await r2Fetch(r2, "PUT", to, { partNumber: String(number), uploadId }, { signed: range })).text();
+          const etag = xmlValue(text, "ETag");
+          if (text.includes("<Error>") || etag === undefined) throw new Upstream(`R2: ${xmlValue(text, "Code") ?? "Error"}: ${xmlValue(text, "Message") ?? text.slice(0, 300)}`);
+          parts.push(`<Part><PartNumber>${number}</PartNumber><ETag>${etag}</ETag></Part>`);
+        }
+        const text = await (await r2Fetch(r2, "POST", to, { uploadId }, { body: `<CompleteMultipartUpload>${parts.join("")}</CompleteMultipartUpload>`, headers: { "content-type": "application/xml" } })).text();
+        if (text.includes("<Error>")) throw new Upstream(`R2: ${xmlValue(text, "Code") ?? "Error"}: ${xmlValue(text, "Message") ?? text.slice(0, 300)}`);
+      } catch (error) {
+        await r2Fetch(r2, "DELETE", to, { uploadId }, { allow404: true }).catch(() => undefined);
+        throw error;
+      }
+    }
+    const landed = await r2Fetch(r2, "HEAD", to, {}, { allow404: true });
+    const copied = landed.status === 200 ? Number(landed.headers.get("content-length")) : -1;
+    if (copied !== size) throw new Upstream(`R2 copied ${copied} bytes of ${size}.`);
+    return json(200, { ok: true, size });
+  },
+
   async delete(body, r2, access) {
     if (!Array.isArray(body.keys) || body.keys.length > MAX_DELETE) throw new BadRequest(`keys must list at most ${MAX_DELETE} keys.`);
     const keys = body.keys.map(needKey);
@@ -359,6 +405,17 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2, access: 
   },
 };
 
+/** What R2 copies in one request (5 GiB less a little), and the parts a bigger file is copied in. */
+const COPY_WHOLE = 5 * 1024 ** 3 - 1024 ** 2;
+const COPY_PART = 1024 ** 3;
+
+/** The project both keys of a copy are files of (its exports, `edit/exports/<p>/<name>`, or its review's, `edit/reviews/<p>/…`), or null. */
+export function copyProject(from: string, to: string): string | null {
+  const of = (key: string) => /^edit\/exports\/(?!playback\/|results\/)([^/]+)\/[^/]+$/.exec(key)?.[1] ?? /^edit\/reviews\/([^/]+)\/.+$/.exec(key)?.[1] ?? null;
+  const project = of(from);
+  return project !== null && project === of(to) && from !== to ? project : null;
+}
+
 export function needKey(key: unknown): string {
   if (!validKey(key)) throw new BadRequest("key must be a path under edit/ (no empty, . or .. segments).");
   return key;
@@ -374,15 +431,15 @@ function needPartNumber(part: unknown): number {
   return part;
 }
 
-/** A presigned URL for `key` in the bucket (path-style; `key` "" is the bucket). */
-export function objectUrl(r2: R2, method: string, key: string, query: Record<string, string>, expires: number) {
+/** A presigned URL for `key` in the bucket (path-style; `key` "" is the bucket); `signed`: headers the request must send as they are. */
+export function objectUrl(r2: R2, method: string, key: string, query: Record<string, string>, expires: number, signed?: Record<string, string>) {
   const path = `/${encodePath(r2.bucket)}${key ? `/${encodePath(key)}` : ""}`;
-  return presign({ method, url: `https://${r2.host}${path}`, query, accessKeyId: r2.accessKeyId, secret: r2.secret, region: "auto", expires });
+  return presign({ method, url: `https://${r2.host}${path}`, query, accessKeyId: r2.accessKeyId, secret: r2.secret, region: "auto", expires, ...(signed === undefined ? {} : { headers: signed }) });
 }
 
-/** One S3 call from the relay itself, through a minute-long presigned URL. */
-export async function r2Fetch(r2: R2, method: string, key: string, query: Record<string, string>, options: { body?: string; headers?: Record<string, string>; allow404?: boolean } = {}) {
-  const answer = await fetch(await objectUrl(r2, method, key, query, 60), { method, body: options.body, headers: options.headers });
+/** One S3 call from the relay itself, through a minute-long presigned URL (`signed`: headers signed into it and sent). */
+export async function r2Fetch(r2: R2, method: string, key: string, query: Record<string, string>, options: { body?: string; headers?: Record<string, string>; allow404?: boolean; signed?: Record<string, string> } = {}) {
+  const answer = await fetch(await objectUrl(r2, method, key, query, 60, options.signed), { method, body: options.body, headers: { ...options.headers, ...options.signed } });
   if (answer.ok || (options.allow404 && answer.status === 404)) return answer;
   const text = method === "HEAD" ? "" : await answer.text();
   throw new Upstream(`R2 ${answer.status}: ${xmlValue(text, "Code") ?? ""} ${xmlValue(text, "Message") ?? text.slice(0, 300)}`.trim());
@@ -399,9 +456,11 @@ export interface PresignInput {
   service?: string;
   expires: number;
   date?: Date;
+  /** Headers signed beside `host` (lower-case names), which the request must then send as they are (a copy's `x-amz-copy-source`). */
+  headers?: Record<string, string>;
 }
 
-/** AWS SigV4 query-string signing (host header only, unsigned payload). */
+/** AWS SigV4 query-string signing (the host header and any `headers` given, unsigned payload). */
 export async function presign(input: PresignInput): Promise<string> {
   const target = new URL(input.url);
   const service = input.service ?? "s3";
@@ -414,14 +473,17 @@ export async function presign(input: PresignInput): Promise<string> {
     "X-Amz-Credential": `${input.accessKeyId}/${scope}`,
     "X-Amz-Date": stamp,
     "X-Amz-Expires": String(input.expires),
-    "X-Amz-SignedHeaders": "host",
+    "X-Amz-SignedHeaders": "",
   };
+  const signed: [string, string][] = [["host", target.host] as [string, string], ...Object.entries(input.headers ?? {}).map(([name, value]): [string, string] => [name.toLowerCase(), value.trim()])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const names = signed.map(([name]) => name).join(";");
+  params["X-Amz-SignedHeaders"] = names;
   const query = Object.entries(params)
     .map(([key, value]) => [rfc3986(key), rfc3986(value)])
     .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0))
     .map(([key, value]) => `${key}=${value}`)
     .join("&");
-  const canonical = [input.method, target.pathname, query, `host:${target.host}\n`, "host", "UNSIGNED-PAYLOAD"].join("\n");
+  const canonical = [input.method, target.pathname, query, signed.map(([name, value]) => `${name}:${value}\n`).join(""), names, "UNSIGNED-PAYLOAD"].join("\n");
   const toSign = ["AWS4-HMAC-SHA256", stamp, scope, hex(await sha256(canonical))].join("\n");
   let signing: ArrayBuffer = new TextEncoder().encode(`AWS4${input.secret}`).buffer as ArrayBuffer;
   for (const part of [day, input.region, service, "aws4_request"]) signing = await hmac(signing, part);

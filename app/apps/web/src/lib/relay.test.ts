@@ -640,6 +640,67 @@ describe("relay cloud endpoints", () => {
     expect((await call("r2/delete", { keys: ["edit/exports/results/x.json"] })).status).toBe(403);
     expect((await call("r2/delete", { keys: ["edit/exports/p1/deeper/edit.mp4"] })).status).toBe(403);
   });
+
+  /** R2 for a copy: objects by key and size, each request it was sent (its method, key, query and headers). */
+  const r2With = (sizes: Record<string, number>, card: Record<string, unknown> | null = bodycam) => {
+    const sent: { method: string; key: string; query: URLSearchParams; headers: Record<string, string> }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!String(url).includes("cloudflarestorage.com")) return Response.json({ status: "success", value: (JSON.parse(String(init?.body ?? "{}")) as { path?: string }).path === "edit:getProject" ? card : null });
+      const at = new URL(url);
+      const key = decodeURIComponent(at.pathname.split("/").slice(2).join("/"));
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const method = init?.method ?? "GET";
+      sent.push({ method, key, query: at.searchParams, headers });
+      if (method === "HEAD") return sizes[key] === undefined ? new Response(null, { status: 404 }) : new Response(null, { status: 200, headers: { "content-length": String(sizes[key]) } });
+      if (method === "POST" && at.searchParams.has("uploads")) return new Response("<InitiateMultipartUploadResult><UploadId>u1</UploadId></InitiateMultipartUploadResult>");
+      if (method === "PUT" && at.searchParams.has("partNumber")) return new Response(`<CopyPartResult><ETag>"e${at.searchParams.get("partNumber")}"</ETag></CopyPartResult>`);
+      const source = decodeURIComponent(String(headers["x-amz-copy-source"] ?? "")).replace(/^\/bucket\//, "");
+      if (method === "PUT" && sizes[source] !== undefined) sizes[key] = sizes[source]!;
+      if (method === "POST" && at.searchParams.has("uploadId")) sizes[key] = sizes[sent.find((one) => one.headers["x-amz-copy-source"] !== undefined)!.headers["x-amz-copy-source"]!.replace(/^\/bucket\//, "").split("/").map(decodeURIComponent).join("/")]!;
+      return new Response("<CopyObjectResult><ETag>\"e\"</ETag></CopyObjectResult>");
+    }));
+    return { sent, sizes };
+  };
+
+  it("copies one of a project's exports to its review inside R2, the copy's source signed into the request (Nov 22)", async () => {
+    const { sent, sizes } = r2With({ "edit/exports/p1/edit.mp4": 4_000_000_000 });
+    const answer = await call("r2/copy", { from: "edit/exports/p1/edit.mp4", to: "edit/reviews/p1/v2/full.mp4" });
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({ ok: true, size: 4_000_000_000 });
+    expect(sizes["edit/reviews/p1/v2/full.mp4"]).toBe(4_000_000_000);
+    const put = sent.find((one) => one.method === "PUT")!;
+    expect(put.headers["x-amz-copy-source"]).toBe("/bucket/edit/exports/p1/edit.mp4");
+    expect(put.query.get("X-Amz-SignedHeaders")).toBe("host;x-amz-copy-source");
+    // And back again, as a deleted link's export goes back to its own archive.
+    expect((await call("r2/copy", { from: "edit/reviews/p1/v2/full.mp4", to: "edit/exports/p1/edit.mp4" })).status).toBe(200);
+  });
+
+  it("copies a file past 5 GiB a part at a time, each part's range signed", async () => {
+    const size = 6 * 1024 ** 3 + 5;
+    const { sent, sizes } = r2With({ "edit/exports/p1/edit.mp4": size });
+    expect((await call("r2/copy", { from: "edit/exports/p1/edit.mp4", to: "edit/reviews/p1/v1/full.mp4" })).status).toBe(200);
+    const parts = sent.filter((one) => one.query.has("partNumber"));
+    expect(parts.map((one) => one.headers["x-amz-copy-source-range"])).toEqual([0, 1, 2, 3, 4, 5, 6].map((n) => `bytes=${n * 1024 ** 3}-${Math.min((n + 1) * 1024 ** 3, size) - 1}`));
+    expect(parts[0]!.query.get("X-Amz-SignedHeaders")).toBe("host;x-amz-copy-source;x-amz-copy-source-range");
+    expect(sizes["edit/reviews/p1/v1/full.mp4"]).toBe(size);
+  });
+
+  it("copies only within one project's own exports and reviews, for who may work on it", async () => {
+    r2With({ "edit/exports/p1/edit.mp4": 10, "edit/originals/drive/f/a.mp4": 10, "edit/exports/p2/edit.mp4": 10 });
+    for (const [from, to] of [
+      ["edit/originals/drive/f/a.mp4", "edit/reviews/p1/v1/full.mp4"],
+      ["edit/exports/p1/edit.mp4", "edit/originals/drive/f/b.mp4"],
+      ["edit/exports/p2/edit.mp4", "edit/reviews/p1/v1/full.mp4"],
+      ["edit/exports/p1/edit.mp4", "edit/exports/p1/edit.mp4"],
+      ["edit/exports/playback/p1/a.mp4", "edit/reviews/p1/v1/full.mp4"],
+      ["edit/exports/p1/edit.mp4", "edit/exports/p1/deeper/edit.mp4"],
+      ["edit/../exports/p1/edit.mp4", "edit/reviews/p1/v1/full.mp4"],
+    ]) expect((await call("r2/copy", { from, to })).status).toBe(400);
+    // The project isn't the subtitler's to work on.
+    expect((await call("r2/copy", { from: "edit/exports/p1/edit.mp4", to: "edit/reviews/p1/v1/full.mp4" }, { token: SUBS })).status).toBe(403);
+    // Nothing there to copy: said as that, nothing written.
+    expect((await call("r2/copy", { from: "edit/exports/p1/gone.mp4", to: "edit/reviews/p1/v1/full.mp4" })).status).toBe(404);
+  });
 });
 
 describe("relay cloud: Edit's queued files", () => {
