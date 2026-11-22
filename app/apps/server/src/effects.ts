@@ -104,16 +104,20 @@ import font10 from "../../../crates/edit-render/fonts/Tinos-Regular.ttf" with { 
 import font11 from "../../../crates/edit-render/fonts/Tinos-Bold.ttf" with { type: "file" };
 import font12 from "../../../crates/edit-render/fonts/Arimo-Regular.ttf" with { type: "file" };
 import font13 from "../../../crates/edit-render/fonts/Arimo-Bold.ttf" with { type: "file" };
+import font14 from "../../../crates/edit-render/fonts/AkwePro-Bold.otf" with { type: "file" };
 
 /**
- * Edit's own faces (the renderer's, crates/edit-render/fonts, all SIL OFL 1.1),
- * there for every effect page as if they were in its folder (`edit-fonts/…`,
- * declared by the runtime), so an effect draws the same text on every computer
- * that renders it: the agent's first board asked for Marker Felt, which a Mac
- * has and Linux hasn't. Akwe Pro (its own licence) and Noto Sans JP (a fallback
- * of 9 MB) stay the renderer's.
+ * Edit's own faces (the renderer's, crates/edit-render/fonts; all SIL OFL 1.1
+ * but Akwe Pro, whose licence is to be bought: TODO.md), there for every effect
+ * page as if they were in its folder (`edit-fonts/…`, declared by the runtime),
+ * so an effect draws the same text on every computer that renders it: the
+ * agent's first board asked for Marker Felt, which a Mac has and Linux hasn't.
+ * Akwe Pro is commentary's face (its text and graphics are set in it; Sphe,
+ * Nov 22: a font that's used stays), here so a channel's agent can draw V1's
+ * commentary graphics as they were. Noto Sans JP (a fallback of 9 MB) stays
+ * the renderer's.
  */
-export const FONTS: readonly { family: string; weight: number; file: string; path: string }[] = [
+export const FONTS: readonly { family: string; weight: number; file: string; path: string; later?: true }[] = [
   { family: "Geist", weight: 400, file: "Geist-Regular.ttf", path: font0 },
   { family: "Geist", weight: 500, file: "Geist-Medium.ttf", path: font1 },
   { family: "Geist", weight: 600, file: "Geist-SemiBold.ttf", path: font2 },
@@ -128,10 +132,14 @@ export const FONTS: readonly { family: string; weight: number; file: string; pat
   { family: "Tinos", weight: 700, file: "Tinos-Bold.ttf", path: font11 },
   { family: "Arimo", weight: 400, file: "Arimo-Regular.ttf", path: font12 },
   { family: "Arimo", weight: 700, file: "Arimo-Bold.ttf", path: font13 },
+  { family: "Akwe Pro", weight: 700, file: "AkwePro-Bold.otf", path: font14, later: true },
 ];
 
 /** The faces, declared for the page: loaded only when the page uses one. */
-const FACES = FONTS.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
+const faces = (fonts: typeof FONTS) => fonts.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
+const FACES = faces(FONTS);
+/** The faces a render's key has: all but those added `later` (see `RENDERER`). */
+const KEYED = faces(FONTS.filter((font) => font.later !== true));
 
 /** Edit's side of every effect page (effect_runtime.html), put in ahead of the page's own code. */
 const RUNTIME = runtimeText as unknown as string;
@@ -141,9 +149,11 @@ const WATCH = watchText as unknown as string;
  * What of Edit's own is in every render's key (`codeKey`): its runtime and its
  * faces. A change to either draws every effect of every project again, on
  * every computer that opens one; effects.test.ts pins it so that's never by
- * accident. What changes no picture goes in effect_watch.html instead.
+ * accident. What changes no picture goes in effect_watch.html instead. A face
+ * added `later` is no part of it: no page drawn before could have used it, so
+ * adding it changes no picture already made (Akwe Pro, Nov 22).
  */
-export const RENDERER = fingerprint([RUNTIME, FACES]);
+export const RENDERER = fingerprint([RUNTIME, KEYED]);
 /** What the runtime says of a CSS animation running, which it checks at a page's first seek alone (a kept page says it again: `look`). */
 export const ANIMATION = /problem\("(A CSS animation[^"]*)"\)/.exec(RUNTIME)?.[1] ?? "";
 
@@ -243,7 +253,7 @@ function codeIn(dir: string): { path: string; sha256: string }[] {
  * when there are some.
  */
 function codeKey(code: { path: string; sha256: string }[], frame: { width: number; height: number; fps: number }, used = ""): string {
-  return fingerprint([RUNTIME, FACES, "content", ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...code.map((file) => `${file.path} ${file.sha256}`)]);
+  return fingerprint([RUNTIME, KEYED, "content", ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...code.map((file) => `${file.path} ${file.sha256}`)]);
 }
 
 /**
@@ -253,7 +263,7 @@ function codeKey(code: { path: string; sha256: string }[], frame: { width: numbe
  * drawn again for the change of key alone.
  */
 function oldKey(files: [string, number, number][], frame: { width: number; height: number; fps: number }, used = ""): string {
-  return fingerprint([RUNTIME, FACES, ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...files.map(([path, size, changed]) => `${path} ${size} ${changed}`)]);
+  return fingerprint([RUNTIME, KEYED, ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...files.map(([path, size, changed]) => `${path} ${size} ${changed}`)]);
 }
 
 /** An effect's folder's version (`codeKey`) now. */

@@ -90,7 +90,9 @@ test("an effect's page is served shut in: no origin, no network, only its own fo
     expect(face.headers.get("access-control-allow-origin")).toBe("null");
     expect(face.headers.get("content-security-policy")).toBe(policy);
     expect((await face.arrayBuffer()).byteLength).toBeGreaterThan(30_000);
-    expect((await get(app, `${base}edit-fonts/AkwePro-Bold.otf`)).status).toBe(404);
+    // Commentary's face is among them (its graphics are set in it); the renderer's 9 MB fallback isn't.
+    expect((await get(app, `${base}edit-fonts/AkwePro-Bold.otf`)).status).toBe(200);
+    expect((await get(app, `${base}edit-fonts/NotoSansJP-Bold.ttf`)).status).toBe(404);
     expect(text.indexOf("window.__edit")).toBeLessThan(text.indexOf("window.duration = 2"));
     // A file beside it, with the same walls.
     const beside = await get(app, `${base}img/a.txt`);
