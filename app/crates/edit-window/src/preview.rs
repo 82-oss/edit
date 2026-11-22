@@ -480,14 +480,26 @@ pub async fn preview_open(
     window: WebviewWindow,
     previews: State<'_, Previews>,
 ) -> Result<bool, String> {
-    if previews
+    let ended = previews
         .0
         .lock()
         .map_err(|error| error.to_string())?
-        .is_some()
-    {
-        trace(|| "open: already open".to_owned());
-        return Ok(true);
+        .as_ref()
+        .map(|open| open.thread.is_finished());
+    match ended {
+        Some(false) => {
+            trace(|| "open: already open".to_owned());
+            return Ok(true);
+        }
+        // Its thread ended under it (a panic): "already open" left the page asking a player that's gone, every
+        // command "the preview stopped", for the rest of the session. Taken down and opened again.
+        Some(true) => {
+            trace(|| "open: its player's thread had ended; opened again".to_owned());
+            if let Err(error) = preview_close(window.clone(), previews.clone()).await {
+                eprintln!("edit: the native preview's last player: {error}");
+            }
+        }
+        None => {}
     }
     let made = on_main(&window, |webview, _| {
         let main = MainThreadMarker::new()?;
@@ -789,10 +801,12 @@ pub async fn preview_close(
     } = open;
     // The thread ends once its commands are gone (after the frame it's on), before the layer it draws into goes.
     drop(commands);
-    tauri::async_runtime::spawn_blocking(move || thread.join())
+    // A thread that panicked is still taken down after: returning at its failure left the view in the window and
+    // the page see-through over it for good (the Nov 21 audit).
+    let joined = tauri::async_runtime::spawn_blocking(move || thread.join())
         .await
-        .map_err(|error| error.to_string())?
-        .map_err(|_| "the preview's thread failed".to_owned())?;
+        .map_err(|error| error.to_string())
+        .and_then(|joined| joined.map_err(|_| "the preview's thread failed".to_owned()));
     let app = tauri::Manager::app_handle(&window).clone();
     on_main(&window, move |_, _| {
         // Opened again while this one's thread was ending (the script page left for the editor, each
@@ -812,7 +826,8 @@ pub async fn preview_close(
                 view.removeFromSuperview();
             }
         }
-    })
+    })?;
+    joined
 }
 
 /// A check of the native preview with nobody at the keys (`EDIT_PREVIEW_CHECK=<frame>`,
