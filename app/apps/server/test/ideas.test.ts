@@ -632,6 +632,17 @@ test("a run the restart cut as its ending was noted is never run again; one Edit
   await until(() => jobs.get(home, ended) === undefined);
   expect(rows.get("i17-test")!.body.run!.state).toBe("done");
   expect(rows.get("i17-test")!.body.chat.map((turn) => turn.text)).toEqual(["go on", "Gone on."]);
+  // Its ending landed before Edit stopped and noted again in jobs.json: the next start lands it once more, said once (Sphe's prod, Nov 22).
+  const failed = { ...kept, state: "failed", error: "Claude Code process exited with code 143", text: "Claude stopped.", endedAt: Date.now() };
+  const again = jobs.begin(home, "idea", "i17-test", kept);
+  runLease.ended(home, again, failed);
+  await run.resumeRun({ home, port: 7700 }, jobs.get(home, again)!);
+  await until(() => jobs.get(home, again) === undefined);
+  const twice = jobs.begin(home, "idea", "i17-test", kept);
+  runLease.ended(home, twice, failed);
+  await run.resumeRun({ home, port: 7700 }, jobs.get(home, twice)!);
+  await until(() => jobs.get(home, twice) === undefined);
+  expect(rows.get("i17-test")!.body.chat.map((turn) => turn.text)).toEqual(["go on", "Gone on.", "Claude stopped."]);
   // Edit away longer than a restart: marked stopped.
   await cut("i18-test");
   const away = jobs.begin(home, "idea", "i18-test", kept);

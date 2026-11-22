@@ -981,6 +981,12 @@ async function saveEnding(id: string, given: Record<string, unknown>, named?: (t
   try {
     await cloud.change(id, ending.by, (thumb) => {
       if (thumb.run !== null && (thumb.run.holder !== ending.holder || thumb.run.startedAt !== ending.startedAt)) return false;
+      // Saved already: the run that ended landed it just before Edit stopped, and this start lands its note again
+      // (Sphe's prod, Nov 22: one chat killed by a restart said "Couldn't carry on" twice).
+      if (thumb.run !== null && thumb.run.endedAt === ending.endedAt && thumb.run.state === ending.state) {
+        saved = true;
+        return false;
+      }
       named?.(thumb.title);
       thumb.run = { state: ending.state, holder: ending.holder, by: ending.by, startedAt: ending.startedAt, endedAt: ending.endedAt, ...(ending.error ? { error: ending.error } : {}), ...(ending.tools && ending.tools.length > 0 ? { tools: ending.tools } : {}) };
       if (ending.interrupted !== true) {
