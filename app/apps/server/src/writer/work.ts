@@ -42,7 +42,7 @@ export function runFor(app: App, id: string, work: jobs.Work): (job: jobs.Job) =
     case "learn":
       return (job) => feedback.run(data, id, work.step, job);
     case "review":
-      return (job) => fixing.run(app, data, id, work.notes, work.ready, job);
+      return (job) => fixing.run(data, id, work.notes, job);
     case "restore":
       return (job) => archive.restoreAgain(app, data, id, job);
     case "speakers":

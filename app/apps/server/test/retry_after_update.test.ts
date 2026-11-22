@@ -2,7 +2,7 @@
 // is idle (the user, Nov 2: "could we make changes so that these failed stuff
 // can restart when a new nightly comes on").
 
-import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 
 import * as fs from "node:fs";
 
@@ -14,7 +14,6 @@ import * as retry from "../src/retry_after_update.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip } from "./helpers/model.ts";
 import { MockServer } from "./mocks/server.ts";
-import { THIS_MACHINE } from "../src/machine.ts";
 
 let mock: MockServer;
 let restore: () => void;
@@ -30,7 +29,6 @@ afterAll(() => {
   mock.stop();
 });
 
-beforeEach(() => reviews.resetCheckInForTests());
 
 /** Nothing running on this Mac, unless a test says so. */
 function idle(app: unknown, busy = false): void {
@@ -208,9 +206,7 @@ test("a busy Mac (an export, an agent turn) waits, and the queue is kept for whe
   }
 });
 
-// A reviewer's Ready for changes asked of this Mac used to stand in for the retry ("that request does it"); a request
-// starts nothing now (Sphe, Nov 21), so it no longer keeps the share someone asked for from being carried on.
-test(`never on a project another computer holds, nor a share on an approved review; a Ready for changes asked of ${THIS_MACHINE} doesn't stop it`, async () => {
+test("never on a project another computer holds, nor a share on an approved review", async () => {
   const { app, home, mom, cops, cleanup } = setUp("retry-skipped", "nightly-47");
   try {
     retry.noteBuild(app, "nightly-48");
@@ -226,15 +222,10 @@ test(`never on a project another computer holds, nor a share on an approved revi
     expect(await retry.step(app, actions)).toBe("skipped: the project is open on Sphe's MacBook Air");
     expect(done).toEqual([]);
     expect(retry.pending(home)).toEqual([]);
-    // Asked again of this Mac: the request is answered and starts nothing, and the retry goes on.
+    // Its approval taken back: the retry goes on.
     delete state.shared[mom]!.approved;
     fs.writeFileSync(`${home}/reviews.json`, JSON.stringify(state));
     retry.noteBuild(app, "nightly-49");
-    mock.on("POST", "/v1/cloud/convex", (request) => {
-      const { path } = request.json<{ path: string }>();
-      return Response.json({ status: "success", value: path === "reviews:checkIn" ? { chosen: true, requests: [{ reviewId: "r1", sourceId: mom, title: "Mom Secretly", requestedAt: 3 }] } : path === "reviews:changes" ? { notes: [], cursor: 0, more: false } : path === "reviews:open" ? [{ sourceId: mom, reviewId: "r1", approved: null }] : { ok: false, reason: "gone" } });
-    });
-    await reviews.checkIn(app);
     expect(await retry.step(app, actions)).toBe("shared from its step");
     expect(done).toEqual([`carry on ${mom}`]);
   } finally {

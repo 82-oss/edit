@@ -442,12 +442,6 @@ export function routes(router: Router<App>): void {
         return reviewState(data, id(context));
       });
     })
-    .get("/api/writer/scripts/{id}/review/fix", (context) =>
-      answer(() => {
-        checkFor(dataOf(context.app), id(context));
-        return reviews.fixState(id(context));
-      }),
-    )
     .post("/api/writer/scripts/{id}/review/notes", async (context) => {
       const given = await body<{ text?: string; details?: reviews.NoteDetails }>(context);
       return answer(async () => {

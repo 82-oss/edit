@@ -5,8 +5,8 @@
 // pull the feedback, and the next cut shared only when someone asks for that
 // too (Sphe, Nov 21: "When feedback comes in, it shouldn't automatically get
 // queued up to get fixed… Once the agent fixes things, it shouldn't just
-// automatically publish as V2"; "Ready for changes" on the review page is
-// answered with what to do in Edit, `checkIn`);
+// automatically publish as V2"; the review page's "Ready for changes" was
+// taken off it on Nov 22);
 // and each fix's changed stretch of the timeline kept
 // with its note, so the timeline shows what the agent changed for whom and
 // why ("did the agent actually do what we said we wanted it to do?").
@@ -69,10 +69,8 @@ import { BUILD } from "./version.ts";
 import { ANOTHER_MACHINE } from "./machine.ts";
 
 const FILE = "reviews.json";
-/** How often Repack is asked for new notes while Edit runs. */
+/** How often Repack is asked for new notes while Edit runs, and this computer checks in (`checkIn`). */
 export const POLL_MS = 45_000;
-/** How often a computer that has Ready for changes asked of it checks in; others check in at POLL_MS. */
-export const CHECK_IN_CHOSEN_MS = 15_000;
 /** The longest a feedback fix's turn is waited for before it's given up on. */
 const FIX_TURN_MS = 3 * 60 * 60_000;
 /** A note claimed this long ago and never resolved may be tried again… */
@@ -2106,8 +2104,7 @@ let checkTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Starts following the reviews: every `every` ms (POLL_MS), whenever the cloud
- * is on; and checks in as this computer (`checkIn`), every POLL_MS, or
- * CHECK_IN_CHOSEN_MS while Ready for changes is asked of it. It ticks from the start, signed in or not:
+ * is on; and checks in as this computer (`checkIn`) as often. It ticks from the start, signed in or not:
  * the sign-in is read from the Keychain after this runs (and can come later),
  * and a start that waited for the cloud to be on never followed a review after
  * sign-in moved to accounts (Marc's 5 notes on Judge EXPLODES v2, Oct 23).
@@ -2135,13 +2132,13 @@ export function start(app: App, every = POLL_MS): void {
   const check = () => {
     const next = () => {
       if (timer === null) return;
-      checkTimer = setTimeout(check, asked ? CHECK_IN_CHOSEN_MS : every);
+      checkTimer = setTimeout(check, every);
       checkTimer.unref?.();
     };
     if (!cloud.enabled()) return next();
     void outages
       .background("relay", () => checkIn(app))
-      .catch((error: unknown) => diag.warn("review", `checking in for Ready for changes: ${diag.messageOf(error)}`))
+      .catch((error: unknown) => diag.warn("review", `checking in as this computer: ${diag.messageOf(error)}`))
       .finally(next);
   };
   checkTimer = setTimeout(check, Math.min(6_000, every));
@@ -2272,55 +2269,21 @@ export async function boxStills(home: string, projectId: string, shared: Shared 
 }
 
 // ---------------------------------------------------------------------------
-// Ready for changes, asked of this computer
+// This computer, as accounts' Computers page lists it
 //
-// The reviewer picks the computer on the review page: their own (where
-// they're signed in to Edit) by default, or another that's on and not busy
-// (Nov 2: JJ's Ready for changes sat on "No computer is on" because the one
-// fixing computer chosen for everyone was Sphe's MacBook Air, off, while JJ's
-// own Mac had Edit open and idle). Each check-in says whether this computer
-// is busy, so the page greys it out, and hands back the requests asked of it.
-//
-// None starts anything here now (Sphe, Nov 21: "When feedback comes in, it
-// shouldn't automatically get queued up to get fixed. We must go into the
-// edits app and ask the agents to pull the feedback"). Each request is taken
-// and ended at once with what to do (`ASK_IN_EDIT`), so the reviewer isn't
-// left waiting on a computer that will never start: declined, the page adds
-// "Pick another computer", and every Edit on this build says the same, while
-// one on an older build would fix and publish by itself; left untaken, it
-// waits three minutes and then reads "<computer> didn't start these changes".
-// The notes it came with are heard as any are (`poll`): Home's count has them.
-
-/** What the review page shows a reviewer who pressed Ready for changes (its error line, up to 500 characters). */
-export const ASK_IN_EDIT = "Changes are made in Edit now, not from this page: open the project in Edit and ask its agent to pull the feedback. The new version comes here once someone shares it from Edit.";
+// Each check-in says this computer is open, who is signed in and whether it's
+// busy (`reviews:checkIn`): accounts.spheceo.com's Computers page lists them.
+// Until Nov 22 it also handed back the review page's "Ready for changes"
+// asked of this computer, each answered with what to do in Edit; that button
+// is gone from the page on every build, so nothing asks a computer for
+// changes now: the feedback is pulled by asking the agent (`pullFeedback`).
 
 /** What a request an older build was fixing says on the page once its fix is done here (a stage: 120 characters at most). */
 export const FIXED_NOT_UP = "Fixed in Edit. The new version comes here once someone shares it from Edit.";
 
-/** Ready for changes is asked of this computer, as its last check-in said. */
-let asked = false;
 /** Projects whose notes the agent is fixing here (pulled in the chat, or a fix carried over a restart). */
 const readying = new Set<string>();
 busy.register(() => (readying.size > 0 ? "a feedback fix" : sharing.size > 0 ? "a share" : null));
-
-/** Ready for changes is asked of this computer, as of its last check-in. */
-export function askedHere(): boolean {
-  return asked;
-}
-
-/** A review waiting on this computer, as `reviews:checkIn` lists it. */
-interface Request {
-  reviewId: string;
-  sourceId: string;
-  title: string;
-  requestedAt?: number;
-}
-
-/** Requests answered here (review and when it was asked), so one is never answered twice; asked again later, it's a new one. */
-const answered = new Set<string>();
-/** Requests taken here whose answer the page didn't get yet: said again at the next check-in (the page no longer lists a taken one). */
-const owed = new Map<string, Request>();
-const requestKey = (request: Request) => `${request.reviewId}:${request.requestedAt ?? ""}`;
 
 /** Something runs in Edit on this computer: a fix, a share, an export, an import, an agent turn, Claude on a script (busy.ts, the one answer; the fixes and shares here are in it). */
 export function busyHere(app: App): boolean {
@@ -2339,68 +2302,17 @@ export async function settledForTests(most = 10_000): Promise<void> {
   while ((readying.size > 0 || sharing.size > 0) && Date.now() < end) await Bun.sleep(10);
 }
 
-/** Tests: forget what earlier check-ins learnt. */
 /** For tests: a share's line as it's said while it runs (export_steps.ts reads its stage and the review copy's percent from it); null takes it away. */
 export function sharingForTests(projectId: string, line: string | null): void {
   if (line === null) sharing.delete(projectId);
   else sharing.set(projectId, line);
 }
 
-export function resetCheckInForTests(): void {
-  asked = false;
-  answered.clear();
-  owed.clear();
-}
-
-/**
- * Says this computer is open and whether it's busy (for the review page's
- * choice of computer), and answers each "Ready for changes" asked of it with
- * `ASK_IN_EDIT` (`reviews:takeFix`, then `reviews:fixProgress` failed with
- * those words), starting nothing. The projects whose requests it answered.
- */
-export async function checkIn(app: App): Promise<string[]> {
+/** Says this computer is open, who is signed in and whether it's busy, for accounts' Computers page. */
+export async function checkIn(app: App): Promise<void> {
   const email = accounts.status().person as { email?: string } | null;
   // Busy is the whole Mac's: Script mode's work (Claude on a script, its imports) counts too.
-  const answer = (await cloud.mutation("reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email?.email ?? null, busy: busyHere(app) })) as { chosen?: boolean; requests?: Request[] };
-  const requests = (answer.requests ?? []).filter((one) => typeof one.reviewId === "string" && typeof one.sourceId === "string");
-  const now = requests.length > 0;
-  if (now !== asked) diag.info("review", now ? "Ready for changes is asked of this computer" : "no Ready for changes is asked of this computer now");
-  asked = now;
-  const done: string[] = [];
-  for (const request of owed.values()) if (await tell(request)) done.push(request.sourceId);
-  if (requests.length === 0) return done;
-  // The notes that came with it, heard now: Home's count is up to date for whoever opens Edit next.
-  await poll(app).catch((error: unknown) => diag.warn("review", `hearing the notes of a Ready for changes: ${diag.messageOf(error)}`));
-  for (const request of requests) {
-    const key = requestKey(request);
-    if (answered.has(key) || owed.has(key)) continue;
-    const name = app.store.get(request.sourceId)?.project.name ?? (request.title || request.sourceId);
-    const taken = (await cloud.mutation("reviews:takeFix", { machine: machine.id(), reviewId: request.reviewId })) as { ok?: boolean; reason?: string };
-    if (taken.ok !== true) {
-      // Asked of another, cancelled meanwhile, or nothing to fix (the page ended that one itself).
-      answered.add(key);
-      diag.info("review", `${name}: Ready for changes not taken (${taken.reason ?? "?"})`);
-      continue;
-    }
-    owed.set(key, request);
-    diag.info("review", `${name}: Ready for changes asked here: nothing starts by itself; the review page says to ask Edit's agent`);
-    if (await tell(request)) done.push(request.sourceId);
-  }
-  return done;
-}
-
-/** Ends a taken request on its page with `ASK_IN_EDIT`; false when the page didn't hear it (tried again at the next check-in). */
-async function tell(request: Request): Promise<boolean> {
-  const key = requestKey(request);
-  try {
-    await cloud.mutation("reviews:fixProgress", { machine: machine.id(), reviewId: request.reviewId, state: "failed", error: ASK_IN_EDIT });
-  } catch (error) {
-    diag.warn("review", `${request.title || request.sourceId}: telling the review page what to do instead: ${diag.messageOf(error)}`);
-    return false;
-  }
-  owed.delete(key);
-  answered.add(key);
-  return true;
+  await cloud.mutation("reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email?.email ?? null, busy: busyHere(app) });
 }
 
 /** How a Ready for changes an older build took is going, for its review page (`reviews:fixProgress`). Best effort. */
@@ -2471,8 +2383,7 @@ export async function adopt(app: App, projectId: string): Promise<Shared | undef
  * or asks the agent to (share_for_review), and the notes it fixed read as
  * fixed on the review once that version is up (`markCarried`). Any of the
  * team's own notes the turn didn't answer go back in their queue. The only way
- * the agent is set on the notes now: Ready for changes starts nothing
- * (`checkIn`). `again`: notes the agent left before are taken too.
+ * the agent is set on the notes. `again`: notes the agent left before are taken too.
  */
 export async function pullFeedback(app: App, projectId: string, again = false): Promise<string> {
   const live = app.store.get(projectId);

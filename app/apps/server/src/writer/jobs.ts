@@ -77,7 +77,8 @@ export type Work =
   | { kind: "reuse"; urls: string[] }
   | { kind: "find" }
   | { kind: "learn"; step: import("@edit/types/writer").LearnStep }
-  | { kind: "review"; notes: string[]; ready: string | null }
+  /** Fixing review notes; `ready`, the "Ready for changes" an older build took it for, is no longer read. */
+  | { kind: "review"; notes: string[]; ready?: string | null }
   | { kind: "restore" }
   | { kind: "speakers" }
   | { kind: "exact" }

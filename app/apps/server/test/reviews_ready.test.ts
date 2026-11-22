@@ -1,15 +1,12 @@
-// "Ready for changes" asked of this computer: Edit checks in (saying whether
-// it's busy) and answers each request asked of it with what to do in Edit,
-// starting nothing (Sphe, Nov 21: "When feedback comes in, it shouldn't
-// automatically get queued up to get fixed"): wherever the project is and
-// however busy the computer. A fix the team pulls sends back the notes its
-// turn left unanswered; a share's export follows one already running.
+// This computer's check-in (saying whether it's busy, for accounts' Computers
+// page; the review page's "Ready for changes" that it also answered is gone,
+// Nov 22). A fix the team pulls sends back the notes its turn left
+// unanswered; a share's export follows one already running.
 
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 
 import * as fs from "node:fs";
 
-import { readOnly } from "../src/cloud_projects.ts";
 import { optionsKey, timelineHash } from "../src/exports.ts";
 import * as machine from "../src/machine.ts";
 import { native } from "../src/native/index.ts";
@@ -28,7 +25,6 @@ beforeAll(() => {
 
 beforeEach(async () => {
   await reviews.settledForTests();
-  reviews.resetCheckInForTests();
 });
 
 afterAll(() => {
@@ -57,15 +53,12 @@ function idle(app: unknown, agents: Record<string, unknown> = {}): void {
   (app as { agents: unknown }).agents = { hasRunningTurns: () => false, chat: () => ({ running: false }), ...agents };
 }
 
-const request = (sourceId: string, extra: Record<string, unknown> = {}) => ({ reviewId: "r1", sourceId, title: "Judge", version: 1, by: "JJ", requestedAt: 1, ...extra });
-
-test("with nothing asked of it, it only checks in, saying it isn't busy", async () => {
+test("a check-in says this computer is open and isn't busy, for accounts' Computers page, and nothing else", async () => {
   const { app, cleanup } = fixtureHome("ready-not-asked");
   idle(app);
   try {
     const calls = convex({ "reviews:checkIn": () => ({ chosen: false, requests: [] }) });
-    expect(await reviews.checkIn(app)).toEqual([]);
-    expect(reviews.askedHere()).toBe(false);
+    await reviews.checkIn(app);
     expect(calls.map((call) => call.path)).toEqual(["reviews:checkIn"]);
     expect(calls[0]!.args).toMatchObject({ machine: machine.id(), name: machine.name(), busy: false });
   } finally {
@@ -85,140 +78,6 @@ test("a check-in says busy while an agent turn runs on any project here", async 
     (app as unknown as { exports: unknown }).exports = { running: () => true };
     await reviews.checkIn(app);
     expect(calls[1]!.args.busy).toBe(true);
-  } finally {
-    cleanup();
-  }
-});
-
-/** The answers a check-in's requests are taken and ended with. */
-const answering = {
-  "reviews:changes": () => ({ notes: [], cursor: 0, more: false }),
-  "reviews:open": () => [],
-  "reviews:takeFix": () => ({ ok: true, noteIds: ["n1"] }),
-  "reviews:fixProgress": () => ({ ok: true }),
-};
-const answers = (calls: Call[]) => calls.filter((call) => call.path === "reviews:fixProgress").map((call) => call.args);
-const told = (reviewId = "r1") => ({ machine: machine.id(), reviewId, state: "failed", error: reviews.ASK_IN_EDIT });
-
-// Before Nov 21 a request for a project not here came down from the cloud (or was declined, with the cloud off) and
-// its fix started at the next check-in. Nothing starts now, so nothing comes down: the answer is the same everywhere.
-test("a request for a project that isn't here is answered with what to do in Edit, once; nothing comes down for it", async () => {
-  const { app, cleanup } = fixtureHome("ready-decline-missing");
-  idle(app);
-  try {
-    let asked = [request("p-elsewhere")];
-    const calls = convex({ "reviews:checkIn": () => ({ chosen: true, requests: asked }), ...answering });
-    expect(await reviews.checkIn(app)).toEqual(["p-elsewhere"]);
-    expect(reviews.askedHere()).toBe(true);
-    expect(answers(calls)).toEqual([told()]);
-    expect(calls.some((call) => call.path === "reviews:declineFix" || call.path === "reviews:claim")).toBe(false);
-    // Still listed (the database hadn't moved it yet): not answered again.
-    await reviews.checkIn(app);
-    expect(answers(calls)).toHaveLength(1);
-    // Asked again later: a new request, answered again.
-    asked = [request("p-elsewhere", { requestedAt: 2 })];
-    await reviews.checkIn(app);
-    expect(answers(calls)).toHaveLength(2);
-  } finally {
-    cleanup();
-  }
-});
-
-// It was declined naming the computer that held it ("Pick another computer"); that steered the reviewer to a Mac
-// that might run an older build, which would fix and publish by itself. Now it gets the same answer, and the
-// project's hold isn't even asked about: nothing here would write to it.
-test("a request for a project another computer holds gets the same answer, without asking for the project", async () => {
-  const { app, cleanup } = fixtureHome("ready-decline-held");
-  idle(app);
-  const live = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 });
-  let asks = 0;
-  (app.store as unknown as { mayWrite: unknown }).mayWrite = async () => {
-    asks++;
-    throw new Error(readOnly("Sphe's MacBook Air"));
-  };
-  try {
-    const calls = convex({ "reviews:checkIn": () => ({ chosen: true, requests: [request(live.project.id)] }), ...answering });
-    expect(await reviews.checkIn(app)).toEqual([live.project.id]);
-    expect(answers(calls)).toEqual([told()]);
-    expect(asks).toBe(0);
-    expect(calls.some((call) => call.path === "reviews:declineFix")).toBe(false);
-  } finally {
-    cleanup();
-  }
-});
-
-// A busy project's request used to wait for a later check-in. It starts nothing now, so there's nothing to wait for.
-test("a request whose project is busy here is answered all the same, the check-in still saying busy", async () => {
-  const { app, cleanup } = fixtureHome("ready-busy-waits");
-  const live = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 });
-  const sent: string[] = [];
-  idle(app, { hasRunningTurns: () => true, chat: () => ({ running: true }), send: async (_project: string, text: string) => void sent.push(text) });
-  try {
-    const calls = convex({ "reviews:checkIn": () => ({ chosen: true, requests: [request(live.project.id)] }), ...answering });
-    expect(await reviews.checkIn(app)).toEqual([live.project.id]);
-    expect(await reviews.checkIn(app)).toEqual([]);
-    expect(calls.filter((call) => call.path === "reviews:checkIn").map((call) => call.args.busy)).toEqual([true, true]);
-    expect(answers(calls)).toEqual([told()]);
-    expect(sent).toEqual([]);
-  } finally {
-    cleanup();
-  }
-});
-
-// "Share v2 again" on the page (Nov 2, JJ's Mom Secretly: every note done in v2, then sharing v2 failed) took the
-// request straight to exporting and sharing. Nothing is shared by itself now: it's answered as any request is, with
-// notes to fix or none, and whoever's in Edit shares it.
-test("Share again, with nothing to fix or with a new note, is answered with what to do in Edit: nothing exported, nothing sent to the agent", async () => {
-  const { app, home, cleanup } = fixtureHome("ready-reshare");
-  const live = app.store.createAs("Mom Secretly", "bodycam", { width: 1920, height: 1080, fps: 30 });
-  const id = live.project.id;
-  const sent: string[] = [];
-  idle(app, { send: async (_project: string, text: string) => void sent.push(text) });
-  let exports = 0;
-  (app as unknown as { exports: unknown }).exports = { running: () => false, runningFor: () => null, cancel: () => false, exported: () => false, start: async (_s: unknown, _l: unknown, _p: unknown, _o: unknown, path: string) => (exports++, path) };
-  try {
-    fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: { reviewId: "r1", url: "u", versions: [{ n: 1, timeline: "older", path: "/nowhere.mp4", fps: 30, durationMs: 10_000, clips: [] }] } } }));
-    const calls = convex({
-      "reviews:checkIn": () => ({ chosen: true, requests: [request(id, { title: "Mom Secretly" }), request(id, { reviewId: "r2", requestedAt: 2 })] }),
-      ...answering,
-      "reviews:takeFix": (args) => ({ ok: true, sourceId: id, title: "Mom Secretly", version: 1, noteIds: args.reviewId === "r1" ? [] : ["n2"], reshare: true }),
-    });
-    expect(await reviews.checkIn(app)).toEqual([id, id]);
-    await Bun.sleep(100);
-    expect(answers(calls)).toEqual([told("r1"), told("r2")]);
-    expect(exports).toBe(0);
-    expect(sent).toEqual([]);
-    expect(calls.some((call) => call.path === "reviews:claim" || call.path === "reviews:publish")).toBe(false);
-  } finally {
-    cleanup();
-  }
-});
-
-// The page didn't hear the answer (the line dropped): the request is taken, so the next check-in doesn't list it, and
-// it's said again then rather than left reading "Starting" on the page.
-test("an answer the page didn't hear is said again at the next check-in", async () => {
-  const { app, cleanup } = fixtureHome("ready-answer-again");
-  idle(app);
-  try {
-    let listed = [request("p-elsewhere")];
-    let heard = false;
-    const answer: Record<string, () => unknown> = { "reviews:checkIn": () => ({ chosen: listed.length > 0, requests: listed }), ...answering };
-    const calls: Call[] = [];
-    mock.on("POST", "/v1/cloud/convex", (given) => {
-      const { path, args } = given.json<{ path: string; args: Record<string, unknown> }>();
-      calls.push({ path, args });
-      // The first answer doesn't reach the page.
-      if (path === "reviews:fixProgress" && !heard) {
-        heard = true;
-        return Response.json({ status: "error", errorMessage: "Uncaught Error: the line dropped" });
-      }
-      return Response.json({ status: "success", value: answer[path]?.() ?? null });
-    });
-    expect(await reviews.checkIn(app)).toEqual([]);
-    listed = [];
-    expect(await reviews.checkIn(app)).toEqual(["p-elsewhere"]);
-    expect(answers(calls)).toEqual([told(), told()]);
-    expect(calls.filter((call) => call.path === "reviews:takeFix")).toHaveLength(1);
   } finally {
     cleanup();
   }

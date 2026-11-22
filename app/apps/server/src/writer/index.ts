@@ -74,7 +74,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   // Footage that didn't come in, tried again by itself (and imports an older Edit paused on it, carried on).
   missing.start(app, data);
   cloud.start(data, holderFor(app.store.home, readSettings(app.store.home).holder ?? machine.name()));
-  reviews.start(app, data);
+  reviews.start(data);
   // Idle scripts' footage left to the cloud as room runs short.
   storage.start(data, join(app.store.home, "projects"), app.store.cacheDir());
   // Each script and the edit made from it kept in step.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { askConfirm } from "./confirm";
-import { addReviewNote, checkReviewNote, deleteReviewNote, message, type NoteDetails, replyReviewNote, reviewFix, type ReviewFix } from "./api";
+import { addReviewNote, checkReviewNote, deleteReviewNote, message, type NoteDetails, replyReviewNote } from "./api";
 import mark from "./assets/writer-mark.svg";
 import type { ReviewNote } from "./types";
 import { Icon, Menu, type MenuItem, Select } from "./ui";
@@ -287,7 +287,6 @@ export function CommentsPanel({
           }}
         />
       </div>
-      <ReadyLine scriptId={scriptId} />
       <div className="cm-cards" ref={list}>
         {roots.length === 0 && <p className="cm-empty">No comments yet. Select words in the script to comment on them, or leave a general comment below.</p>}
         {roots.length > 0 && shown.length === 0 && <p className="cm-empty">Nothing here.</p>}
@@ -605,68 +604,3 @@ function Composer({ scriptId, draft, onDraft, onSent, onError }: { scriptId: str
   );
 }
 
-/**
- * How "Ready for changes" is going, as the page's line under its toolbar
- * says it (feedback/src/client/ready.tsx), from the review's `fix` and
- * whether the fixing computer is on: asked every 12 s while shown.
- */
-function ReadyLine({ scriptId }: { scriptId: string }) {
-  const [state, setState] = useState<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null } | null>(null);
-  const [seen, setSeen] = useState(() => Number(localStorage.getItem(`writer-ready-seen:${scriptId}`) ?? 0));
-  useEffect(() => {
-    let live = true;
-    const ask = () => void reviewFix(scriptId).then((next) => live && setState(next), () => {});
-    ask();
-    const timer = window.setInterval(ask, 12_000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [scriptId]);
-  const fix = state?.fix;
-  if (!fix || fix.requestedAt === seen) return null;
-  const running = fix.state === "fixing" || fix.state === "sharing";
-  const ended = fix.state === "done" || fix.state === "failed" || (running && fix.stale);
-  const text =
-    fix.state === "waiting"
-      ? state?.computer === "on"
-        ? `${fix.by} asked for changes. Found a computer; starting…`
-        : state?.computer === "none"
-          ? "No fixing computer is chosen for Edit yet: choose one on the accounts dashboard. This waits until then."
-          : "No computer is on to make these changes: this waits, and starts when it comes on."
-      : running
-        ? fix.stale
-          ? "The fixing computer stopped answering. Ask again with Ready for changes."
-          : (fix.stage ?? (fix.state === "sharing" ? `Sharing v${fix.version + 1}…` : fix.total ? `Fixing comment ${(fix.done ?? 0) + 1} of ${fix.total}…` : "Fixing the comments…"))
-        : fix.state === "failed"
-          ? `${fix.error ?? "Edit couldn't make the changes."} Ask again with Ready for changes.`
-          : fix.newVersion
-            ? `v${fix.newVersion} has the changes.`
-            : (fix.stage ?? "Edit went through the comments; nothing needed a new version.");
-  const tone = fix.state === "failed" || (running && fix.stale) ? "failed" : fix.state === "done" ? "done" : "working";
-  return (
-    <div className={`cm-ready ${tone}`}>
-      <span className="cm-ready-text">
-        <Icon name={tone === "done" ? "check" : tone === "failed" ? "minus" : "history"} size={12} />
-        {text}
-      </span>
-      {ended && (
-        <button
-          type="button"
-          className="link-button faint"
-          onClick={() => {
-            localStorage.setItem(`writer-ready-seen:${scriptId}`, String(fix.requestedAt));
-            setSeen(fix.requestedAt);
-          }}
-        >
-          Dismiss
-        </button>
-      )}
-      {running && !fix.stale && fix.total ? (
-        <span className="cm-ready-bar">
-          <i style={{ width: `${Math.round((((fix.done ?? 0) + 0.5) / fix.total) * 100)}%` }} />
-        </span>
-      ) : null}
-    </div>
-  );
-}

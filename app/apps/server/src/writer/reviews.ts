@@ -8,11 +8,11 @@
 // runs it asks for changed notes every 45 seconds and keeps them in
 // `reviews/notes.json` beside `scripts/` (each Mac its own copy).
 //
-// Notes are fixed when a reviewer clicks "Ready for changes", by the one
-// computer an admin chose on accounts.spheceo.com's Fixing page: Edit checks
-// in (`reviews:checkIn`) every 45 seconds, every 15 on the fixing computer;
-// there it takes each waiting request (`reviews:takeFix`), fixes the notes
-// (fixing.ts) and shares the next version. Fixing by hand works anywhere.
+// Notes are fixed by asking the chat's agent (its pull_feedback, fixing.ts);
+// the review page's "Ready for changes", which had the fixing computer take
+// and fix them and share the next version, is gone from the page (Nov 22).
+// Edit still checks in (`reviews:checkIn`) every 45 seconds: accounts'
+// Computers page lists the computers that do.
 
 import * as fs from "node:fs";
 
@@ -29,18 +29,13 @@ import * as relay from "../relay.ts";
 import { blocksOf, outline, targetMs, type Block, type Range } from "./blocks.ts";
 import * as cloud from "./cloud.ts";
 import * as commentary from "./commentary.ts";
-import * as fixing from "./fixing.ts";
 import * as footage from "./footage.ts";
-import { importing } from "./imports.ts";
 import * as jobs from "./jobs.ts";
 import { ensureIds } from "./paragraphs.ts";
 import { audit } from "./plan.ts";
 import * as store from "./store.ts";
-import { THIS_MACHINE } from "../machine.ts";
 
 const POLL_MS = 45_000;
-/** How often the fixing computer checks for "Ready for changes"; others check in at POLL_MS. */
-const CHECK_IN_CHOSEN_MS = 15_000;
 /** The most a version's page data may be (Repack's cap is 512 KB). */
 const META_BYTES = 480_000;
 /** The text each block was last shared with, beside the script. */
@@ -259,16 +254,6 @@ export async function check(data: string, noteId: string, verdict: string, given
     throw new Error(message.includes("Could not find public function") || message.includes("reviews:check") ? "Checking a fix from Edit needs Repack's latest update; do it on the review page for now." : message);
   }
   await poll(data).catch(() => false);
-}
-
-/** How a "Ready for changes" on the script's review is going, and whether the fixing computer is on: the review page's own shapes, or nulls. */
-export async function fixState(scriptId: string): Promise<{ fix: unknown; computer: unknown }> {
-  try {
-    const value = await call("query", "reviews:get", { sourceId: scriptId });
-    return { fix: value.fix ?? null, computer: value.computer ?? null };
-  } catch {
-    return { fix: null, computer: null };
-  }
 }
 
 type SharedText = { version: number; blocks: Record<string, string> };
@@ -918,15 +903,15 @@ function scanLinks(data: string): Record<string, string> {
   return links;
 }
 
-/** Open notes per script, for the cards' badges; approvals; whether this Mac fixes. */
-export function counts(data: string): { open: Record<string, number>; approved: Record<string, Approval>; fixesHere: boolean } {
+/** Open notes per script, for the cards' badges; approvals. */
+export function counts(data: string): { open: Record<string, number>; approved: Record<string, Approval> } {
   const known = load(data);
   const open: Record<string, number> = {};
   for (const note of Object.values(known.notes).filter((one) => isRoot(one) && isOpen(one))) {
     const script = note.scriptId ?? known.links[note.reviewId];
     if (script !== undefined) open[script] = (open[script] ?? 0) + 1;
   }
-  return { open, approved: known.approved, fixesHere: chosen };
+  return { open, approved: known.approved };
 }
 
 /** A script's notes, oldest first, with their replies. */
@@ -964,11 +949,9 @@ export const replies = (data: string, id: string): Note[] => Object.values(load(
 
 let pollNow = false;
 export const pollSoon = (): void => void (pollNow = true);
-/** This Mac is the fixing computer, as the last check-in said. */
-let chosen = false;
 
-/** Asks for changed notes while Edit runs, checks in as this computer, and on the fixing computer takes each "Ready for changes". */
-export function start(app: App, data: string): void {
+/** Asks for changed notes while Edit runs, and checks in as this computer. */
+export function start(data: string): void {
   let lastPoll = 0;
   let lastCheck = 0;
   let busyNow = false;
@@ -982,9 +965,9 @@ export function start(app: App, data: string): void {
         lastPoll = Date.now();
         await outages.background("relay", () => poll(data)).catch((error: unknown) => diag.warn("writer", `review notes: ${diag.messageOf(error)}`));
       }
-      if (Date.now() - lastCheck >= (chosen ? CHECK_IN_CHOSEN_MS : POLL_MS)) {
+      if (Date.now() - lastCheck >= POLL_MS) {
         lastCheck = Date.now();
-        await outages.background("relay", () => checkIn(app, data)).catch((error: unknown) => diag.warn("writer", `checking in for fixing: ${diag.messageOf(error)}`));
+        await outages.background("relay", () => checkIn()).catch((error: unknown) => diag.warn("writer", `checking in as this computer: ${diag.messageOf(error)}`));
       }
     })().finally(() => (busyNow = false));
   }, 3_000);
@@ -1050,79 +1033,13 @@ export async function poll(data: string): Promise<boolean> {
   return changed;
 }
 
-/** Says this Mac is open (for accounts' Fixing page) and, on the fixing computer, takes each waiting "Ready for changes" whose script is here. */
-async function checkIn(app: App, data: string): Promise<void> {
-  let answer: Record<string, unknown>;
+/** Says this Mac is open and who is signed in, for accounts' Computers page. */
+async function checkIn(): Promise<void> {
   try {
-    answer = await call("mutation", "reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email() });
+    await call("mutation", "reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email() });
   } catch (error) {
     // The relay gone: said once, by outages.ts (the round that called this is quiet then).
     if (outages.quiet(error, ["relay"])) throw error;
-    diag.warn("writer", `checking in for fixing: ${diag.messageOf(error)}`);
-    return;
-  }
-  const now = answer.chosen === true;
-  if (now !== chosen) diag.info("writer", now ? `${THIS_MACHINE} is the fixing computer: it takes Ready for changes` : `${THIS_MACHINE} isn't the fixing computer`);
-  chosen = now;
-  if (!chosen) return;
-  const requests = (Array.isArray(answer.requests) ? answer.requests : []) as Record<string, unknown>[];
-  if (requests.length === 0) return;
-  // The notes it fixes are read from what this Mac has heard: hear them first.
-  await poll(data).catch(() => false);
-  for (const request of requests) {
-    if (typeof request.reviewId !== "string" || typeof request.sourceId !== "string") continue;
-    await take(app, data, request.reviewId, request.sourceId, typeof request.title === "string" ? request.title : "");
-  }
-}
-
-/** Why each request waits, as last said. */
-const waiting = new Map<string, string>();
-
-/** Takes one request and starts its fix, or says why it couldn't. */
-async function take(app: App, data: string, reviewId: string, scriptId: string, title: string): Promise<void> {
-  const name = jobs.named(scriptId, title);
-  let here = false;
-  try {
-    here = store.read(store.scriptDir(data, scriptId)).status === "ready";
-  } catch {
-    here = false;
-  }
-  // A script this Mac hasn't got yet (the sync brings it) or is busy with waits for a later check-in.
-  if (!here || jobs.running(scriptId) || importing(scriptId)) {
-    const why = `${name}: Ready for changes waits: the script ${here ? "is busy" : `isn't on ${THIS_MACHINE} yet`}`;
-    // Said once, not at every check-in.
-    if (waiting.get(reviewId) !== why) diag.info("writer", why);
-    waiting.set(reviewId, why);
-    return;
-  }
-  waiting.delete(reviewId);
-  let taken: Record<string, unknown>;
-  try {
-    taken = await call("mutation", "reviews:takeFix", { machine: machine.id(), reviewId });
-  } catch (error) {
-    diag.warn("writer", `${name}: couldn't take Ready for changes: ${diag.messageOf(error)}`);
-    return;
-  }
-  if (taken.ok !== true) {
-    diag.info("writer", `${name}: Ready for changes not taken (${String(taken.reason ?? "?")})`);
-    return;
-  }
-  const notes = (Array.isArray(taken.noteIds) ? taken.noteIds : []).filter((one): one is string => typeof one === "string");
-  diag.info("writer", `${name}: Ready for changes: fixing ${notes.length} ${notes.length === 1 ? "note" : "notes"}`);
-  markTried(data, notes);
-  try {
-    // A fix as a job on the script; the next version is shared after (fixing.ts).
-    jobs.start(data, scriptId, title || store.read(store.scriptDir(data, scriptId)).title, { kind: "review", notes, ready: reviewId }, (job) => fixing.run(app, data, scriptId, notes, reviewId, job));
-  } catch (error) {
-    await progress(reviewId, { state: "failed", error: diag.messageOf(error) });
-  }
-}
-
-/** How a "Ready for changes" is going, for its review page: `state` fixing, sharing, done or failed. Best effort. */
-export async function progress(reviewId: string, given: { state?: string; stage?: string; done?: number; total?: number; error?: string }): Promise<void> {
-  try {
-    await call("mutation", "reviews:fixProgress", { machine: machine.id(), reviewId, ...given });
-  } catch (error) {
-    diag.warn("writer", `saying how the fix is going: ${diag.messageOf(error)}`);
+    diag.warn("writer", `checking in as this computer: ${diag.messageOf(error)}`);
   }
 }

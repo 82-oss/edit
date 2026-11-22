@@ -149,26 +149,10 @@ export const replyReviewNote = (id: string, noteId: string, text: string) =>
 export const checkReviewNote = (id: string, noteId: string, verdict: "confirmed" | "notFixed", text?: string) =>
   http<void>(`/api/writer/scripts/${id}/review/notes/${noteId}/check`, json({ verdict, text }));
 
-/** How Ready for changes is going on the script's review (the page's `fix`), and whether the fixing computer is on. */
-export type ReviewFix = {
-  state: "waiting" | "fixing" | "sharing" | "done" | "failed";
-  by: string;
-  requestedAt: number;
-  version: number;
-  stage: string | null;
-  done: number | null;
-  total: number | null;
-  newVersion: number | null;
-  error: string | null;
-  stale: boolean;
-  updatedAt: number;
-};
 /** What a reviewer would flag that a count can find (commentary::audit, claude::team_flags), shown before sharing. */
 export const scriptAudit = (id: string) =>
   http<{ flags: string[] }>(`/api/writer/scripts/${id}/audit`);
 
-export const reviewFix = (id: string) =>
-  http<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null }>(`/api/writer/scripts/${id}/review/fix`);
 
 /** Deletes a note left from Writer (never a reviewer's), with its replies. */
 export const deleteReviewNote = (id: string, noteId: string) =>

@@ -17,7 +17,6 @@
 
 import type { Script } from "@edit/types/writer";
 
-import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import { blocksOf, changed, marksOf, noteAnchor, pieceSpans, wordSpans, type Block, type Range, type Side } from "./blocks.ts";
 import * as chat from "./chat.ts";
@@ -56,43 +55,13 @@ export function intentOf(note: reviews.Note): Intent {
 
 const everywhere = (note: reviews.Note): boolean => note.scope === "everywhere";
 
-/** Runs as a job: the report the page shows, and what it cost. `ready`: the review whose "Ready for changes" asked for it: its page hears how it's going, and the next version is shared after. */
-export async function run(app: App, data: string, id: string, noteIds: string[], ready: string | null, job: jobs.Job): Promise<jobs.Outcome> {
-  if (ready === null) return fixNotes(data, id, noteIds, null, job);
-  // The script as the fix found it, kept: one carried on after a restart shares if anything changed since the first start.
-  const first = job.resumed ? job.kept?.revision : undefined;
-  const before = typeof first === "number" ? first : store.read(store.scriptDir(data, id)).revision;
-  job.keep?.({ revision: before });
-  let report: string;
-  let cost: number;
-  try {
-    [report, cost] = await fixNotes(data, id, noteIds, ready, job);
-  } catch (error) {
-    await reviews.progress(ready, { state: "failed", error: diag.messageOf(error) });
-    throw error;
-  }
-  const script = store.read(store.scriptDir(data, id));
-  const approved = reviews.approval(data, id);
-  if (approved !== null) {
-    await reviews.progress(ready, { state: "failed", error: `v${approved.version} was approved meanwhile, so nothing was shared.` });
-    return [report, cost];
-  }
-  // Nothing changed (questions answered, notes left open with a reason): nothing to share.
-  if (script.revision === before) {
-    await reviews.progress(ready, { state: "done", stage: "Answered: nothing in the script changed" });
-    return [report, cost];
-  }
-  const next = (script.review?.version ?? 0) + 1;
-  job.stage(`Sharing v${next}`);
-  await reviews.progress(ready, { state: "sharing", stage: `Sharing v${next}` });
-  try {
-    // Repack ends the request as done with the new version.
-    await reviews.shareNext(app, data, id);
-    return [`${report}\nShared v${next} for the reviewers.`, cost];
-  } catch (error) {
-    await reviews.progress(ready, { state: "failed", error: `The fixes are in, but sharing v${next} failed: ${diag.messageOf(error)}` });
-    return [`${report}\nCouldn't share v${next}: ${diag.messageOf(error)}`, cost];
-  }
+/**
+ * Runs as a job: the report the page shows, and what it cost. Until Nov 22 the review page's "Ready for changes" started
+ * these on the fixing computer, which shared the next version after; nothing starts one now, but a job an older build
+ * kept is carried on after an update and only fixes its notes: nothing is shared by itself (Sphe, Nov 21).
+ */
+export function run(data: string, id: string, noteIds: string[], job: jobs.Job): Promise<jobs.Outcome> {
+  return fixNotes(data, id, noteIds, job);
 }
 
 /** What a fixing run kept as it went (`Job.keep`): a restart carries on from here, with the notes it took and those it got to. */
@@ -109,14 +78,14 @@ const strings = (value: unknown): string[] | undefined => (Array.isArray(value) 
 /** What the chat shows a fix asked for: the producer's side of the turn. */
 const ASKED = "Apply the review's feedback.";
 
-async function fixNotes(data: string, id: string, noteIds: string[], ready: string | null, job: jobs.Job): Promise<jobs.Outcome> {
+async function fixNotes(data: string, id: string, noteIds: string[], job: jobs.Job): Promise<jobs.Outcome> {
   const dir = store.scriptDir(data, id);
   // Carried on after a restart: the notes it took are still this Mac's (taking them again would find them taken), and those it got to aren't done again.
   const kept: Kept = job.resumed ? (job.kept ?? {}) : {};
   let taken = strings(kept.claimed);
   if (taken === undefined) {
     job.stage("Taking the review notes");
-    taken = await reviews.claim(noteIds, ready === null);
+    taken = await reviews.claim(noteIds, true);
     reviews.markTried(data, noteIds);
     job.keep?.({ claimed: taken });
   }
@@ -181,7 +150,6 @@ async function fixNotes(data: string, id: string, noteIds: string[], ready: stri
   // The rest in one turn of the chat's agent: it pulls them (turn_tools.ts), fixes them all, and says what it did for each.
   const stage = `Fixing ${rest.length} review ${rest.length === 1 ? "note" : "notes"}`;
   job.stage(stage);
-  if (ready !== null) await reviews.progress(ready, { stage, done: notes.length - rest.length, total: notes.length });
   const already = exact.length > 0 ? `\nAlready carried out exactly as the reviewers wrote them (don't do these again; mention them in your reply): ${exact.join(" ")}` : "";
   const turn: Turn = { given: rest.map((one) => one.id) };
   let spent: number;

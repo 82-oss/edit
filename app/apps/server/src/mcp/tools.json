@@ -1513,7 +1513,7 @@
     }
   },
   {
-    "description": "The feedback to fix, called first whenever the user mentions it (\"do you see feedback?\"). Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id], as Ready for changes gives them). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. Only when asked: nothing is pulled by itself (a reviewer's Ready for changes on the review page starts nothing). Nothing is shared when your turn ends: say it's fixed in the edit and goes up on the review link when they ask you to put it up (share_for_review) or from Export → Send for feedback. Any of the team's own notes you didn't answer go back in their queue.",
+    "description": "The feedback to fix, called first whenever the user mentions it (\"do you see feedback?\"). Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id]). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. Only when asked: nothing is pulled by itself. Nothing is shared when your turn ends: say it's fixed in the edit and goes up on the review link when they ask you to put it up (share_for_review) or from Export → Send for feedback. Any of the team's own notes you didn't answer go back in their queue.",
     "inputSchema": {
       "properties": {
         "again": {

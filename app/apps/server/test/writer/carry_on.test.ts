@@ -190,7 +190,7 @@ test("a build saved before the restart isn't written again: its fresh read carri
 });
 
 test("review fixes carried on keep the notes they took and don't fix again those they got to", async () => {
-  const { home, app, cleanup } = fixtureHome("writer-fixes-on");
+  const { home, cleanup } = fixtureHome("writer-fixes-on");
   try {
     const { data } = made(home);
     const note = (id: string, status: string, createdAt: number) => ({ id, reviewId: "r1", version: 1, anchor: null, text: `Note ${id}`, author: "Ana", status, changedRanges: [], attempted: true, fromApp: false, confirmed: false, createdAt, updatedAt: 0 });
@@ -199,7 +199,7 @@ test("review fixes carried on keep the notes they took and don't fix again those
     const keeps: Record<string, unknown>[] = [];
     // Taking the notes again asks the cloud, which isn't here: carried on, it doesn't.
     const job: jobs.Job = { id: ID, signal: new AbortController().signal, stage: () => {}, resumed: true, kept: { claimed: ["a", "b"], handled: ["a"], fixed: 1, cost: 0.4, lines: ["Fixed Ana's note: tightened it."] }, keep: (what) => void keeps.push(what) };
-    const [report, cost] = await fixing.run(app, data, ID, ["a", "b"], null, job);
+    const [report, cost] = await fixing.run(data, ID, ["a", "b"], job);
     // "a" was done before the restart; "b" was marked fixed just before it, so it counts without being fixed again.
     expect(report).toBe("Fixed 2 of 2 review notes.\nFixed Ana's note: tightened it.");
     expect(cost).toBe(0.4);

@@ -2,9 +2,7 @@
 // "When feedback comes in, it shouldn't automatically get queued up to get
 // fixed. We must go into the edits app and ask the agents to pull the
 // feedback… Once the agent fixes things, it shouldn't just automatically
-// publish as V2"). Ready for changes on the review page starts nothing here
-// and is answered with what to do; the agent fixes what it's asked to pull and
-// shares nothing; a note fixed in the edit reads as fixed on the review only
+// publish as V2"). The agent fixes what it's asked to pull and shares nothing; a note fixed in the edit reads as fixed on the review only
 // once a version carrying the fix is up; and a share, from the dialog or the
 // agent, replaces the latest version when it has no notes and comes as the next
 // when it has.
@@ -29,7 +27,6 @@ const spies: { mockRestore(): void }[] = [];
 beforeAll(() => reviews.followEveryForTests(20));
 beforeEach(async () => {
   await reviews.settledForTests();
-  reviews.resetCheckInForTests();
 });
 afterEach(async () => {
   await Bun.sleep(20);
@@ -83,48 +80,6 @@ async function until(done: () => boolean, ms = 10_000): Promise<void> {
   const end = Date.now() + ms;
   while (!done() && Date.now() < end) await Bun.sleep(20);
 }
-
-test("Ready for changes asked of this computer starts no turn: the request is answered with what to do in Edit, once", async () => {
-  const { app, home, cleanup } = fixtureHome("ask-ready");
-  const id = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 }).project.id;
-  const sent = panel(app);
-  try {
-    fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: shared(id, [1]) } }));
-    const asked = [
-      { reviewId: "r1", sourceId: id, title: "Judge", version: 1, by: "Marc", requestedAt: 1 },
-      // One for a project that isn't on this computer gets the same answer: nothing comes down for it.
-      { reviewId: "r2", sourceId: "p-elsewhere", title: "Elsewhere", version: 1, by: "Marc", requestedAt: 1 },
-    ];
-    const { calls, named } = fakeCloud({
-      "reviews:checkIn": () => ({ chosen: true, requests: asked }),
-      "reviews:changes": () => ({ notes: [heardNote(id, "n1")], cursor: 1, more: false }),
-      "reviews:open": () => [{ sourceId: id, reviewId: "r1", approved: null }],
-      "reviews:takeFix": (args) => ({ ok: true, sourceId: args.reviewId === "r1" ? id : "p-elsewhere", title: "Judge", version: 1, noteIds: ["n1"] }),
-      "reviews:claim": (args) => ({ claimed: args.noteIds }),
-      "reviews:fixProgress": () => ({ ok: true }),
-    });
-    expect(await reviews.checkIn(app)).toEqual([id, "p-elsewhere"]);
-    await Bun.sleep(200);
-    // No turn, no note claimed, nothing exported or shared.
-    expect(sent).toEqual([]);
-    expect(named("reviews:claim")).toEqual([]);
-    expect(calls.some((call) => call.path === "reviews:publish" || call.path === "reviews:declineFix")).toBe(false);
-    // Each request ends on the review page with the words, never "Pick another computer" (every Edit says the same).
-    expect(named("reviews:fixProgress")).toEqual([
-      { machine: machine.id(), reviewId: "r1", state: "failed", error: reviews.ASK_IN_EDIT },
-      { machine: machine.id(), reviewId: "r2", state: "failed", error: reviews.ASK_IN_EDIT },
-    ]);
-    expect(reviews.ASK_IN_EDIT).toBe("Changes are made in Edit now, not from this page: open the project in Edit and ask its agent to pull the feedback. The new version comes here once someone shares it from Edit.");
-    // The note came in all the same: Home's count has it.
-    expect(reviews.openCounts(home)[id]).toBe(1);
-    // Still listed at the next check-in (the database hadn't moved it yet): not answered twice.
-    await reviews.checkIn(app);
-    expect(named("reviews:takeFix")).toHaveLength(2);
-    expect(named("reviews:fixProgress")).toHaveLength(2);
-  } finally {
-    cleanup();
-  }
-});
 
 test("pull_feedback asked in the chat brings the open notes to the agent, who's told nothing goes up by itself", async () => {
   const { app, home, cleanup } = fixtureHome("ask-pull");
