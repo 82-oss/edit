@@ -4,6 +4,7 @@
 // put on the review.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import * as fs from "node:fs";
 
 import * as editNotes from "../src/edit_notes.ts";
 import { respond } from "../src/http/server.ts";
@@ -152,7 +153,8 @@ test("implement the feedback: the team's notes go to the agent, are fixed with w
     await app.store.update(id, "test", (draft) => {
       draft.clips.find((clip) => clip.id === "c1")!.duration = 250;
     });
-    await handlerFor("feedback_done")!.handler({ app, args: { note: "[app:n1]", summary: "cut the pause at 0:02" }, projectId: id } as never);
+    const said = await handlerFor("feedback_done")!.handler({ app, args: { note: "[app:n1]", summary: "cut the pause at 0:02" }, projectId: id } as never);
+    expect((said as { text: string }[])[0]!.text).toContain('"status":"done on the team\'s note in Edit"');
     expect(db.rows[0]).toMatchObject({ status: "done", fix: { summary: "cut the pause at 0:02", clips: ["c1"] } });
     expect(db.rows[0]!.fix!.ranges.length).toBeGreaterThan(0);
     running = false;
@@ -251,6 +253,26 @@ test("Edit V2's comments: numbered as the team sees them, a spot or an area, ask
     await expect(Promise.resolve(reopen({ app, args: { note: "#1" }, projectId: id, scope: id }))).rejects.toThrow("open already");
     await expect(Promise.resolve(reopen({ app, args: { note: "#9" }, projectId: id, scope: id }))).rejects.toThrow("no comment #9");
     running = false;
+  } finally {
+    cleanup();
+  }
+});
+
+test("a review note fixed here is said to be fixed in the edit and not on the review until a version with it is shared (Nov 22: the agent said \"the note is marked done\" before it was on the site)", async () => {
+  const { app, cleanup } = fixtureHome("notes-review-status");
+  try {
+    const id = await judge(app);
+    const note: reviews.Note = { id: "r-note-1", reviewId: "r1", project: id, version: 1, ms: 2_000, endMs: null, text: "cut the pause", author: "Marc", status: "open", parentId: null, createdAt: 1, updatedAt: 1 };
+    fs.writeFileSync(`${app.store.home}/reviews.json`, JSON.stringify({ cursor: 0, notes: { [note.id]: note }, shared: { [id]: { reviewId: "r1", url: "https://feedback.test/r/x", versions: [{ n: 1 }] } } }));
+    await app.store.update(id, "test", (draft) => {
+      draft.clips.find((clip) => clip.id === "c1")!.duration = 250;
+    });
+    const said = (await handlerFor("feedback_done")!.handler({ app, args: { note: note.id, summary: "cut the pause at 0:02" }, projectId: id } as never)) as { text: string }[];
+    const answer = JSON.parse(said[0]!.text) as { status: string };
+    expect(answer.status).toBe(reviews.REVIEW_NOTE_FIXED);
+    expect(answer.status).toContain("not on the review yet");
+    // Still open on the review: nothing went up.
+    expect(reviews.read(app.store.home).notes[note.id]).toMatchObject({ status: "open", pending: { version: null } });
   } finally {
     cleanup();
   }

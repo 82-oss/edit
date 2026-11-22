@@ -2808,10 +2808,15 @@ registerTool("feedback_done", async ({ app, args, projectId }: ToolCall) => {
       note,
       changed: (fix?.ranges ?? []).map(([start, end]) => `${fixed(start / fps, 2)}–${fixed(end / fps, 2)}s`),
       clips: fix?.clips.length ?? 0,
+      // Where it stands, as the agent says it (Nov 22: it said "the note is marked done" before it was on the site).
+      status: own === null ? REVIEW_NOTE_FIXED : "done on the team's note in Edit",
       ...(fix !== undefined && fix.ranges.length === 0 ? { warning: "nothing changed since the last note: was it fixed?" } : {}),
     }),
   );
 });
+
+/** What a review note fixed here is, until a version with the fix is shared (`markCarried`): fixed in the edit, not done on the review yet. */
+export const REVIEW_NOTE_FIXED = "fixed in the edit; not on the review yet: it shows done there, with your summary, once a version with this fix is shared (share_for_review when they ask, or Export → Send for feedback)";
 
 export { putOff };
 
