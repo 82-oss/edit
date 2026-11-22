@@ -923,6 +923,12 @@ test("a plan never plays a clip past the end of its media (the export failed rea
   );
   // Inside the file: fine.
   apply(p, [{ op: "update", select: { ids: ["late"] }, patch: { source_in: 0.2 } }]);
+  // A coded effect's render lengthened past its window.duration: said what it is and what to change.
+  p.media.push(media({ id: "fx", name: "title-card", path: "/fx.mp4", kind: "video", duration: 3.633333, effect: "title-card" }));
+  p.clips.push(clip({ id: "card", track: "v1", start: 200, duration: 100, type: "video", media: "fx", source_in: 0 }));
+  expect(() => apply(p, [{ op: "update", select: { ids: ["card"] }, patch: { duration: 114 } }])).toThrow(
+    "final plan is invalid: card: fx runs out at 3.63 s; from 0.00 s it needs 3.80 s of it (fx is effect title-card's render, as long as its window.duration: lengthen that in its code, or keep the clip to 3.63 s); nothing saved",
+  );
 });
 
 test("two pop-ups opening together are flagged; a second apart they aren't", () => {

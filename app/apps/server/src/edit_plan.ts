@@ -292,7 +292,10 @@ export function runsOut(project: Project, before: Map<string, string | null>): s
     const needs = (clip.duration / fps) * speed;
     if (clip.source_in + needs > media.duration + 0.1) {
       const from = clip.source_in.toFixed(2);
-      return `${clip.id}: ${clip.media} runs out at ${media.duration.toFixed(2)} s; from ${from} s it needs ${needs.toFixed(2)} s of it${clip.source_in >= media.duration ? " (source_in is in seconds of this media, from its start)" : ""}`;
+      // A coded effect's render is as long as its page's window.duration, not its clip (Marc's Mac, Nov 22: three plans
+      // lengthening one refused with only the numbers).
+      const effect = typeof media.effect === "string" ? ` (${clip.media} is effect ${media.effect}'s render, as long as its window.duration: lengthen that in its code, or keep the clip to ${media.duration.toFixed(2)} s)` : "";
+      return `${clip.id}: ${clip.media} runs out at ${media.duration.toFixed(2)} s; from ${from} s it needs ${needs.toFixed(2)} s of it${clip.source_in >= media.duration ? " (source_in is in seconds of this media, from its start)" : effect}`;
     }
   }
   return null;
