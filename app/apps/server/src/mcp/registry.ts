@@ -20,6 +20,8 @@ export interface ToolCall {
   projectId: string;
   /** `?project=` of the connection, when it's scoped to one project (Edit's own chats). */
   scope: string | null;
+  /** Ends when the request that called it goes (the agent stopped, its turn cut off): long work stops with it. */
+  signal?: AbortSignal;
 }
 
 /** A tool's answer, or a thrown Error whose message is the agent's error text. */

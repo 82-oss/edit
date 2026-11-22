@@ -123,6 +123,47 @@ test("review_motion: the sample's frames are cut off the thread, its plan is the
   }
 });
 
+// Nov 21 audit: a tool call carried no signal, so review_motion's sample rendered on after the agent's request went.
+test("review_motion stops its sample's render when the call that asked for it goes", async () => {
+  const fixture = fixtureHome("motion-cancel");
+  const { app, store, native, home } = fixture;
+  forgetPlans();
+  (app as unknown as { exports: unknown }).exports = { running: () => false };
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  let cancelled = false;
+  const render = spyOn(native.ExportJob, "start").mockImplementation(() => {
+    let stop: (error: Error) => void = () => {};
+    const ended = new Promise<{ seconds: number; bytes: number }>((_, reject) => (stop = reject));
+    return {
+      cancel: () => {
+        cancelled = true;
+        stop(new Error("cancelled"));
+      },
+      wait: () => ended,
+    };
+  });
+  try {
+    const id = store.create("Cops", { width: 64, height: 36, fps: 30 }).project.id;
+    fs.writeFileSync(`${home}/shot.mp4`, "footage");
+    await store.update(id, "test", (p) => {
+      p.media.push(media({ id: "m1", name: "shot.mp4", path: `${home}/shot.mp4`, kind: "video", duration: 10 }));
+      p.clips.push(clip({ id: "shot", track: p.tracks[0]!.id, start: 0, duration: 60, type: "video", media: "m1", source_in: 0 }));
+    });
+    const gone = new AbortController();
+    const asked = handlerFor("review_motion")!.handler({ app, args: { start: 0, end: 1, question: "Does it stall?" }, projectId: id, scope: null, signal: gone.signal });
+    const settled = Promise.resolve(asked).then(() => "answered", () => "stopped");
+    for (let i = 0; i < 100 && render.mock.calls.length === 0; i++) await Bun.sleep(10);
+    gone.abort();
+    expect(await Promise.race([settled, Bun.sleep(2_000).then(() => "still rendering")])).toBe("stopped");
+    expect(cancelled).toBe(true);
+  } finally {
+    render.mockRestore();
+    plan.mockRestore();
+    forgetPlans();
+    fixture.cleanup();
+  }
+});
+
 test("export ahead: pmset is asked off the thread, and one that hangs is 'can't tell' after its 2 s", async () => {
   const before = ahead.hooks.pmset;
   try {

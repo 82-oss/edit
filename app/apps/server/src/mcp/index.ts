@@ -40,17 +40,17 @@ export async function handle(context: RouteContext<App>): Promise<Response> {
   if (Array.isArray(body)) {
     const out: unknown[] = [];
     for (const message of body) {
-      const reply = await dispatch(context.app, message, scope);
+      const reply = await dispatch(context.app, message, scope, context.request.signal);
       if (reply !== null) out.push(reply);
     }
     return out.length === 0 ? empty(202) : json(out);
   }
-  const reply = await dispatch(context.app, body, scope);
+  const reply = await dispatch(context.app, body, scope, context.request.signal);
   return reply === null ? empty(202) : json(reply);
 }
 
 /** The answer to one JSON-RPC message; null for a notification (no id). */
-export async function dispatch(app: App, message: unknown, scope: string | null): Promise<unknown> {
+export async function dispatch(app: App, message: unknown, scope: string | null, signal?: AbortSignal): Promise<unknown> {
   if (typeof message !== "object" || message === null || !("id" in message)) return null;
   const { id, method, params } = message as { id: unknown; method?: unknown; params?: unknown };
   const name = typeof method === "string" ? method : "";
@@ -82,7 +82,7 @@ export async function dispatch(app: App, message: unknown, scope: string | null)
       const args =
         given.arguments !== undefined && given.arguments !== null ? (given.arguments as Record<string, unknown>) : {};
       try {
-        const content = await diag.timeAsync("agent", `tool ${tool}`, () => call(app, tool, args, scope));
+        const content = await diag.timeAsync("agent", `tool ${tool}`, () => call(app, tool, args, scope, signal));
         result = { content, isError: false };
       } catch (error) {
         const said = isBug(error) ? crashed(`tool ${tool}`, error) : diag.messageOf(error);
@@ -124,8 +124,11 @@ export async function call(
   name: string,
   args: Record<string, unknown>,
   scope: string | null,
+  signal?: AbortSignal,
 ): Promise<Content[]> {
   const registered = handlerFor(name);
+  // A long tool's run is shared by every call asking the same (`once`): one caller going doesn't stop it for the rest.
+  const ends = LONG.has(name) || signal === undefined ? {} : { signal };
   const asked = typeof args.project_id === "string" ? args.project_id : null;
   // A turn driven by review notes edits its own video only (review_guard.ts).
   const refused = reviewGuard.refusal(scope, name, asked !== null && asked !== "" ? asked : null);
@@ -133,7 +136,7 @@ export async function call(
     app.store.emit({ type: "review-refused", project: scope, tool: name, message: `The agent was stopped from using ${name} while fixing review notes (notes come from people with the review link): ${scope}` });
     throw new Error(refused);
   }
-  if (registered?.noProject === true) return registered.handler({ app, args, projectId: "", scope });
+  if (registered?.noProject === true) return registered.handler({ app, args, projectId: "", scope, ...ends });
   const projectId = app.store.resolve(targetProject(scope, asked, name));
   if (registered === undefined) {
     if (TOOLS.some((tool) => tool.name === name)) throw new Error(`${name} is not available`);
@@ -147,7 +150,7 @@ export async function call(
   const asAgent = async (): Promise<Content[]> => {
     const state = { active: true, tool: name };
     try {
-      return withPictureFiles(join(app.store.cacheDir(), TOOL_PICTURES), projectId, await agentCalls.run(state, () => registered.handler({ app, args, projectId, scope })));
+      return withPictureFiles(join(app.store.cacheDir(), TOOL_PICTURES), projectId, await agentCalls.run(state, () => registered.handler({ app, args, projectId, scope, ...ends })));
     } finally {
       state.active = false;
     }

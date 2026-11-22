@@ -62,13 +62,15 @@ export async function cutSheets(output: string, sheets: string, signal?: AbortSi
   }
 }
 
-registerTool("review_motion", async ({ app, args, projectId }) => {
+registerTool("review_motion", async ({ app, args, projectId, signal }) => {
   // A question already answered costs nothing: answered at once, before the one slot or a running export is waited on
   // (Nov 21: it was looked for only once the slot was taken, and refused outright while an export ran).
   const first = sample(app, projectId, args);
   const answered = await savedAnswer(first.saved);
   if (answered !== null) return text(answered);
   return reviewSlot.with(async () => {
+    // The agent's request gone while this waited for the slot: nothing rendered for nobody.
+    if (signal?.aborted) throw new Error("the review was stopped: its request went");
     if (app.exports.running()) throw new Error("an export is running; wait for it before reviewing a sample");
     // Of the edit as it is now (it may have changed while this waited for the slot); answered meanwhile by the one before.
     const { p, from, to, question, key, dir, saved, start, end } = sample(app, projectId, args);
@@ -85,7 +87,11 @@ registerTool("review_motion", async ({ app, args, projectId }) => {
       const project = { json: jsonForSerde(p) };
       const job = native().ExportJob.start({ project, options, plan, output, cacheDir: app.store.cacheDir() }, () => {});
       const timer = setTimeout(() => job.cancel(), 180_000);
-      try { await job.wait(); } finally { clearTimeout(timer); }
+      // Its render stopped with the request that asked for it (Nov 21 audit: it rendered on for nobody).
+      const stop = () => job.cancel();
+      signal?.addEventListener("abort", stop, { once: true });
+      try { await job.wait(); } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); }
+      if (signal?.aborted) throw new Error("the review was stopped: its request went");
       // Claude, from frames (Oct 30: Edit no longer asks Gemini): four a second
       // on contact sheets. It can't hear, so sound is said to be unjudged.
       const sheets = join(dir, `${key}-sheets`);
