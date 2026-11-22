@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as nodePath from "node:path";
 
 import * as cloud from "../src/cloud.ts";
+import * as encoder from "../src/encoder.ts";
 import * as jobs from "../src/jobs.ts";
 import * as remote from "../src/remote_actions.ts";
 import * as reviews from "../src/reviews.ts";
@@ -121,6 +122,25 @@ test("a share runs its steps in order, says each where the dialog reads it, and 
     expect(line["full.mp4"]!.behind).toBe(true);
     expect(cloud.lineTaken()).toBe(false);
     expect(remote.busyWith(app)).not.toContain("a share");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a share's review copy holds the encoder as a share's, above smooth playback and background, and lets go once checked (Nov 22)", async () => {
+  const { app, id, cleanup } = await exported("share-lease");
+  fakeCloud();
+  const held: Record<string, string[]> = {};
+  const step = jobs.step;
+  spies.push(spyOn(jobs, "step").mockImplementation((...given: Parameters<typeof jobs.step>) => {
+    held[given[2]] = encoder.holding("share");
+    step(...given);
+  }));
+  try {
+    await reviews.share(app, id, null);
+    expect(held["copy check"]).toEqual(["a share's review copy"]);
+    expect(held.uploading).toEqual([]);
+    expect(encoder.holding("share")).toEqual([]);
   } finally {
     cleanup();
   }

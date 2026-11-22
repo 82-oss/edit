@@ -30,6 +30,7 @@ import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as accounts from "./accounts.ts";
 import * as diag from "./diag.ts";
+import * as encoder from "./encoder.ts";
 import * as failure from "./failure.ts";
 import * as editNotes from "./edit_notes.ts";
 import * as footageReady from "./footage_ready.ts";
@@ -1114,33 +1115,40 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         await restoreArchived(chosen, undefined, signal);
         sharing.set(projectId, "making the review copy");
       }
-      if (!fs.existsSync(copy)) {
-        let pieced = false;
-        try {
-          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal, copyTell);
-        } catch (error) {
-          haltShare(projectId);
-          diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
+      // On the encoder as a share's review copy (encoder.ts, Nov 22): below a person's Export, above smooth playback's
+      // render (asked to give way) and background encodes (they wait at their next piece), through its check's remake.
+      const lease = encoder.hold("a share's review copy", "share");
+      try {
+        if (!fs.existsSync(copy)) {
+          let pieced = false;
+          try {
+            pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal, copyTell);
+          } catch (error) {
+            haltShare(projectId);
+            diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
+          }
+          if (!pieced) await reviewCopy(chosen.path, copy, run, copyTell);
         }
-        if (!pieced) await reviewCopy(chosen.path, copy, run, copyTell);
-      }
-      // Never shared unless it plays as the export and decodes (review_check.ts): one
-      // that doesn't (from pieces, or kept from before) is made whole again,
-      // and if that's wrong too the share stops and says why.
-      sharing.set(projectId, "checking the review copy");
-      jobs.step(home, key, "copy check");
-      // Its decodes end on the share's Cancel too (Nov 21: they ran on through it, up to the video's length).
-      const exportedLengths = await lengthsOf(chosen.path, signal);
-      let problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
-      if (problem !== null) {
-        diag.warn("review", `${projectId}: the review copy doesn't match its export (${problem}); making it whole`);
-        fs.rmSync(copy, { force: true });
-        await reviewCopy(chosen.path, copy, run);
-        problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
+        // Never shared unless it plays as the export and decodes (review_check.ts): one
+        // that doesn't (from pieces, or kept from before) is made whole again,
+        // and if that's wrong too the share stops and says why.
+        sharing.set(projectId, "checking the review copy");
+        jobs.step(home, key, "copy check");
+        // Its decodes end on the share's Cancel too (Nov 21: they ran on through it, up to the video's length).
+        const exportedLengths = await lengthsOf(chosen.path, signal);
+        let problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
         if (problem !== null) {
+          diag.warn("review", `${projectId}: the review copy doesn't match its export (${problem}); making it whole`);
           fs.rmSync(copy, { force: true });
-          throw new Error(`the review copy came out wrong (${problem}), so nothing was shared`);
+          await reviewCopy(chosen.path, copy, run);
+          problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
+          if (problem !== null) {
+            fs.rmSync(copy, { force: true });
+            throw new Error(`the review copy came out wrong (${problem}), so nothing was shared`);
+          }
         }
+      } finally {
+        lease.release();
       }
       await run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-ss", fixed(posterSecond(live.project, seconds), 2), "-i", chosen.path, "-frames:v", "1", "-vf", "scale=1280:-2", poster]);
       // How long a copy takes here, for the next share's time.
