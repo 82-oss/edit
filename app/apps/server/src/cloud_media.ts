@@ -147,7 +147,8 @@ export async function makeProxy(source: string, probe: Probe, out: string): Prom
     await steps.encoding(what, steps.LIMITS.proxy(probe.duration), work);
     return;
   }
-  const hold = encoder.hold(what);
+  // Its turn on the encoder first, as any background encode's (encoder.ts): it can't be stopped once going.
+  const hold = await encoder.turn(what);
   try {
     await steps.whileMoving(what, () => (one === undefined ? 0 : writtenBy(one.temp)), work);
   } finally {

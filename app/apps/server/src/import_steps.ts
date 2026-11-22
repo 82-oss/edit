@@ -202,9 +202,9 @@ export function sizeOf(path: string): number {
   }
 }
 
-/** An encode from here: held on the encoder while it runs and bounded by `ms`, contention said if it runs out. */
+/** An encode from here: its turn on the encoder taken first (background: after exports, review copies and smooth playback, encoder.ts), held while it runs and bounded by `ms`, contention said if it runs out. */
 export async function encoding<T>(what: string, ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const hold = encoder.hold(what);
+  const hold = await encoder.turn(what);
   try {
     return await bounded(what, ms, work, hold.token);
   } finally {

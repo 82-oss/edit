@@ -269,15 +269,37 @@ test("steps are bounded: past its time a step fails as passing, or as the encode
   await expect(steps.bounded("Reading the footage's length", 20, () => new Promise(() => {}))).rejects.toBeInstanceOf(steps.StepTimedOut);
   const passing = await steps.bounded("a probe", 20, () => new Promise(() => {})).catch((error: unknown) => error);
   expect(failure.kindOf(passing)).toBe("passing");
-  const export_ = encoder.register(() => "an export");
+  // Another background encode beside it (an export it would wait for first: encoder.ts's turn).
+  const other = encoder.hold("another proxy");
   try {
     const shared = await steps.encoding("a proxy", 20, () => new Promise(() => {})).catch((error: unknown) => error);
     expect(failure.kindOf(shared)).toBe("encoder");
     expect((shared as Error).message).toContain("the hardware encoder was busy");
   } finally {
-    export_();
+    other.release();
   }
   expect(encoder.busy()).toBe(false);
+});
+
+test("a proxy's encode takes its turn after an export: it starts once the export ends, never beside it (Nov 22)", async () => {
+  let exporting = true;
+  const export_ = encoder.register(() => (exporting ? "an export" : null));
+  const was = encoder.hooks.pollMs;
+  encoder.hooks.pollMs = 20;
+  let began = false;
+  try {
+    const made = steps.encoding("a proxy", 10_000, async () => {
+      began = true;
+      return "made";
+    });
+    await Bun.sleep(100);
+    expect(began).toBe(false);
+    exporting = false;
+    expect(await made).toBe("made");
+  } finally {
+    encoder.hooks.pollMs = was;
+    export_();
+  }
 });
 
 test("an encode that ran out of time beside an export waits for the encoder, and carries on when the export ends", async () => {
