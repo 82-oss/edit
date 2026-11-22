@@ -51,12 +51,14 @@ import { handlerFor, image, registerTool, text, type Content, type ToolCall } fr
 import type { Clip, ExportOptions, Marker, Media, Project } from "./model.ts";
 import * as addons from "./addons.ts";
 import { closeMarks } from "@edit/types/marks";
+import * as localFirst from "./local_first.ts";
+import { probe as mediaProbe } from "./media.ts";
 import * as localPreviews from "./local_previews.ts";
 import { native, withProject, withProjectAsync, type EncodedImage, type ProjectInput, type SheetSpec } from "./native/index.ts";
 import { dirname, resolve as resolvePath } from "node:path";
 
 import { listExports } from "./exports.ts";
-import { expandHome, join } from "./paths.ts";
+import { expandHome, isFile, join } from "./paths.ts";
 import {
   addTrack,
   bindBlurs,
@@ -1374,33 +1376,69 @@ async function zoomMedia(app: App, media: Media, args: Args, start: number, end:
   const zoom = frameCompare.regionOf(args.zoom, width, height)!;
   const fps = media.fps > 0 ? media.fps : 30;
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "media-zoom-"));
-  // Its whole copy when it's here, rather than streamed from the cloud a range at a time.
-  const source = localPreviews.pathOf(app.store.cacheDir(), media);
+  const total = Math.max(1, Math.round((end - start) * fps));
+  const moments = args.every_frame === true ? [] : (Array.isArray(args.times) ? (args.times as unknown[]) : [start]).filter((one): one is number => typeof one === "number" && Number.isFinite(one) && one >= 0).slice(0, 8);
+  const few = (args.every_frame === true ? Math.min(total, 24) : moments.length) <= 2;
+  const shown = few ? 960 : 480;
+  const source = await zoomSource(app, media, zoom, width, shown);
+  // Read at the file's own size, the region in its pixels.
+  const scale = source.width / width;
+  const region = scale === 1 ? zoom : frameCompare.regionOf({ x: zoom.x * scale, y: zoom.y * scale, width: Math.max(16, zoom.width * scale), height: Math.max(16, zoom.height * scale) }, source.width, source.height)!;
+  const [w, h] = scale === 1 ? [width, height] : [source.width, source.height];
   try {
     let files: string[] = [];
     let times: number[] = [];
     let rest = "";
     if (args.every_frame === true) {
-      const total = Math.max(1, Math.round((end - start) * fps));
       const count = Math.min(total, 24);
-      files = await frameCompare.framesOf(source, start, count, fps, width, height, dir, "z");
+      files = await frameCompare.framesOf(source.path, start, count, fps, w, h, dir, "z");
       times = files.map((_, index) => start + index / fps);
       const first = Math.floor(start * fps + 1e-6);
       if (count < total) rest = `Frames ${first + count}–${first + total - 1} are left: look again with start ${fixed(start + count / fps, 3)}.`;
     } else {
-      times = (Array.isArray(args.times) ? (args.times as unknown[]) : [start]).filter((one): one is number => typeof one === "number" && Number.isFinite(one) && one >= 0).slice(0, 8);
-      for (const [index, time] of times.entries()) files.push(...(await frameCompare.framesOf(source, time, 1, fps, width, height, dir, `z${index}-`)));
+      times = moments;
+      for (const [index, time] of times.entries()) files.push(...(await frameCompare.framesOf(source.path, time, 1, fps, w, h, dir, `z${index}-`)));
     }
-    const few = files.length <= 2;
     const cells = files.map((file, index) => ({ files: [file], labels: [`${fixed(times[index] ?? start, 2)}s`] }));
-    const pictures = await frameCompare.sheets(cells, zoom, few ? 960 : 480, few ? 2 : 4, 4, dir, frameCompare.labelFont(app.store.cacheDir()));
+    const pictures = await frameCompare.sheets(cells, region, shown, few ? 2 : 4, 4, dir, frameCompare.labelFont(app.store.cacheDir()));
     const out: Content[] = [];
-    pictures.forEach((picture, index) => out.push(...image(picture, `${media.id} zoomed to ${zoom.width}×${zoom.height} at ${zoom.x},${zoom.y}: sheet ${index + 1} of ${pictures.length}, left-to-right then down`, "image/jpeg")));
+    const from = scale === 1 ? "" : ` (from its ${source.width}×${source.height} preview, which holds this region at the size shown)`;
+    pictures.forEach((picture, index) => out.push(...image(picture, `${media.id} zoomed to ${zoom.width}×${zoom.height} at ${zoom.x},${zoom.y}${from}: sheet ${index + 1} of ${pictures.length}, left-to-right then down`, "image/jpeg")));
     if (rest !== "") out.push(...text(rest));
     return out;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The file a zoom reads: the lightest here whose picture holds the region at
+ * least as wide as it's shown (`shown` px), else the original when it's here
+ * (full detail), else the lightest there is. A whole frame of a look is a few
+ * hundred pixels a side, and every zoom decoded the original at its own size
+ * (the MacBook Air, Nov 22: at the sheet's size the 720p and full-size frames
+ * look the same; zoomed 480×270 onto a badge only its lettering is softer, and
+ * that zoom still reads the original). `width` is the media's, the zoom's.
+ */
+export async function zoomSource(app: App, media: Media, zoom: { width: number }, width: number, shown: number): Promise<{ path: string; width: number; height: number }> {
+  const cache = app.store.cacheDir();
+  const here = isFile(media.path);
+  const paths = here ? app.media.paths(media.path) : null;
+  // Lightest first: the light preview, the preview, a cloud media's whole copy here (a local-first project's 720p working copy).
+  const copy = localPreviews.pathOf(cache, media);
+  const previews = [paths?.light, paths !== null && isFile(paths.proxyDone) ? paths.proxy : undefined, copy === media.path ? undefined : copy].filter((one): one is string => one !== undefined && isFile(one));
+  const original = here ? media.path : localFirst.originalHere(cache, media);
+  const full = { path: original ?? copy, width: media.width > 0 ? media.width : 1920, height: media.height > 0 ? media.height : 1080 };
+  let largest: { path: string; width: number; height: number } | null = null;
+  for (const path of previews) {
+    const probed = await mediaProbe(path).catch(() => null);
+    if (probed === null || probed.width <= 0 || probed.height <= 0) continue;
+    const one = { path, width: probed.width, height: probed.height };
+    if (zoom.width * (one.width / width) >= shown) return one;
+    largest = one;
+  }
+  // No original here: the largest preview, else its stream (a cloud media not here yet) at the media's size.
+  return original !== null ? full : (largest ?? full);
 }
 
 /** The export dialog's options as `serde_json::from_value::<ExportOptions>` reads them (every field defaults). */

@@ -476,6 +476,8 @@ impl VideoReader {
     pub(crate) fn open(source: Source) -> Self {
         #[cfg(test)]
         tests::OPENED.with(|opened| opened.set(opened.get() + 1));
+        #[cfg(test)]
+        tests::OPENED_PATHS.lock().push(source.key.path.clone());
         let (width, height) = (source.key.width, source.key.height);
         #[cfg(target_os = "macos")]
         let ffmpeg_only = crate::util::is_url(&source.key.path) || refused::is(&source.key.path);
@@ -1276,9 +1278,20 @@ fn decode_all_into(
             .cmp(&(&sb.key.path, sb.key.width, sb.key.height))
             .then(ta.total_cmp(tb))
     });
+    // An agent's look (its decoders below a play): a reader a file, decoding by turns (`looks`).
+    let look = crate::util::below_now();
+    let threads = if look {
+        threads.min(looks::AT_REST)
+    } else {
+        threads
+    };
     let threads = threads.clamp(1, requests.len().max(1));
-    let share = order.len().div_ceil(threads).max(1);
-    let shares: Vec<Vec<usize>> = order.chunks(share).map(<[usize]>::to_vec).collect();
+    let shares: Vec<Vec<usize>> = if look {
+        shares_by_file(&order, requests, threads)
+    } else {
+        let share = order.len().div_ceil(threads).max(1);
+        order.chunks(share).map(<[usize]>::to_vec).collect()
+    };
     // Each share's readers, taken from the pool before the threads start: one
     // for every change of file or size along it. A share holding two layers
     // (a picture over its own blurred copy, B-roll over a shot) opened a new
@@ -1335,22 +1348,35 @@ fn decode_all_into(
             };
             let mut out = outs.next().unwrap_or_default();
             out.resize(source.bytes(), 0);
+            let turn = look.then(looks::turn);
             let decoded = reader.frame_into(*time, &mut out, false);
+            if turn.is_some() {
+                looks::breathe();
+            }
+            drop(turn);
             done.push((index, decoded.map(|_| out)));
         }
         spent.extend(reader);
         spent.extend(readers);
         (done, spent)
     };
-    let results: Vec<_> = if work.len() <= 1 {
+    let results: Vec<_> = if work.len() <= 1 && !look {
         work.into_iter().map(run).collect()
     } else {
-        // The decoders each share starts are below a play when this thread's are (an agent's look).
-        let below = crate::util::below_now();
+        // The decoders each share starts are below a play when this thread's are (an agent's look),
+        // and so is the share's thread (a Mac's AVFoundation reader decodes on it): on a thread of
+        // its own, as a pool thread would keep it.
         std::thread::scope(|scope| {
             let handles: Vec<_> = work
                 .into_iter()
-                .map(|item| scope.spawn(move || crate::util::with_below(below, || run(item))))
+                .map(|item| {
+                    scope.spawn(move || {
+                        if look {
+                            crate::util::utility_thread();
+                        }
+                        crate::util::with_below(look, || run(item))
+                    })
+                })
                 .collect();
             handles
                 .into_iter()
@@ -1903,20 +1929,188 @@ pub(crate) fn feed_peaks(renderer: &mut Renderer, project: &Project, scene: &Sce
     }
 }
 
-/// Where to decode `media` from for a picture whose longest side is
-/// `max_side` (0 = full size): the light 720p preview when that's enough and
-/// made (short keyframe intervals, a fraction of the decoding), else the file.
+/// Where to decode `media` from for a picture decoded at `size`, made smaller
+/// than its frame (`max_side` > 0; 0 = full size): the lightest file here that
+/// holds that picture (`lighter`), else the file itself.
 fn picture_source(media: &Media, size: (u32, u32), max_side: u32, cache: Option<&Path>) -> Source {
     let original = PathBuf::from(&media.path);
     let path = match cache {
-        Some(cache)
-            if max_side > 0 && max_side <= 720 && media.kind == edit_core::MediaKind::Video =>
-        {
-            crate::media::light_preview(cache, &original).unwrap_or(original)
+        Some(cache) if max_side > 0 && media.kind == edit_core::MediaKind::Video => {
+            lighter(cache, media, &original, size).unwrap_or(original)
         }
         _ => original,
     };
     Source::new(media, path, size, Order::Bgra)
+}
+
+/// The lightest preview of `media` made here that still holds a picture decoded
+/// at `size`: its 720p light preview (half-second keyframes, a fraction of the
+/// decoding), else its preview (at most 1920×1080, the server's media.ts
+/// `paths`), else none. The agent's looks are drawn a few hundred pixels a side,
+/// and only the light preview was ever read, for pictures 720 px at most: a
+/// render_frame (960) and every look whose light preview wasn't made yet decoded
+/// the original, 4K phone videos among them (the MacBook Air, Nov 22: 55 contact
+/// sheets from the originals, 365 readers in four minutes, the load at 200 to
+/// 490 and the window's player drawing nothing for minutes).
+fn lighter(cache: &Path, media: &Media, original: &Path, size: (u32, u32)) -> Option<PathBuf> {
+    let dir = cache.join(crate::media::media_key(original));
+    let light = dir.join("preview-light.mp4");
+    // Made `min(720, ih)` high, the file's own shape.
+    if size.1 <= 720 && light.is_file() {
+        return Some(light);
+    }
+    let (width, height) = (
+        media.width.max(2) as f32,
+        if media.stacked_alpha {
+            media.height.max(1) as f32 * 2.0
+        } else {
+            media.height.max(2) as f32
+        },
+    );
+    let fit = (crate::media::PROXY_MAX_WIDTH as f32 / width)
+        .min(crate::media::PROXY_MAX_HEIGHT as f32 / height)
+        .min(1.0);
+    let proxy = dir.join("preview.mp4");
+    (size.0 as f32 <= (width * fit).round() + 1.0
+        && size.1 as f32 <= (height * fit).round() + 1.0
+        && dir.join("preview.done").is_file()
+        && proxy.is_file())
+    .then_some(proxy)
+}
+
+/// The agent's looks at footage (its contact sheets, render_frame, check_shots,
+/// look_at_media: what's decoded below a play, `util::below_now`) take turns on
+/// the whole server, a frame at a time. Every look decoded on four threads of
+/// its own, and as many looks at once as the agent asked: on the MacBook Air
+/// (Nov 22) the load went to 200 to 490 and the window's player, whose decoder
+/// they shared, drew nothing for minutes. While a play is watched one look
+/// decodes at a time and rests between frames; it's slower then, never refused.
+pub mod looks {
+    use parking_lot::{Condvar, Mutex};
+    use std::time::Duration;
+
+    /// Looks' frames decoded at once with nobody watching.
+    pub const AT_REST: usize = 2;
+    /// …and while a play is watched.
+    pub const PLAYING: usize = 1;
+    /// A look's rest after each frame while a play is watched: the player's decoder and cores.
+    pub const BREATH: Duration = Duration::from_millis(30);
+
+    static HELD: Mutex<usize> = Mutex::new(0);
+    static FREED: Condvar = Condvar::new();
+    #[cfg(test)]
+    pub(crate) static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A play stands in for the tests (`util::set_playing` is the whole process's).
+    #[cfg(test)]
+    pub(crate) static WATCHED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    fn watched() -> bool {
+        #[cfg(test)]
+        if WATCHED.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        crate::util::playing()
+    }
+
+    /// How many looks' frames may decode now.
+    pub fn most() -> usize {
+        if watched() {
+            PLAYING
+        } else {
+            AT_REST
+        }
+    }
+
+    /// A look's turn to decode one frame, given back when dropped.
+    pub struct Turn(());
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            *HELD.lock() -= 1;
+            FREED.notify_all();
+        }
+    }
+
+    /// Waits for a turn to decode one frame of a look.
+    pub fn turn() -> Turn {
+        let mut held = HELD.lock();
+        // A play's start or end changes how many may: looked at again every 50 ms.
+        while *held >= most() {
+            FREED.wait_for(&mut held, Duration::from_millis(50));
+        }
+        *held += 1;
+        #[cfg(test)]
+        PEAK.fetch_max(*held, std::sync::atomic::Ordering::Relaxed);
+        Turn(())
+    }
+
+    /// After a look's frame: a rest while a play is watched.
+    pub fn breathe() {
+        if watched() {
+            std::thread::sleep(BREATH);
+        }
+    }
+}
+
+/// `order`'s requests in at most `threads` shares that never split a file's
+/// frames: a look's frames of one file are one reader moving forward through it
+/// (reading on where they're close, seeking where they aren't), not four readers
+/// each seeking to its share.
+fn shares_by_file(order: &[usize], requests: &[(Source, f64)], threads: usize) -> Vec<Vec<usize>> {
+    let key = |index: usize| requests.get(index).map(|(source, _)| &source.key);
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for &index in order {
+        match runs.last_mut() {
+            Some(run) if run.first().is_some_and(|&first| key(first) == key(index)) => {
+                run.push(index);
+            }
+            _ => runs.push(vec![index]),
+        }
+    }
+    let threads = threads.clamp(1, runs.len().max(1));
+    let target = order.len().div_ceil(threads);
+    let mut shares: Vec<Vec<usize>> = Vec::new();
+    for run in runs {
+        let room = shares.len() < threads;
+        match shares.last_mut() {
+            Some(share) if share.len() < target || !room => share.extend(run),
+            _ => shares.push(run),
+        }
+    }
+    shares
+}
+
+/// Readers the agent's looks at media files keep between calls (a look and the
+/// next at the same file read on, or seek, rather than open again), closed once
+/// unused for `IDLE`: a fresh pool of four every call opened readers it then let
+/// go, one more for each moment `pick` chose.
+static LOOK_READERS: Mutex<Option<(ReaderPool, Instant)>> = Mutex::new(None);
+
+fn with_look_readers<T>(work: impl FnOnce(&mut ReaderPool) -> T) -> T {
+    static CLOSER: std::sync::Once = std::sync::Once::new();
+    CLOSER.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("edit look readers".to_owned())
+            .spawn(|| loop {
+                std::thread::sleep(IDLE / 4);
+                let mut slot = LOOK_READERS.lock();
+                if slot
+                    .as_ref()
+                    .is_some_and(|(_, used)| used.elapsed() >= IDLE)
+                {
+                    *slot = None;
+                    drop(slot);
+                    crate::util::give_back_memory();
+                }
+            });
+    });
+    let mut slot = LOOK_READERS.lock();
+    let (pool, used) = slot.get_or_insert_with(|| (ReaderPool::new(4, 2), Instant::now()));
+    let out = work(pool);
+    *used = Instant::now();
+    out
 }
 
 /// Renders `frames` of `project`: every picture they need decoded first (in
@@ -2034,12 +2228,25 @@ pub fn media_frames(
             }
         })
         .collect();
+    let images = media_frames_at(media, cache, &times, max_side)?;
+    Ok((images, times))
+}
+
+/// Frames of a media file at `times` (seconds of the file), at most `max_side`
+/// px, from the lightest file here that holds them (`picture_source`), through
+/// the looks' readers (`with_look_readers`): one reader moving forward through
+/// the file, by turns with the other looks when it's the agent's.
+pub fn media_frames_at(
+    media: &Media,
+    cache: Option<&Path>,
+    times: &[f64],
+    max_side: u32,
+) -> Result<Vec<RgbaImage>, String> {
     let size = decode_size(media, max_side, max_side);
     let mut source = picture_source(media, size, max_side, cache);
     source.key.order = Order::Rgba;
     let requests: Vec<(Source, f64)> = times.iter().map(|time| (source.clone(), *time)).collect();
-    let mut pool = ReaderPool::new(4, 4);
-    let frames = decode_all(&mut pool, &requests, 4)?;
+    let frames = with_look_readers(|pool| decode_all(pool, &requests, 4))?;
     let images = frames
         .into_iter()
         .map(|pixels| {
@@ -2054,7 +2261,7 @@ pub fn media_frames(
             }
         })
         .collect();
-    Ok((images, times))
+    Ok(images)
 }
 
 /// One frame of a media file at full size (RGBA), for saving as a still.
@@ -4247,6 +4454,143 @@ mod tests {
     thread_local! {
         /// Readers opened on this thread (`VideoReader::open`).
         pub(super) static OPENED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Every reader opened on any thread, by its file (a look's are opened on threads of its own).
+    pub(super) static OPENED_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    fn opened_in(dir: &Path) -> usize {
+        OPENED_PATHS
+            .lock()
+            .iter()
+            .filter(|path| path.starts_with(dir))
+            .count()
+    }
+
+    /// One look at a time among these tests: `looks::WATCHED` and `looks::PEAK` are the process's.
+    static LOOKS: Mutex<()> = Mutex::new(());
+
+    fn bars(dir: &Path, name: &str, seconds: u32) -> (PathBuf, Media) {
+        let video = dir.join(name);
+        let made = crate::util::ffmpeg_command()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=size=320x180:rate=30:duration={seconds}"))
+            .args(["-c:v", "libx264", "-g", "15", "-pix_fmt", "yuv420p"])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let media: Media = serde_json::from_value(json!({
+            "id": name, "name": name, "path": video, "kind": "video", "duration": f64::from(seconds),
+            "width": 320, "height": 180, "fps": 30, "has_audio": false
+        }))
+        .unwrap();
+        (video, media)
+    }
+
+    /// A contact sheet of 24 frames of one file is one reader moving through it, where it was four
+    /// each seeking to its share; and a look after it at the same file reads on with it, not a new one
+    /// (the MacBook Air, Nov 22: 365 readers in four minutes of the agent's looks).
+    #[test]
+    fn a_look_at_one_file_is_one_reader_and_the_next_look_keeps_it() {
+        let _one = LOOKS.lock();
+        let dir = temp_dir("look-one-reader");
+        let (_, media) = bars(&dir, "long.mp4", 12);
+        let times: Vec<f64> = (0..24).map(|index| f64::from(index) * 0.5).collect();
+        let images =
+            crate::util::with_below(true, || media_frames_at(&media, None, &times, 160)).unwrap();
+        assert_eq!(images.len(), 24);
+        assert_eq!(opened_in(&dir), 1);
+        let again =
+            crate::util::with_below(true, || media_frames_at(&media, None, &[0.0, 6.0], 160))
+                .unwrap();
+        assert_eq!(again.len(), 2);
+        assert_eq!(opened_in(&dir), 1);
+    }
+
+    /// Looks on many threads at once decode at most `looks::AT_REST` frames at a time on the whole
+    /// server, and one while a play is watched, each still answered.
+    #[test]
+    fn looks_take_turns_and_fewer_while_a_play_is_watched() {
+        let _one = LOOKS.lock();
+        let dir = temp_dir("looks-take-turns");
+        let files: Vec<(PathBuf, Media)> = (0..4)
+            .map(|index| bars(&dir, &format!("f{index}.mp4"), 2))
+            .collect();
+        let run = |files: &[(PathBuf, Media)]| {
+            std::thread::scope(|scope| {
+                for (_, media) in files {
+                    scope.spawn(move || {
+                        let requests: Vec<(Source, f64)> = (0..6)
+                            .map(|index| {
+                                (
+                                    Source::new(
+                                        media,
+                                        PathBuf::from(&media.path),
+                                        (160, 90),
+                                        Order::Bgra,
+                                    ),
+                                    f64::from(index) * 0.3,
+                                )
+                            })
+                            .collect();
+                        let mut pool = ReaderPool::new(4, 4);
+                        let frames =
+                            crate::util::with_below(true, || decode_all(&mut pool, &requests, 4))
+                                .unwrap();
+                        assert_eq!(frames.len(), 6);
+                    });
+                }
+            });
+        };
+        looks::PEAK.store(0, Ordering::Relaxed);
+        run(&files);
+        let at_rest = looks::PEAK.load(Ordering::Relaxed);
+        assert!((1..=looks::AT_REST).contains(&at_rest), "{at_rest} at once");
+        looks::WATCHED.store(true, Ordering::Relaxed);
+        looks::PEAK.store(0, Ordering::Relaxed);
+        run(&files);
+        looks::WATCHED.store(false, Ordering::Relaxed);
+        assert_eq!(looks::PEAK.load(Ordering::Relaxed), looks::PLAYING);
+    }
+
+    /// A look decodes the lightest preview made here that holds its picture: the light one for
+    /// pictures 720 high at most, the preview up to its own size, the original only past both
+    /// (render_frame's 960 and every look before the light preview was made read the original).
+    #[test]
+    fn a_look_reads_the_lightest_file_that_holds_its_picture() {
+        let dir = temp_dir("look-lightest");
+        let cache = dir.join("cache");
+        let original = dir.join("phone.mp4");
+        std::fs::write(&original, b"not read").unwrap();
+        let media: Media = serde_json::from_value(json!({
+            "id": "m", "name": "phone", "path": original, "kind": "video", "duration": 60.0,
+            "width": 3840, "height": 2160, "fps": 30, "has_audio": false
+        }))
+        .unwrap();
+        let read = |size: (u32, u32), max_side: u32| {
+            picture_source(&media, size, max_side, Some(&cache))
+                .key
+                .path
+        };
+        assert_eq!(read((960, 540), 960), original);
+        let previews = cache.join(crate::media::media_key(&original));
+        std::fs::create_dir_all(&previews).unwrap();
+        for file in ["preview.mp4", "preview.done"] {
+            std::fs::write(previews.join(file), b"").unwrap();
+        }
+        assert_eq!(read((960, 540), 960), previews.join("preview.mp4"));
+        assert_eq!(read((1920, 1080), 1920), previews.join("preview.mp4"));
+        std::fs::write(previews.join("preview-light.mp4"), b"").unwrap();
+        assert_eq!(read((960, 540), 960), previews.join("preview-light.mp4"));
+        assert_eq!(read((360, 202), 360), previews.join("preview-light.mp4"));
+        assert_eq!(read((1920, 1080), 1920), previews.join("preview.mp4"));
+        // Past what the preview holds, and at full size, the original.
+        assert_eq!(read((2560, 1440), 2560), original);
+        assert_eq!(read((3840, 2160), 0), original);
+        // A preview still being made (no `preview.done`) isn't read.
+        std::fs::remove_file(previews.join("preview.done")).unwrap();
+        assert_eq!(read((1920, 1080), 1920), original);
     }
 
     /// The agent's pictures are JPEG on every system (a PNG frame was 1.4–4 MB, kept again in its session).

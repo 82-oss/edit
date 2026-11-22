@@ -210,16 +210,11 @@ pub async fn media_frames(request: MediaFramesRequest) -> napi::Result<MediaFram
             let plan = sheet_plan(&spec, count, (media.width.max(2), media.height.max(2)));
             let side = plan.cell_width.max(plan.cell_height);
             let (images, times) = match &request.times {
-                // Picked times (frame_picks.ts): each decoded where it is.
-                Some(given) if !given.is_empty() => {
-                    let mut images = Vec::with_capacity(given.len());
-                    for time in given {
-                        let (mut one, _) =
-                            render::media_frames(&media, cache.as_deref(), *time, *time, 1, side)?;
-                        images.append(&mut one);
-                    }
-                    (images, given.clone())
-                }
+                // Picked times (frame_picks.ts): one pass through the file, each decoded where it is.
+                Some(given) if !given.is_empty() => (
+                    render::media_frames_at(&media, cache.as_deref(), given, side)?,
+                    given.clone(),
+                ),
                 _ => render::media_frames(
                     &media,
                     cache.as_deref(),
