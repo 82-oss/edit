@@ -381,6 +381,8 @@ pub(crate) struct VideoReader {
     forward: bool,
     /// Made ready for a cut ahead of the playhead (then, or looked for since) and not read from yet.
     ahead: Option<Instant>,
+    /// When it was last put back after a read (`ReaderPool::put`): a reader the play draws from is put back every frame.
+    read_at: Option<Instant>,
     /// A still has been copied out since it was decoded.
     copied: bool,
     /// A cloud original's stretches cut to this Mac (`crate::excerpts`), read instead of the URL where they reach.
@@ -452,6 +454,7 @@ impl VideoReader {
             position: None,
             forward: false,
             ahead: None,
+            read_at: None,
             copied: false,
             excerpts,
             excerpts_seen,
@@ -1030,6 +1033,15 @@ const PRIME_SECONDS: f64 = 3.0;
 /// the cut within three seconds of playing (`player::AHEAD_SECONDS`), or it went elsewhere.
 const AHEAD_KEPT: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// A reader read from within this long is in use (a play's is put back every frame): one made ready for
+/// a cut ahead never pushes it out (`ReaderPool::put_ahead`).
+const IN_USE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A cut's reader asked for this long ago and not opened yet (the ahead thread busy with others) isn't
+/// opened: its cut was within three seconds of playing when it was asked (`player::AHEAD_SECONDS`).
+#[cfg(target_os = "macos")]
+const AHEAD_STALE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Open readers kept between frames, by file and size rather than by clip, so
 /// cutting back to a file (jump cuts, a sheet's frames) continues a reader
 /// instead of opening and seeking a new one.
@@ -1088,7 +1100,7 @@ impl ReaderPool {
     /// Whether a pooled reader of `source` would read on to `time` (it's just behind it) rather than seek.
     /// Asked by the window's decode-ahead (PreviewPictures), which only Edit.app has: one made ready
     /// for that cut is wanted still, and stays kept (`put_ahead`).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     fn ready(&mut self, source: &Source, time: f64) -> bool {
         let mut found = false;
         for (reader, _) in &mut self.readers {
@@ -1109,16 +1121,24 @@ impl ReaderPool {
 
     /// A reader made ready for a cut ahead of the playhead. The pool lets the reader longest unused
     /// go, which is this one by the time its cut comes (it was made seconds ago; the readers playing
-    /// are used every frame): so for a few seconds it's the last to go, not the first.
-    #[cfg(target_os = "macos")]
+    /// are used every frame): so for a few seconds it's the last to go, not the first. Making room for
+    /// it, a reader in use (`IN_USE`) is the last to go: with the readers of a file made ready for cuts
+    /// filling its share, the one the play was drawing from was the only one not kept, and went (the Nov
+    /// 21 audit: a seek on the next frame). Another made ready goes first then, or this one.
+    #[cfg(any(target_os = "macos", test))]
     fn put_ahead(&mut self, mut reader: VideoReader) {
         reader.ahead = Some(Instant::now());
-        self.put(reader);
+        self.keep(reader, true);
     }
 
     /// A reader back for later. One whose read failed is let go: put back, the same file asked
     /// again took it, and it failed again however the file had changed since.
-    fn put(&mut self, reader: VideoReader) {
+    fn put(&mut self, mut reader: VideoReader) {
+        reader.read_at = Some(Instant::now());
+        self.keep(reader, false);
+    }
+
+    fn keep(&mut self, reader: VideoReader, ahead: bool) {
         if reader.failed {
             return;
         }
@@ -1134,7 +1154,10 @@ impl ReaderPool {
                     let kept = reader
                         .ahead
                         .is_some_and(|since| since.elapsed() < AHEAD_KEPT);
-                    (kept, *used)
+                    let in_use = ahead
+                        && reader.ahead.is_none()
+                        && reader.read_at.is_some_and(|at| at.elapsed() < IN_USE);
+                    (in_use, kept, *used)
                 })
                 .map(|(index, _)| index)
         };
@@ -1528,7 +1551,7 @@ impl FrameRenderer {
 pub(crate) struct PreviewPictures {
     /// Shared with the decode-ahead threads, which put the readers they opened and seeked here.
     pool: Arc<Mutex<ReaderPool>>,
-    ahead: mpsc::Sender<(Source, f64)>,
+    ahead: mpsc::Sender<(Source, f64, Instant)>,
     /// Pictures decoded behind the playhead while it moves back at rest.
     behind: crate::behind::Behind,
     /// Buffers of pictures drawn and let go (`recycle`), decoded into again.
@@ -1557,7 +1580,7 @@ impl PreviewPictures {
         let pool = Arc::new(Mutex::new(ReaderPool::new(READERS, READERS_A_FILE)));
         // What the ahead threads are opening now (file, size and the time in ms): a cut asked for every frame is opened once.
         let opening: Arc<Mutex<HashSet<(DecodeKey, i64)>>> = Arc::new(Mutex::new(HashSet::new()));
-        let (ahead, requests) = mpsc::channel::<(Source, f64)>();
+        let (ahead, requests) = mpsc::channel::<(Source, f64, Instant)>();
         let requests = Arc::new(Mutex::new(requests));
         for _ in 0..AHEAD_THREADS {
             let (pool, opening, requests) = (
@@ -1574,7 +1597,13 @@ impl PreviewPictures {
                     loop {
                         // One receiver shared: whichever thread is free takes the next request.
                         let next = requests.lock().recv();
-                        let Ok((source, time)) = next else { return };
+                        let Ok((source, time, asked)) = next else {
+                            return;
+                        };
+                        // Asked for a cut that's been reached or left by now: opened, it only took a reader's place.
+                        if asked.elapsed() > AHEAD_STALE {
+                            continue;
+                        }
                         let key = (source.key.clone(), (time * 1000.0).round() as i64);
                         if pool.lock().ready(&source, time) || !opening.lock().insert(key.clone()) {
                             continue;
@@ -1667,7 +1696,7 @@ impl PreviewPictures {
         if self.pool.lock().ready(&source, source_time) {
             return;
         }
-        let _ = self.ahead.send((source, source_time));
+        let _ = self.ahead.send((source, source_time, Instant::now()));
     }
 
     /// `(clip, width, height, BGRA pixels)` for each video layer of `scene`, and whether a
@@ -6082,9 +6111,38 @@ mod tests {
         assert_eq!(pool.readers.len(), 1);
     }
 
+    /// Readers made ready for cuts ahead, more of one file than it keeps (requests waiting behind a slow
+    /// open, Nov 21 audit), push out each other or themselves, never the reader the play is drawing from.
+    #[test]
+    fn readers_made_ready_for_cuts_never_push_out_the_one_playing() {
+        let media: Media = serde_json::from_value(json!({
+            "id": "m", "name": "m", "path": "/nowhere.mp4", "kind": "video",
+            "duration": 900.0, "width": 1920, "height": 1080, "fps": 30
+        }))
+        .unwrap();
+        let source = Source::new(&media, "/nowhere.mp4".into(), (640, 360), Order::Bgra);
+        let at = |seconds: f64| {
+            let mut reader = VideoReader::open(source.clone());
+            reader.position = Some(seconds);
+            reader
+        };
+        let mut pool = ReaderPool::new(3, 3);
+        pool.put(at(10.0));
+        for cut in [20.0, 21.0, 22.0, 23.0, 24.0] {
+            pool.put_ahead(at(cut));
+            assert!(pool.readers.len() <= 3);
+            assert!(
+                pool.ready(&source, 10.0),
+                "the playing one went for the cut at {cut}"
+            );
+        }
+        // The newest cuts' readers stand beside it.
+        assert!(pool.ready(&source, 24.0) && pool.ready(&source, 23.0));
+        assert_eq!(pool.take(&source, 10.0 + 1.0 / 30.0).position, Some(10.0));
+    }
+
     /// At 2× a cut's reader was made ready, then let go for being the longest unused just before
     /// its cut came (Cops Realize, frames 928 and 1007: a seek on the frame of the cut).
-    #[cfg(target_os = "macos")]
     #[test]
     fn a_reader_made_ready_for_a_cut_is_the_last_let_go() {
         let media: Media = serde_json::from_value(json!({
