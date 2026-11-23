@@ -276,6 +276,28 @@ LETTERS_UNDER = 170
 LETTERS_LEAST = 0.006
 
 
+def on_a_plate(frame_rgb, a, b, c, d, scale):
+    """Whether the words in a box sit on a plate of one colour that's theirs too: one colour fills a good part of the
+    box and is hardly found just outside it. The whole box goes then, plate and all: with the letters alone taken, the
+    model was left their teal plate and wrote garbled letters on it (Nov 23, Boyfriends 24:02, "With no beds at
+    daybreak" in white and red on a plate)."""
+    bh, bw = frame_rgb.shape[:2]
+    coarse = lambda part: (part[..., 0] // 24).astype(np.int32) * 144 + (part[..., 1] // 24).astype(np.int32) * 12 + (part[..., 2] // 24).astype(np.int32)
+    inside = coarse(frame_rgb[c:d, a:b]).ravel()
+    counts = np.bincount(inside, minlength=1728)
+    top = int(counts.argmax())
+    if counts[top] < 0.3 * inside.size:
+        return False
+    ring = int(14 * scale)
+    A, B, C, D = max(0, a - ring), min(bw, b + ring), max(0, c - ring), min(bh, d + ring)
+    around = coarse(frame_rgb[C:D, A:B])
+    outside = np.ones(around.shape, dtype=bool)
+    outside[c - C:d - C, a - A:b - A] = False
+    if outside.sum() == 0:
+        return False
+    return float((around[outside] == top).mean()) < 0.08
+
+
 def letters_of(frame_rgb, a, b, c, d, scale):
     """The mask of one box cut down to the letters in it, grown to take their outline, shadow and glow (255 = theirs).
     The model repaints at about half the picture's size, so a solid box comes back as a soft patch the size of the box
@@ -287,6 +309,8 @@ def letters_of(frame_rgb, a, b, c, d, scale):
     import cv2
 
     if b - a < 4 or d - c < 4:
+        return 255
+    if on_a_plate(frame_rgb, a, b, c, d, scale):
         return 255
     hsv = cv2.cvtColor(np.ascontiguousarray(frame_rgb[c:d, a:b]), cv2.COLOR_RGB2HSV)
     hue, sat, val = hsv[..., 0].astype(np.int16), hsv[..., 1], hsv[..., 2]
