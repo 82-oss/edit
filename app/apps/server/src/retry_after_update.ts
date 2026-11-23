@@ -128,7 +128,7 @@ const real: Actions = {
   export: async (app, failure) => {
     if (app.store.get(failure.project) === null) throw new Error(`the project isn't on ${THIS_MACHINE}`);
     // Its effects' renders and map shots first, as a share waits for them; then the edit as it is once they're in.
-    await seams.broll.waitForMaps(app, failure.project, 20 * 60_000).catch((error: unknown) => {
+    await seams.broll.waitForMaps(app, failure.project, 20 * 60_000, undefined, failure.options.range).catch((error: unknown) => {
       if (!seams.isUnavailable(error)) throw error;
     });
     const live = app.store.get(failure.project);

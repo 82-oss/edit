@@ -1106,12 +1106,12 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
   const go = () => app.exports.start(app.store, app.library, liveOr404(app, id).project, asked.options, asked.output, asked.extra);
   const home = app.store.home;
   // What it waits on is what isn't rendered now: its steps count those (export_steps.ts).
-  effects.noteWait(app, id);
+  effects.noteWait(app, id, asked.options.range);
   // In the Exports queue from now, with its graphics' steps, until it starts.
   const held = exportSteps.waitBegins(id, expected);
   // Its Cancel, or another Export of the project taking its place, ends the wait at once.
   const wait = (limit: number) =>
-    seams.broll.waitForMaps(app, id, limit, held.stop.signal).catch((error: unknown) => {
+    seams.broll.waitForMaps(app, id, limit, held.stop.signal, asked.options.range).catch((error: unknown) => {
       if (!seams.isUnavailable(error)) throw error;
     });
   let waiting = false;
@@ -1161,7 +1161,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
   // How far its effects' renders are, said as they go (Sphe, Nov 16: "I don't know how long that's going to take").
   let said = "";
   const tell = () => {
-    const line = effects.renderingLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render";
+    const line = effects.waitLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render";
     if (line === said) return;
     row("queued", { waiting: (said = line) });
     // Its renders moving is its row moving.

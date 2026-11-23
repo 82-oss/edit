@@ -1621,6 +1621,24 @@ export function belowNotDrawn(store: Store, project: string, name: string): stri
 }
 
 /**
+ * The graphics an export of frames `range` needs: those with a clip in it, and the ones below any of them that draws
+ * what's beneath it, whose picture is made from them wherever they are in its span.
+ */
+function graphicsIn(store: Store, project: Project, range: readonly [number, number]): Set<string> {
+  const [start, end] = range;
+  const graphics = new Map(project.media.filter((one) => typeof one.effect === "string").map((one) => [one.id, one.effect as string]));
+  const wanted = new Set<string>();
+  for (const clip of project.clips) {
+    if ((clip.type !== "video" && clip.type !== "audio") || clip.start >= end || clip.start + clip.duration <= start) continue;
+    const effect = graphics.get(clip.media);
+    if (effect !== undefined) wanted.add(effect);
+  }
+  // A set takes in what's added as it's walked: those below the ones below.
+  for (const name of wanted) if (drawsBeneath(store, project.id, name)) for (const below of graphicsBelow(project, name)) wanted.add(below);
+  return wanted;
+}
+
+/**
  * Of the graphics to draw (`todo`), those to start now, lowest lane first: one drawn over a graphic still to land waits
  * for it, so it's drawn once, over the finished picture. A graphic below that failed holds nothing up, and if they
  * all wait on each other (clips laid across each other's lanes) they all start.
@@ -1742,8 +1760,8 @@ export function drawing(): string[] {
  * words: the render drawing and how far it is, or the one it waits behind;
  * null when none of its renders is under way.
  */
-export function renderingLine(project: string): string | null {
-  const own = [...renders.values()].filter((render) => render.project === project);
+export function renderingLine(project: string, only?: ReadonlySet<string>): string | null {
+  const own = [...renders.values()].filter((render) => render.project === project && (only === undefined || only.has(render.name)));
   if (own.length === 0) return null;
   const now = own.find(underWay) ?? own[0]!;
   const ahead = holding;
@@ -1759,13 +1777,25 @@ export function renderingLine(project: string): string | null {
  */
 const waitedOn = new Map<string, string[]>();
 
-/** An export of `project` is asked for: what it waits on is what isn't rendered now (nothing: none). */
-export function noteWait(app: App, project: string): void {
+/** The graphics an export of part of a project waits on, by project: its row names those alone (`waitLine`). */
+const waitScope = new Map<string, ReadonlySet<string>>();
+
+/** An export of `project` is asked for (of frames `range`, or all of it): what it waits on is what isn't rendered now (nothing: none). */
+export function noteWait(app: App, project: string, range?: readonly [number, number] | null): void {
+  const live = app.store.get(project);
+  const only = range === undefined || range === null || live === null ? undefined : graphicsIn(app.store, live.project, range);
   const names = needed(app.store, project)
-    .filter((effect) => !effect.fresh)
+    .filter((effect) => !effect.fresh && (only === undefined || only.has(effect.name)))
     .map((effect) => effect.name);
   if (names.length === 0) waitedOn.delete(project);
   else waitedOn.set(project, names);
+  if (only === undefined) waitScope.delete(project);
+  else waitScope.set(project, only);
+}
+
+/** What an export of `project` waiting on its graphics is waiting for: `renderingLine`, of the graphics in its range. */
+export function waitLine(project: string): string | null {
+  return renderingLine(project, waitScope.get(project));
 }
 
 /** One graphic an export waits on, as its steps say it. */
@@ -2085,7 +2115,8 @@ export function renderNow(app: App, project: string, name: string): Promise<void
         mine.release();
       }
       if (!gaveWay) break;
-      diag.info("effects", `${project}: ${name}'s render gives way to another project's at ${render.drawn} of ${render.frames} frames, ${seconds(render.spent)} drawn so far`);
+      const forOwn = [...renders.values()].some((other) => other !== render && other.project === project && waitedFor.has(`${project}/${other.name}`));
+      diag.info("effects", `${project}: ${name}'s render gives way to ${forOwn ? "one an export waits on" : "another project's"} at ${render.drawn} of ${render.frames} frames, ${seconds(render.spent)} drawn so far`);
     }
     render.placing = true;
     try {
@@ -2754,7 +2785,7 @@ function rateArg(project: Project): string {
  * is given from the timeline made again where it changed (effect_inputs.ts:
  * the picture beneath it), so its code, and so its render, is of what's there.
  */
-export const beforeRenders = new Map<string, (app: App, project: string) => Promise<void>>();
+export const beforeRenders = new Map<string, (app: App, project: string, only?: ReadonlySet<string>) => Promise<void>>();
 
 /**
  * V2's cloud's fonts read once since Edit started (after its sign-in is back):
@@ -2775,7 +2806,7 @@ function cloudFontsRead(app: App): Promise<void> {
   return fontsRead;
 }
 
-async function readyToRender(app: App, project: string): Promise<void> {
+async function readyToRender(app: App, project: string, only?: ReadonlySet<string>): Promise<void> {
   await cloudFontsRead(app);
   // Code here older than the render another computer made comes down first: never drawn again over it.
   await bringDown(app, project).catch(() => []);
@@ -2783,7 +2814,7 @@ async function readyToRender(app: App, project: string): Promise<void> {
   // Its own fonts kept in the cloud by the computer editing it, those from before they were kept there among them.
   if (editingHere(app, project)) await fonts.keepUp(app.store, project).catch((error: unknown) => diag.warn("effects", `${project}: its fonts didn't go to the cloud: ${diag.messageOf(error)}`));
   for (const [what, before] of beforeRenders) {
-    await before(app, project).catch((error: unknown) => diag.warn("effects", `${project}: before its renders (${what}): ${diag.messageOf(error)}`));
+    await before(app, project, only).catch((error: unknown) => diag.warn("effects", `${project}: before its renders (${what}): ${diag.messageOf(error)}`));
   }
 }
 
@@ -2928,9 +2959,11 @@ async function preparedFor(work: Promise<void>, limitMs: number, signal?: AbortS
  * Waits (up to `limitMs`) for every effect on the timeline to be rendered from
  * its code as it is, starting any render that isn't under way: an export never
  * goes out with a still, or an older version, where an effect is. An error
- * says which effect and why.
+ * says which effect and why. With `range` (an export of those frames) only the
+ * graphics it shows: a 65-second export waited on "interview-audio (then 5
+ * more)", a quarter of an hour of graphics after the part it was of (Nov 23).
  */
-export async function waitForRenders(app: App, project: string, limitMs: number, signal?: AbortSignal): Promise<void> {
+export async function waitForRenders(app: App, project: string, limitMs: number, signal?: AbortSignal, range?: readonly [number, number] | null): Promise<void> {
   const until = Date.now() + limitMs;
   // Every render it waits on is waited on from now (render_turns.ts: it goes ahead of renders nobody waits on, another
   // project's long one giving way at its next chunk), started now if it isn't under way.
@@ -2948,8 +2981,10 @@ export async function waitForRenders(app: App, project: string, limitMs: number,
     // by the export itself (`notReady`).
     const rounds = needed(app.store, project).length + 2;
     for (let round = 0; round < rounds; round++) {
-      await preparedFor(readyToRender(app, project), limitMs, signal);
-      const todo = needed(app.store, project).filter((effect) => !effect.fresh);
+      const live = app.store.get(project);
+      const only = range === undefined || range === null || live === null ? undefined : graphicsIn(app.store, live.project, range);
+      await preparedFor(readyToRender(app, project, only), limitMs, signal);
+      const todo = needed(app.store, project).filter((effect) => !effect.fresh && (only === undefined || only.has(effect.name)));
       if (todo.length === 0) return;
       for (const effect of todo) {
         if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);

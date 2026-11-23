@@ -14,7 +14,10 @@
  * drawing gives way at a chunk's end to another project's that goes ahead of
  * it, at once when that one is waited on and it isn't, else once it has held
  * the slot `sliceMs` (each change of render loads its pages again: turns at
- * every chunk would spend a long render's time loading).
+ * every chunk would spend a long render's time loading). Within a project a
+ * render gives way only to one someone waits on when nobody waits on it: a
+ * 65-second export sat behind the same video's quarter-hour graphic, which it
+ * doesn't show (Nov 23).
  */
 
 /** A render asking for the slot. */
@@ -136,6 +139,7 @@ export class Turns {
   private shouldYield(held: { asking: Asking; at: number; first: boolean }): boolean {
     this.dropStale();
     const now = this.hooks.now();
+    if (!held.asking.urgent() && this.line.some((waiter) => waiter.asking.project === held.asking.project && waiter.asking.urgent())) return true;
     const rival = this.best(
       this.line.filter((waiter) => waiter.asking.project !== held.asking.project),
       now,

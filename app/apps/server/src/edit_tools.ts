@@ -126,8 +126,8 @@ export const hooks = {
     clipIds.length === 0 ? [] : seams.broll.smoothInBackground(app, projectId, clipIds),
   waitForSmoothing: (projectId: string, limitMs: number): Promise<boolean> =>
     seams.broll.waitForSmoothing(projectId, limitMs),
-  waitForMaps: (app: App, projectId: string, limitMs: number): Promise<void> =>
-    seams.broll.waitForMaps(app, projectId, limitMs),
+  waitForMaps: (app: App, projectId: string, limitMs: number, range?: readonly [number, number] | null): Promise<void> =>
+    seams.broll.waitForMaps(app, projectId, limitMs, undefined, range),
   mapExportWait: (): number => seams.broll.MAP_EXPORT_WAIT,
   watchInBackground: (app: App, projectId: string): void => seams.watch.watchInBackground(app, projectId),
   defaultExportPath: (store: Store, project: Project): string => seams.server.defaultExportPath(store, project),
@@ -1494,7 +1494,7 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
     );
   }
   // A map shot still rendering would export as its first frame.
-  await hooks.waitForMaps(app, projectId, hooks.mapExportWait());
+  await hooks.waitForMaps(app, projectId, hooks.mapExportWait(), options.range);
   const found = live(app, projectId);
   const given = str(args.path);
   const fallback = hooks.defaultExportPath(app.store, found.project);

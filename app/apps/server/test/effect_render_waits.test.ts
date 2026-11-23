@@ -123,3 +123,47 @@ test("graphics are taken lowest lane first, whatever order their media are in", 
   project.media.reverse();
   expect(effects.lowestFirst(project)).toEqual(["low", "top"]);
 });
+
+// ---------------------------------------------------------------------------
+// An export of part of the video waits for the graphics of that part.
+
+test("an export of a range waits for and starts only the graphics it shows, and those they're drawn over; a whole export all of them", async () => {
+  const { app, cleanup } = fixtureHome("effect-render-range");
+  const id = app.store.create("Boyfriends", { width: 1920, height: 1080, fps: 30 }).project.id;
+  try {
+    const clip = (clipId: string, track: string, media: string, start: number, duration: number) => ({ id: clipId, type: "video", track, start, duration, media, source_in: 0, speed: 1 });
+    const media = (mediaId: string, effect: string) => ({ id: mediaId, name: effect, path: `/nowhere/${effect}.png`, kind: "image", duration: 10, width: 1920, height: 1080, fps: 0, has_audio: false, effect });
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      for (const track of ["t1", "t2"]) project.tracks.push({ id: track, kind: "video", name: track, hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.media.push(media("m1", "under") as never, media("m2", "over") as never, media("m3", "later") as never);
+      project.clips.push(clip("c1", "t1", "m1", 500, 300) as never, clip("c2", "t2", "m2", 0, 900) as never, clip("c3", "t1", "m3", 17_592, 300) as never);
+    });
+    for (const name of ["under", "over", "later"]) code(app, id, name, `<p>${name}</p>`);
+    // `over` draws what's beneath it, over a span `under` is in, though `under` isn't in the range asked for.
+    fs.writeFileSync(join(effects.folder(app.store, id, "over"), effects.BENEATH_MARK), JSON.stringify({ key: "x" }));
+    fs.writeFileSync(join(effects.folder(app.store, id, "over"), "beneath.mp4"), "");
+
+    effects.noteWait(app, id, [0, 400]);
+    expect(effects.graphicsOf(app, id).map((one) => one.name).sort()).toEqual(["over", "under"]);
+
+    // Nothing in the range to wait for: at once, with `later` not drawn.
+    const opened: string[] = [];
+    opening.mockImplementation((() => {
+      opened.push("open");
+      return Promise.reject(new Error("its page is broken"));
+    }) as unknown as typeof devtools.open);
+    await effects.waitForRenders(app, id, 5_000, undefined, [10_000, 10_100]);
+    expect(opened.length).toBe(0);
+
+    // In the range: the graphic under it goes first, and `later`, after its range, is never asked for.
+    await expect(effects.waitForRenders(app, id, 5_000, undefined, [0, 400])).rejects.toThrow("The under effect didn't render");
+    expect(opened.length).toBe(1);
+
+    // The whole video waits on `later` too.
+    effects.noteWait(app, id);
+    expect(effects.graphicsOf(app, id).map((one) => one.name).sort()).toEqual(["later", "over", "under"]);
+  } finally {
+    cleanup();
+  }
+}, 30_000);

@@ -353,7 +353,7 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
       progress: state === "current" ? graphic.drawn / Math.max(1, graphic.frames) : null,
       left_s: state === "waiting" ? waitingFor(run, `graphic:${graphic.name}`, left, now) : smooth(run, `graphic:${graphic.name}`, left, now),
     };
-    if (state === "current" && graphic.drawn === 0 && graphic.rate === null && effects.renderingLine(id)?.startsWith("waiting behind") === true) step.note = "waiting for another project's graphics";
+    if (state === "current" && graphic.drawn === 0 && graphic.rate === null && effects.waitLine(id)?.startsWith("waiting behind") === true) step.note = "waiting for another project's graphics";
     steps.push(step);
   }
 
@@ -577,7 +577,7 @@ export function activity(app: App, visible: Set<string>, now = clock.now()): (Ex
       progress: 0,
       updated_ms: since,
       started_ms: since,
-      ...(line !== null ? { phase: `Sharing: ${line}`, share: true } : { waiting: effects.renderingLine(id) ?? "waiting for its effects to render" }),
+      ...(line !== null ? { phase: `Sharing: ${line}`, share: true } : { waiting: effects.waitLine(id) ?? "waiting for its effects to render" }),
     });
   }
   return [...rows.values()].map((row) => {
@@ -622,7 +622,7 @@ function tableRows(app: App): Map<string, ExportActivity> {
     if (live === null) continue;
     const base = { id: job.project, name: live.project.name, path: typeof job.args.output === "string" ? job.args.output : "", progress: 0, updated_ms: job.updated_ms, ...(typeof job.args.note === "string" ? { note: job.args.note } : {}) };
     if (job.state === "failed") rows.set(job.project, { ...base, state: "failed", error: job.error ?? "the export failed" });
-    else if (graphics) rows.set(job.project, { ...base, state: "queued", waiting: effects.renderingLine(job.project) ?? "waiting for its effects to render" });
+    else if (graphics) rows.set(job.project, { ...base, state: "queued", waiting: effects.waitLine(job.project) ?? "waiting for its effects to render" });
     else rows.set(job.project, { ...base, state: "queued", waiting: waitingLine(job) });
   }
   return rows;
@@ -664,7 +664,7 @@ export function exportNow(app: App, id: string): { state: ExportActivity["state"
     ...(row.phase === undefined ? {} : { phase: row.phase }),
   });
   const wait = waits.get(id);
-  if (wait !== undefined) return { state: "queued", progress: 0, path: wait.output, waiting: effects.renderingLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render" };
+  if (wait !== undefined) return { state: "queued", progress: 0, path: wait.output, waiting: effects.waitLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render" };
   let registry: ExportActivity | undefined;
   try {
     registry = (app.exports.activity?.() ?? []).find((one) => one.id === id);

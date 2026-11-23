@@ -1218,7 +1218,7 @@ export function remakeEffect(projectId: string, name: string, key: string, unrea
 /** What else an export waits for before it starts, given the same limit (removal_schedule.ts: pieces of their text still being taken out). */
 export const readyWaits: ((app: App, projectId: string, limitMs: number, signal?: AbortSignal) => Promise<void>)[] = [];
 
-export async function waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal): Promise<void> {
+export async function waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal, range?: readonly [number, number] | null): Promise<void> {
   // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here by every
   // export that can wait (the agent's, the button's, a share's, a retry's); exports.start refuses the edit it's
   // handed while one isn't (`exportReady`), so none goes out with a stand-in whichever way it came.
@@ -1227,7 +1227,8 @@ export async function waitForMaps(app: App, projectId: string, limitMs: number, 
   const cancelled = () => {
     if (signal?.aborted === true) throw new Error("cancelled while waiting for its graphics");
   };
-  await waitForEffectRenders(app, projectId, limitMs, signal);
+  // `range`: an export of those frames waits for the graphics it shows, not the whole video's.
+  await waitForEffectRenders(app, projectId, limitMs, signal, range);
   cancelled();
   for (const wait of readyWaits) {
     await wait(app, projectId, limitMs, signal);

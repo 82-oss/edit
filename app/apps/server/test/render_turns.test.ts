@@ -53,9 +53,23 @@ test("one render holds the slot; another project's render nobody waits on gets i
   expect(again.turn).not.toBeNull();
 });
 
-test("a render someone waits on (an export) gets the slot at the next chunk of another project's that nobody waits on; the same project's never takes it mid-render", async () => {
-  const { turns, tick } = setup();
+test("a render someone waits on gets the slot at the next chunk of one nobody waits on, its own project's too (a short export behind the same video's long graphic, Nov 23)", async () => {
+  const { turns } = setup();
   const a = track(turns.take(asking("A")));
+  await settle();
+  const same = asking("A");
+  const next = track(turns.take(same));
+  expect(a.turn!.shouldYield()).toBe(false);
+  same.set({ urgent: true });
+  expect(a.turn!.shouldYield()).toBe(true);
+  a.turn!.release();
+  await settle();
+  expect(next.turn).not.toBeNull();
+});
+
+test("a render someone waits on gets the slot at the next chunk of another project's that nobody waits on; the same project's never takes it from one that's waited on too", async () => {
+  const { turns, tick } = setup();
+  const a = track(turns.take(asking("A", { urgent: true })));
   await settle();
   const same = track(turns.take(asking("A", { urgent: true })));
   tick(1_000);
@@ -64,6 +78,9 @@ test("a render someone waits on (an export) gets the slot at the next chunk of a
   track(turns.take(b));
   expect(a.turn!.shouldYield()).toBe(false);
   b.set({ urgent: true });
+  // Of the same standing: at the end of its slice.
+  expect(a.turn!.shouldYield()).toBe(false);
+  tick(30_000);
   expect(a.turn!.shouldYield()).toBe(true);
   expect(same.turn).toBeNull();
 });

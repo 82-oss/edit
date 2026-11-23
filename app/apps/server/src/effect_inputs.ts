@@ -418,10 +418,12 @@ export async function beneath(app: App, projectId: string, name: string): Promis
  * lowest lane first, so a graphic is made over those below it as they end up. One with a graphic below it not drawn yet
  * waits for that (`effects.belowNotDrawn`): its picture would be of the clear still, and it would be drawn twice.
  */
-async function keepBeneath(app: App, projectId: string): Promise<void> {
+async function keepBeneath(app: App, projectId: string, only?: ReadonlySet<string>): Promise<void> {
   const live = app.store.get(projectId);
   if (live === null) return;
   for (const name of effects.lowestFirst(live.project)) {
+    // An export of part of the video: the graphics it needs.
+    if (only !== undefined && !only.has(name)) continue;
     if (!fs.existsSync(join(effects.folder(app.store, projectId, name), effects.BENEATH_MARK))) continue;
     if (effects.belowNotDrawn(app.store, projectId, name).length > 0) continue;
     try {
