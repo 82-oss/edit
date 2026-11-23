@@ -201,8 +201,20 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
 
   /** Every document's row, newest change first: the cloud's list with what's here ahead of it. */
   async list(): Promise<R[]> {
-    if (this.rows === null) await this.refreshList();
-    else if (Date.now() - this.listedAt > timing.freshMs) await this.peek(this.refreshList().catch((error: unknown) => this.quiet("the list", error)));
+    if (this.rows === null) {
+      try {
+        await this.refreshList();
+      } catch (error) {
+        // No list kept here yet and the cloud out of reach: the copies here are the list. None at all is still a failure,
+        // never an empty list that reads as everything gone.
+        for (const name of this.files()) {
+          const doc = this.loadFile(name);
+          if (doc !== null && !this.docs.has(doc.body.id)) this.docs.set(doc.body.id, doc);
+        }
+        if (this.docs.size === 0) throw error;
+        this.quiet("the list", error);
+      }
+    } else if (Date.now() - this.listedAt > timing.freshMs) await this.peek(this.refreshList().catch((error: unknown) => this.quiet("the list", error)));
     const out = new Map((this.rows ?? []).map((row) => [row.id, row]));
     for (const [id, doc] of this.docs) {
       const old = out.get(id);

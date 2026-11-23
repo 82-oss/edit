@@ -149,6 +149,22 @@ test("a refusal (no permission) undoes the change here and says it to a caller t
   expect(docs.waiting()).toBe(0);
 });
 
+test("the cloud out with no list kept here: the list is the copies here, and with none it's a failure, never an empty list", async () => {
+  seed("a", { titles: ["Kept"] });
+  await docs.get("a");
+  down = true;
+  const after = new TeamDocs<Doc, Row>(spec);
+  after.useHome(home);
+  expect((await after.list()).map((row) => row.title)).toEqual(["Kept"]);
+  after.forget();
+  const { dir, cleanup: done } = scratch("team-docs-empty");
+  const empty = new TeamDocs<Doc, Row>(spec);
+  empty.useHome(dir);
+  await expect(empty.list()).rejects.toThrow("could not reach");
+  empty.forget();
+  done();
+});
+
 test("a refusal after the page has gone on is there for the page to say, once; one a caller heard isn't", async () => {
   seed("a", { titles: ["Kept"] });
   await docs.get("a");
