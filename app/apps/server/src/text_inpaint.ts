@@ -25,6 +25,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as finder from "./found.ts";
 import { probe } from "./media.ts";
 import type { Media } from "./model.ts";
 import type { Box } from "./native/index.ts";
@@ -679,14 +680,17 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
     const started = Date.now();
     const inputKey = cloudKeyOf(plan.media);
-    const answer = await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath });
+    const request = { input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath };
+    // A camera that doesn't move: the room's own picture, free. Anything else goes to the model.
+    const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request) : null;
+    const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, ...request }));
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
     if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file, under);
     piece.state = "done";
     const seconds = (Date.now() - started) / 1000;
-    diag.info("removal", `${id}: ${label} cleaned by the model in ${Math.round(seconds)} s (${answer.inferred ?? 0} of ${boxes.length} frames through it, ${(seconds / Math.max(0.1, to - from)).toFixed(1)} s a second)`);
+    diag.info("removal", `${id}: ${label} cleaned ${still !== null ? "from the room's own picture" : "by the model"} in ${Math.round(seconds)} s (${answer.inferred ?? 0} of ${boxes.length} frames through it, ${(seconds / Math.max(0.1, to - from)).toFixed(1)} s a second)`);
   } catch (error) {
     piece.state = "failed";
     piece.why = diag.messageOf(error);

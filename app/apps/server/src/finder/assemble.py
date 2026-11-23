@@ -34,22 +34,37 @@ def whole(tag,mid,box,frames,W,H,stamps=()):
     g=np.median(gs[gs.sum(1)>0],0)
     if g[0]>=3*w-1 or g[2]>=3*w-1: return box   # ran on without end: a plain wall or sky, not a plate
     return [max(0,int(x0-g[0]-3)),max(0,int(y0-g[1]-3)),min(W,int(x1+g[2]+3)),min(H,int(y1+g[3]+3))]
-def off_titles(masks,W,H):
+def off_titles(masks,W,H,reads=()):
     """A channel's title across the top of the picture isn't a caption, though words that stay read like one line after
-    another. Where labels stand along the top for most of the file, a caption or note that starts in that band is that
-    title: a label (blurred, never sent to the model), cut to the band (Nov 23, the Trooper video: boxes of 1280 x 375 round
-    "Red Crime Interrogations & Stories" had the model repaint the deputy's head)."""
+    another. Where labels stand along the top for a good part of the file, a caption or note that starts in that band is
+    that title: a label (blurred, never sent to the model), cut to the band; a flicker of a few frames under it is nothing;
+    and a label's box measured far taller than its words comes back to them, so the blur stays off a face below the title
+    (Nov 23, the Trooper video: boxes of 1280 x 375 round "Red Crime Interrogations & Stories" had the model repaint the
+    deputy's head, and a blur 143 px tall over a title 76 px tall hid his face for minutes)."""
     last=max((m[1] for m in masks),default=0)
     if last<=0: return masks
     tops=[m for m in masks if m[6]=='label' and m[3]<0.12*H and m[5]<0.35*H]
     on=np.zeros(last+2,bool)
     for m in tops: on[max(0,m[0]):min(last,m[1])+1]=True
-    if on.sum()<0.4*(last+1): return masks
+    if on.sum()<0.25*(last+1): return masks
     band=int(np.percentile([m[5] for m in tops],90))
-    out=[]
+    words=[L for L in reads if (L[1]+L[3])/2<0.35*H]
+    def fitted(m):
+        inside=[L[3] for L in words if m[2]<=(L[0]+L[2])/2<=m[4] and m[3]<=(L[1]+L[3])/2<=m[5]]
+        if len(inside)<5: return m
+        # Nine in ten of its words end above this: the odd word read lower down is something else in the room.
+        bottom=int(np.percentile(inside,90))+8
+        return [*m[:5],bottom,m[6]] if m[5]-m[3]>1.25*(bottom-m[3]) else m
+    out=[]; memo={}
     for m in masks:
-        if m[6] in('subtitle','note') and m[3]<min(band,0.12*H): out.append([*m[:5],min(m[5],band),'label'])
-        else: out.append(m)
+        if m[6] in('subtitle','note'):
+            if m[3]<min(band,0.12*H): m=[*m[:5],min(m[5],band),'label']
+            elif m[3]<0.35*H and m[1]-m[0]<=6: continue
+        if m[6]=='label' and m[3]<0.12*H and m[5]<0.35*H:
+            k=tuple(m[2:6])
+            if k not in memo: memo[k]=fitted(m)[5]
+            m=[*m[:5],memo[k],'label']
+        out.append(m)
     return out
 def off_stamps(box,stamps):
     """A label's box kept off the camera's own stamp beside it: where the two overlap by a sliver (the label's plate and

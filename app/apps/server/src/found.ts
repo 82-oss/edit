@@ -39,7 +39,9 @@ import type { Media } from "./model.ts";
 import type { Box } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { merged } from "./removal_sections.ts";
+import { Semaphore } from "./semaphore.ts";
 import type { Sample } from "./text_track.ts";
+import * as tools from "./tools.ts";
 import * as claude from "./writer/claude.ts";
 
 import assembleSource from "./finder/assemble.py" with { type: "text" };
@@ -56,8 +58,10 @@ import ocrSource from "./finder/ocr.py" with { type: "text" };
 import roamtrackSource from "./finder/roamtrack.py" with { type: "text" };
 import scanSource from "./finder/scan.py" with { type: "text" };
 import slowcopySource from "./finder/slowcopy.py" with { type: "text" };
+import stillSource from "./finder/still.py" with { type: "text" };
 import thumbsSource from "./finder/thumbs.py" with { type: "text" };
 import zoneSource from "./finder/zone.py" with { type: "text" };
+import minimaxSource from "./minimax_worker.py" with { type: "text" };
 
 const SCRIPTS: Record<string, string> = {
   "assemble.py": assembleSource,
@@ -74,6 +78,8 @@ const SCRIPTS: Record<string, string> = {
   "roamtrack.py": roamtrackSource,
   "scan.py": scanSource,
   "slowcopy.py": slowcopySource,
+  "still.py": stillSource,
+  "minimax_worker.py": minimaxSource,
   "thumbs.py": thumbsSource,
   "zone.py": zoneSource,
 };
@@ -143,6 +149,75 @@ export function foundOf(app: App, source: string): Found | null {
     return read;
   } catch {
     return null;
+  }
+}
+
+/** Stretches of still footage cleaned at once: about a CPU core each, at low priority, and no GPU. */
+const stillSlots = new Semaphore(6);
+/** A video's first stretch makes its room plate; the rest of that video wait for it and read it. */
+const plating = new Map<string, Promise<unknown>>();
+/** The longest one stretch may take, plate included. */
+const STILL_LONGEST_MS = 20 * 60_000;
+
+export interface StillRequest {
+  input: string;
+  input_args: string[];
+  from: number;
+  fps: number;
+  width: number;
+  height: number;
+  matrix: string;
+  masks: number[][][];
+  out: string;
+  beneath: unknown[];
+}
+
+/**
+ * Their captions out of a stretch filmed by a camera that doesn't move, from the room itself (finder/still.py): free,
+ * on this machine, and the picture is the real one, where the model doubled a notepad and melted hands (Nov 23, the
+ * Hitman video). Null when the stretch isn't a still shot or this machine can't: the model takes it as before.
+ */
+export async function stillClean(app: App, source: string, media: Media[], request: StillRequest): Promise<{ ok: true; box: Box | null; inferred: 0 } | null> {
+  if (!available() || standIn !== null || foundOf(app, source) === null) return null;
+  const key = source.split("#")[0]!;
+  const others = media.filter((one) => one.kind === "video" && one.cloud?.source !== undefined && one.cloud.source !== source && one.cloud.source.split("#")[0] === key && foundOf(app, one.cloud.source) !== null);
+  const also = await Promise.all(
+    others.map(async (one) => {
+      const input = await cloudMedia.originalInput(app.store.cacheDir(), one).catch(() => null);
+      return input === null ? null : { input, input_args: tools.urlArgs(input), found: fileOf(app, one.cloud!.source!) };
+    }),
+  );
+  const file = `${request.out}.job.json`;
+  fs.writeFileSync(file, JSON.stringify({ ...request, ffmpeg: tools.ffmpeg(), found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) }));
+  const run = async () => {
+    const child = Bun.spawn(["nice", "-n", "10", join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "still.py"), file], { stdout: "pipe", stderr: "pipe", env: { ...process.env, OMP_NUM_THREADS: "2", OPENCV_FOR_THREADS_NUM: "2" } });
+    const timer = setTimeout(() => child.kill(), STILL_LONGEST_MS);
+    try {
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      if (code !== 0) throw new Error((err.trim().split("\n").at(-1) ?? `stopped (${code})`).slice(0, 300));
+      return JSON.parse(out.trim().split("\n").at(-1) ?? "{}") as { still?: boolean; box?: Box | null; why?: string };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    await plating.get(key);
+    const going = stillSlots.with(run);
+    if (!plating.has(key)) {
+      const settled = going.catch(() => {}).finally(() => plating.delete(key));
+      plating.set(key, settled);
+    }
+    const answer = await going;
+    if (answer.still !== true) {
+      diag.info("removal", `${source} from ${Math.round(request.from)} s: not a still shot (${answer.why ?? "?"}), the model takes it`);
+      return null;
+    }
+    return { ok: true, box: answer.box ?? null, inferred: 0 };
+  } catch (error) {
+    diag.warn("removal", `${source} from ${Math.round(request.from)} s: the still clean stopped, the model takes it: ${diag.messageOf(error)}`);
+    return null;
+  } finally {
+    fs.rmSync(file, { force: true });
   }
 }
 
