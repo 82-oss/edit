@@ -123,11 +123,16 @@ export async function cancel(id: string): Promise<void> {
   await call("DELETE", `/v1/remover/jobs/${id}`).catch(() => {});
 }
 
-/** A small result left on R2 by a rented machine (JSON or text), read and then deleted. */
-async function take(key: string): Promise<string> {
+/** A small result left on R2 by a rented machine (JSON or text), read without deleting. */
+async function read(key: string): Promise<string> {
   const answer = await fetch(await cloud.presign(key, "GET"), { signal: AbortSignal.timeout(120_000) });
   if (!answer.ok) throw new Error(`the result wasn't on R2 (${answer.status})`);
-  const text = await answer.text();
+  return answer.text();
+}
+
+/** A small result left on R2 by a rented machine (JSON or text), read and then deleted. */
+async function take(key: string): Promise<string> {
+  const text = await read(key);
   await cloud.remove([key]).catch(() => {});
   return text;
 }
@@ -246,7 +251,9 @@ export async function parentStateKey(stateJson: string): Promise<string> {
 /** Runs finder `survey` on a rented GPU for a file on R2 and returns its packed SurveyBundle JSON. */
 export async function find<T>(key: string, spans: [number, number][], worker: string, parentKey: string | null = null, stopped: () => boolean = () => false): Promise<T> {
   const job = await start("find", { input: key, spans, ...(parentKey === null ? {} : { parent: parentKey }) }, worker);
-  const answer = await wait<{ ok: boolean; error?: string; seconds?: number }>(job, stopped);
+  const answer = await wait<{ ok: boolean; error?: string; seconds?: number; shared?: boolean }>(job, stopped);
   if (!answer.ok) throw new Error(answer.error ?? "the finder couldn't read the file");
-  return JSON.parse(await take(job.out)) as T;
+  // When another Edit deduplicated onto the same job, leave `job.out` for it (the relay cleans it up after 10 min).
+  const text = answer.shared === true ? await read(job.out) : await take(job.out);
+  return JSON.parse(text) as T;
 }

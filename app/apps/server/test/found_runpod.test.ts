@@ -124,6 +124,8 @@ let jobsPosted: { id: string; kind: string; worker: string; request: Record<stri
 let jobsCancelled: string[];
 let activePolls: Map<string, number>;
 let holdJobIds: Set<string>;
+let holdInputs: Set<string>;
+let sharedJobIds: Set<string>;
 let releaseHeld: (() => void) | null;
 let bundleForInput: (input: string, request: Record<string, unknown>) => found.SurveyBundle;
 let judgeCalls: { ask: found.Asked[]; sheetsB64?: string[] }[];
@@ -154,6 +156,8 @@ beforeEach(() => {
   jobsCancelled = [];
   activePolls = new Map();
   holdJobIds = new Set();
+  holdInputs = new Set();
+  sharedJobIds = new Set();
   releaseHeld = null;
   judgeCalls = [];
   bundleForInput = (input) => ({
@@ -214,16 +218,19 @@ beforeEach(() => {
       const match = /^\/v1\/remover\/jobs\/([0-9a-f-]+)$/.exec(url.pathname);
       if (match !== null && request.method === "GET") {
         const id = match[1]!;
-        if (holdJobIds.has(id)) return Response.json({ pending: true, status: "running" }, { status: 202 });
+        const posted = jobsPosted.find((j) => j.id === id);
+        if (holdJobIds.has(id) || (posted !== undefined && holdInputs.has(String(posted.request.input)))) return Response.json({ pending: true, status: "running" }, { status: 202 });
         const n = (activePolls.get(id) ?? 0) + 1;
         activePolls.set(id, n);
         if (n < 2) return Response.json({ pending: true, status: "running" }, { status: 202 });
-        return Response.json({ ok: true, ask: 1, sheets: 1, seconds: 2 });
+        return Response.json({ ok: true, ask: 1, sheets: 1, seconds: 2, ...(sharedJobIds.has(id) ? { shared: true } : {}) });
       }
       if (match !== null && request.method === "DELETE") {
         const id = match[1]!;
         jobsCancelled.push(id);
         holdJobIds.delete(id);
+        const posted = jobsPosted.find((j) => j.id === id);
+        if (posted !== undefined) holdInputs.delete(String(posted.request.input));
         releaseHeld?.();
         return Response.json({ ok: true });
       }
@@ -291,9 +298,8 @@ test("Mac/non-Linux client gets the finder via RunPod, judges with sheetsB64, wr
 
 test("multiple files scan in parallel on RunPod, and a slowed copy sends its parent's state to RunPod", async () => {
   const app = makeApp(path.join(tmpDir, "mac-par"));
-  // Hold job #1 until job #2 is also submitted to prove concurrent dispatch!
-  const firstId = "00000000-0000-4000-8000-000000000001";
-  holdJobIds.add(firstId);
+  // Hold parent by input key (arrival-order independent) until both A and B are submitted concurrently!
+  holdInputs.add("edit/originals/drive/a/a.mp4");
   const m1 = makeMedia("m1", "a.mp4", "edit/originals/drive/a/a.mp4");
   const m2 = makeMedia("m2", "b.mp4", "edit/originals/drive/b/b.mp4");
   const slow = makeMedia("m3", "a_slow.mp4", "edit/originals/sha256/slow/a_slow.mp4");
@@ -306,15 +312,15 @@ test("multiple files scan in parallel on RunPod, and a slowed copy sends its par
 
   // Wait briefly until both m1 and m2 are posted concurrently while m1 is still held
   for (let i = 0; i < 60 && jobsPosted.length < 2; i++) await Bun.sleep(10);
-  expect(jobsPosted.map((j) => j.request.input)).toEqual([
+  expect(new Set(jobsPosted.map((j) => j.request.input))).toEqual(new Set([
     "edit/originals/drive/a/a.mp4",
     "edit/originals/drive/b/b.mp4",
-  ]);
+  ]));
   // Slowed copy has NOT been submitted yet because its parent (m1) is still running
   expect(jobsPosted).toHaveLength(2);
 
   // Release m1; now slowed copy should run with parent state key uploaded to edit/cleaned/finder/
-  holdJobIds.delete(firstId);
+  holdInputs.delete("edit/originals/drive/a/a.mp4");
   await found.settled();
   expect(jobsPosted).toHaveLength(3);
   const childJob = jobsPosted[2]!;
@@ -325,23 +331,71 @@ test("multiple files scan in parallel on RunPod, and a slowed copy sends its par
   expect(uploadedParent.verdicts?.labels).toEqual(["lbl-a.mp4"]);
 });
 
-test("Stop cancels a running RunPod find job, and a file not in R2 yet isn't permanently failed", async () => {
+test("Stop cancels a running RunPod find job, a new project right after Stop starts a fresh run, and slowed copies defer while their parent uploads", async () => {
   const app = makeApp(path.join(tmpDir, "mac-stop"));
-  // File not uploaded yet: skipped quietly, then runs once cloud.original appears
-  const localOnly = makeMedia("m0", "uploading.mp4");
-  found.ensure(app, "p1", [{ media: localOnly, source: "sha256:up", shown: [[0, 20]], parent: null }]);
+  // Parent not uploaded yet, slowed copy already uploaded: BOTH are deferred cleanly (neither marked permanently failed)
+  const parentUploading = makeMedia("m0", "parent.mp4");
+  const childUploaded = makeMedia("m0s", "parent_slow.mp4", "edit/originals/sha256/child/parent_slow.mp4");
+  found.ensure(app, "p1", [
+    { media: parentUploading, source: "sha256:par", shown: [[0, 20]], parent: null },
+    { media: childUploaded, source: "sha256:child", shown: [[0, 10]], parent: { media: parentUploading, source: "sha256:par" } },
+  ]);
   await found.settled();
   expect(jobsPosted).toHaveLength(0);
   expect(found.piecesOf("p1")).toEqual([]);
 
-  // Now upload finishes and file starts scanning; user clicks Stop mid-job
-  const firstId = "00000000-0000-4000-8000-000000000001";
-  holdJobIds.add(firstId);
-  const uploaded = makeMedia("m0", "uploading.mp4", "edit/originals/sha256/up/uploading.mp4");
-  found.ensure(app, "p1", [{ media: uploaded, source: "sha256:up", shown: [[0, 20]], parent: null }]);
+  // Now parent upload finishes; p1 starts scanning, then clicks Stop mid-job; p2 immediately asks for the same file and must NOT join the dying run
+  holdInputs.add("edit/originals/sha256/par/parent.mp4");
+  const parentUploaded = makeMedia("m0", "parent.mp4", "edit/originals/sha256/par/parent.mp4");
+  found.ensure(app, "p1", [{ media: parentUploaded, source: "sha256:par", shown: [[0, 20]], parent: null }]);
   for (let i = 0; i < 60 && jobsPosted.length < 1; i++) await Bun.sleep(10);
   expect(jobsPosted).toHaveLength(1);
+  const firstId = jobsPosted[0]!.id;
+
   found.stop("p1");
+  // Release hold for the fresh run from p2 while p1's cancel is still settling
+  holdInputs.delete("edit/originals/sha256/par/parent.mp4");
+  found.ensure(app, "p2", [
+    { media: parentUploaded, source: "sha256:par", shown: [[0, 20]], parent: null },
+    { media: childUploaded, source: "sha256:child", shown: [[0, 10]], parent: { media: parentUploaded, source: "sha256:par" } },
+  ]);
   await found.settled();
   expect(jobsCancelled).toEqual([firstId]);
+  expect(found.foundOf(app, "sha256:par")).not.toBeNull();
+  expect(found.foundOf(app, "sha256:child")).not.toBeNull();
+  expect(found.piecesOf("p2").every((p) => p.state === "done")).toBe(true);
+});
+
+test("malformed R2 cache without covered array is treated as a miss, shared job output stays on R2, and RunPod parent state materializes for local slowed copies", async () => {
+  const app = makeApp(path.join(tmpDir, "mac-edge"));
+  // Seed a malformed R2 found record (missing `covered`)
+  const { createHash } = await import("node:crypto");
+  const badKey = `edit/cleaned/found/${createHash("sha256").update("drive:malformed").digest("hex").slice(0, 32)}.v1.json`;
+  r2Store.set(badKey, JSON.stringify({ version: 1, width: 1920, height: 1080, fps: 30, masks: [] }));
+  // Mark job #1 as shared so removerCloud.find leaves job.out on R2 for other callers
+  sharedJobIds.add("00000000-0000-4000-8000-000000000001");
+
+  const media = makeMedia("m9", "mal.mp4", "edit/originals/drive/mal/mal.mp4");
+  found.ensure(app, "p1", [{ media, source: "drive:malformed", shown: [[0, 20]], parent: null }]);
+  await found.settled();
+  expect(jobsPosted).toHaveLength(1);
+  expect(found.foundOf(app, "drive:malformed")).not.toBeNull();
+  // Shared output key was NOT deleted by client
+  expect(r2Store.has("edit/cleaned/work/00000000-0000-4000-8000-000000000001.json")).toBe(true);
+
+  // Materialize local scan files from RunPod parent state for a local slowed copy
+  const pstate: found.ParentState = {
+    zone: { W: 1920, H: 1080, fps: 30, zone: [0.7, 0.9] },
+    marks: [{ key: "lbl", kind: "label", reads: [] }],
+    notes: [],
+    cands: [],
+    roamExt: [-10, -10, 10, 10],
+    verdicts: { yes: [["one-off", "hi", 15]], labels: ["lbl"] },
+  };
+  found.writeLocalParentScanFiles(app, "drive:malformed", pstate);
+  const scanDir = path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "scan");
+  expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.zone.json"), "utf8"))).toEqual(pstate.zone);
+  expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.roam.ext.json"), "utf8"))).toEqual([-10, -10, 10, 10]);
+  const verdicts = JSON.parse(fs.readFileSync(path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "verdicts.json"), "utf8")) as Record<string, unknown>;
+  expect(verdicts["drive-malformed:labels"]).toEqual(["lbl"]);
 });

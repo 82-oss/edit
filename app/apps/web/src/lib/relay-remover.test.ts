@@ -115,4 +115,66 @@ describe("relay RunPod finder jobs (remover.ts)", () => {
     expect(st.status).toBe(200);
     expect(await st.json()).toEqual({ ok: true, ask: 2, sheets: 1, seconds: 12 });
   });
+
+  it("never assigns find jobs to pre-find GPU pods and preserves shared deduplicated jobs until all callers cancel", async () => {
+    const storage = new MemStorage();
+    // Seed an already-running pre-find GPU pod (no canFind flag)
+    await storage.put("pods", {
+      "old-pod": { pool: "gpu", token: "old-tok", machine: "RTX 4090", cloud: "COMMUNITY", rentedAt: Date.now(), seenAt: Date.now(), jobs: [] },
+    });
+    const rented: { id: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "https://api.runpod.io/v2/pods" && init?.method === "POST") {
+        const id = `new-pod-${rented.length + 1}`;
+        rented.push({ id, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+        return Response.json({ id });
+      }
+      if (url === "https://api.runpod.io/v2/pods") {
+        return Response.json({ pods: [{ id: "old-pod", name: "edit-remover-gpu-old" }, ...rented.map((p) => ({ id: p.id, name: p.body.name }))] });
+      }
+      return Response.json({ ok: true });
+    });
+
+    const env: RemoverEnv = {
+      REMOVER: "pods",
+      RUNPOD_API_KEY: "test-key",
+      R2_ACCOUNT_ID: "acct",
+      R2_ACCESS_KEY_ID: "ak",
+      R2_SECRET_ACCESS_KEY: "sk",
+      R2_BUCKET: "bucket",
+    };
+    const pods = new RemoverPods({ storage: storage as never, blockConcurrencyWhile: (fn) => fn() }, env);
+
+    // Enqueue the same find job twice (two machines deduplicating via twin)
+    const req = {
+      kind: "find",
+      worker: '{"find.py":"print(1)"}',
+      request: { input: "edit/originals/drive/shared/v.mp4", spans: [[0, 60]] },
+      relay: "https://relay.example",
+      backlog: 0,
+    };
+    const r1 = await pods.fetch(new Request("https://remover/enqueue", { method: "POST", body: JSON.stringify({ id: "00000000-0000-4000-8000-000000000010", out: "edit/cleaned/work/s1.json", ...req }) }));
+    expect(r1.status).toBe(200);
+    const r2 = await pods.fetch(new Request("https://remover/enqueue", { method: "POST", body: JSON.stringify({ id: "00000000-0000-4000-8000-000000000011", out: "edit/cleaned/work/s2.json", ...req }) }));
+    expect(await r2.json()).toEqual({ ok: true, id: "00000000-0000-4000-8000-000000000010", out: "edit/cleaned/work/s1.json" });
+
+    // A fresh canFind GPU pod must have been rented even though old-pod was idle
+    expect(rented).toHaveLength(1);
+
+    // Old pod asking for work must NOT get the find job
+    const oldNext = (await (await pods.fetch(new Request("https://remover/pod/next", { method: "POST", body: JSON.stringify({ pod: "old-pod", token: "old-tok" }) }))).json()) as { job: unknown };
+    expect(oldNext.job).toBeNull();
+
+    // First caller cancels -> job stays queued because second caller is still subscribed
+    await pods.fetch(new Request("https://remover/cancel", { method: "POST", body: JSON.stringify({ id: "00000000-0000-4000-8000-000000000010" }) }));
+    const newTok = (rented[0]!.body.env as Record<string, string>).REMOVER_TOKEN!;
+    const newNext = (await (await pods.fetch(new Request("https://remover/pod/next", { method: "POST", body: JSON.stringify({ pod: "new-pod-1", token: newTok }) }))).json()) as { job: Record<string, unknown> };
+    expect(newNext.job.id).toBe("00000000-0000-4000-8000-000000000010");
+
+    // Finish job -> status includes shared: true so callers don't delete job.out out from under each other
+    await pods.fetch(new Request("https://remover/pod/done", { method: "POST", body: JSON.stringify({ pod: "new-pod-1", token: newTok, id: newNext.job.id, output: { ok: true, ask: 0, sheets: 0, seconds: 5 } }) }));
+    const st = await pods.fetch(new Request("https://remover/status", { method: "POST", body: JSON.stringify({ id: newNext.job.id }) }));
+    expect(await st.json()).toEqual({ ok: true, ask: 0, sheets: 0, seconds: 5, shared: true });
+  });
 });

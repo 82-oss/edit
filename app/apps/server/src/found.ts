@@ -29,7 +29,7 @@
 // locally where installed (Linux, an NVIDIA GPU, `~/.local/share/edit-finder/venv`);
 // elsewhere `available()` is false and removal goes on as before, by the agent's marks.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -333,7 +333,7 @@ export async function judge(scratchDir: string, ask: Asked[], sheets: string[], 
         },
       ],
     };
-    const scratch = join(scratchDir, `judge-${process.pid}-${Date.now()}-${at}.request`);
+    const scratch = join(scratchDir, `judge-${process.pid}-${Date.now()}-${at}-${randomUUID()}.request`);
     fs.mkdirSync(scratchDir, { recursive: true });
     fs.writeFileSync(scratch, JSON.stringify(request));
     try {
@@ -490,14 +490,34 @@ export interface FindPiece {
   why?: string;
 }
 
+interface ActiveRun {
+  source: string;
+  promise: Promise<void>;
+  watchers: Set<string>;
+  cancelled: boolean;
+}
+
 const pieces = new Map<string, Map<string, FindPiece>>();
-/** Files being read or waiting, by source: one read a file, whichever projects want it. */
-const reading = new Map<string, Promise<void>>();
-/** Projects currently waiting on each source (when the last one stops, a RunPod job for it is cancelled). */
-const watchers = new Map<string, Set<string>>();
-const stoppedSources = new Set<string>();
-const queue: { source: string; run: () => Promise<void> }[] = [];
+/** Non-cancelled runs currently queued or in progress, by source. */
+const reading = new Map<string, ActiveRun>();
+/** All unsettled runs (including cancelled ones still finishing cleanup/DELETE). */
+const inFlight = new Set<Promise<void>>();
+const queue: { run: () => Promise<void> }[] = [];
 let running = 0;
+
+/** Serializes local GPU `find.py` invocations to 1 at a time even when RunPod is on and 6 cloud slots are open. */
+let localChain: Promise<void> = Promise.resolve();
+async function withLocalGpu<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = localChain;
+  let release!: () => void;
+  localChain = new Promise<void>((resolve) => (release = resolve));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 /** Called with a file's source when its boxes are written (text_blur.ts lets go of the tracks it made from the old ones). */
 export const whenRead: ((source: string) => void)[] = [];
@@ -512,11 +532,12 @@ export const outOf = (id: string): number => piecesOf(id).filter((one) => one.st
 /** Stops finder work for project `id`: cancels queued/running RunPod jobs nobody else waits on. */
 export function stop(id: string): void {
   pieces.delete(id);
-  for (const [source, projects] of watchers) {
-    projects.delete(id);
-    if (projects.size === 0) {
-      watchers.delete(source);
-      stoppedSources.add(source);
+  for (const [source, active] of reading) {
+    active.watchers.delete(id);
+    if (active.watchers.size === 0) {
+      active.cancelled = true;
+      // Detach immediately so any new `ensure` for this source starts a fresh run instead of joining the dying one.
+      reading.delete(source);
     }
   }
 }
@@ -548,11 +569,11 @@ async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null>
     const answer = await fetch(await cloud.presign(cloudKeyOf(source), "GET"), { signal: AbortSignal.timeout(30_000) });
     if (!answer.ok) return null;
     const raw = (await answer.json()) as Partial<CloudFoundRecord> & Partial<Found>;
-    // Accept either { found, parentState } or a bare Found record.
-    if (raw.found !== undefined && raw.found.version === VERSION && Array.isArray(raw.found.masks)) {
+    // Accept either { found, parentState } or a bare Found record; require `covered` array so malformed records miss cleanly.
+    if (raw.found !== undefined && raw.found.version === VERSION && Array.isArray(raw.found.masks) && Array.isArray(raw.found.covered)) {
       return { found: raw.found, parentState: raw.parentState };
     }
-    if (raw.version === VERSION && Array.isArray(raw.masks)) {
+    if (raw.version === VERSION && Array.isArray(raw.masks) && Array.isArray(raw.covered)) {
       return { found: raw as Found };
     }
     return null;
@@ -572,18 +593,51 @@ async function saveCloudFound(source: string, found: Found, parentState: ParentS
   }
 }
 
+function writeLocalParentSidecar(app: App, source: string, parentState: ParentState): void {
+  const pfile = parentFileOf(app, source);
+  fs.mkdirSync(path.dirname(pfile), { recursive: true });
+  fs.writeFileSync(`${pfile}.tmp`, JSON.stringify(parentState));
+  fs.renameSync(`${pfile}.tmp`, pfile);
+}
+
 function writeLocalFound(app: App, source: string, found: Found, parentState: ParentState | null): void {
   const file = fileOf(app, source);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(found));
   fs.renameSync(`${file}.tmp`, file);
-  if (parentState !== null) {
-    const pfile = parentFileOf(app, source);
-    fs.writeFileSync(`${pfile}.tmp`, JSON.stringify(parentState));
-    fs.renameSync(`${pfile}.tmp`, pfile);
-  }
+  if (parentState !== null) writeLocalParentSidecar(app, source, parentState);
   kept.set(source, found);
   for (const listener of whenRead) listener(source);
+}
+
+/**
+ * Materializes `<cache>/cleaned/finder/f/scan/<mid>.*` and `f/verdicts.json` from a saved `ParentState`
+ * so a local `find.py survey --parent` run can use a parent that was scanned on RunPod.
+ */
+export function writeLocalParentScanFiles(app: App, source: string, state: ParentState): void {
+  const root = join(app.store.cacheDir(), "cleaned", "finder", "f");
+  const scanDir = join(root, "scan");
+  const mid = slug(source);
+  fs.mkdirSync(scanDir, { recursive: true });
+  const writeJson = (file: string, value: unknown) => {
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(value));
+    fs.renameSync(`${file}.tmp`, file);
+  };
+  writeJson(join(scanDir, `${mid}.zone.json`), state.zone);
+  writeJson(join(scanDir, `${mid}.marks.json`), state.marks);
+  writeJson(join(scanDir, `${mid}.notes.json`), state.notes);
+  writeJson(join(scanDir, `${mid}.cands.json`), state.cands);
+  if (state.roamExt !== undefined && state.roamExt !== null) writeJson(join(scanDir, `${mid}.roam.ext.json`), state.roamExt);
+  const verdictsFile = join(root, "verdicts.json");
+  let all: Record<string, unknown> = {};
+  try {
+    all = JSON.parse(fs.readFileSync(verdictsFile, "utf8")) as Record<string, unknown>;
+  } catch {
+    all = {};
+  }
+  all[mid] = state.verdicts?.yes ?? [];
+  all[`${mid}:labels`] = state.verdicts?.labels ?? [];
+  writeJson(verdictsFile, all);
 }
 
 function readLocalParentState(app: App, source: string): ParentState | null {
@@ -627,21 +681,27 @@ async function resolveParentState(app: App, parent: { media: Media; source: stri
   if (local !== null) return local;
   const remote = await fetchCloudFound(parent.source);
   if (remote?.parentState !== undefined) {
-    writeLocalFound(app, parent.source, remote.found, remote.parentState);
+    // Never overwrite a wider local Found record with a narrower remote one.
+    const existing = foundOf(app, parent.source);
+    if (existing !== null && !covers(remote.found, existing.covered)) writeLocalParentSidecar(app, parent.source, remote.parentState);
+    else writeLocalFound(app, parent.source, remote.found, remote.parentState);
     return remote.parentState;
   }
+  if (stopped()) throw new Error("stopped");
   // Parent was read earlier without saved parent state (e.g., an older local build): scan parent on RunPod now.
   const key = removerCloud.keyOf(parent.media);
   if (key === undefined) throw new Error("the file it was slowed from isn't in the cloud yet");
   const existing = foundOf(app, parent.source);
   const spans: [number, number][] = existing !== null && existing.covered.length > 0 ? existing.covered : [[0, parent.media.duration ?? 0]];
   const bundle = await removerCloud.find<SurveyBundle>(key, spans, scriptsJson(), null, stopped);
+  if (stopped()) throw new Error("stopped");
   const verdicts = await judgeHooks
     .judge(join(app.store.cacheDir(), "cleaned", "finder", "judge"), bundle.ask, [], bundle.sheetsB64)
     .catch((error: unknown) => {
       diag.warn("removal", `${parent.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
       return {} as Record<string, Verdict>;
     });
+  if (stopped()) throw new Error("stopped");
   const { found: parentFound, parentVerdicts } = finishSurvey(bundle, verdicts);
   const pstate: ParentState | null = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: parentVerdicts };
   writeLocalFound(app, parent.source, parentFound, pstate);
@@ -723,43 +783,60 @@ async function find(app: App, want: Want, stopped: () => boolean): Promise<void>
         let parentKey: string | null = null;
         if (want.parent !== null) {
           const pstate = await resolveParentState(app, want.parent, stopped);
+          if (stopped()) throw new Error("stopped");
           parentKey = await removerCloud.parentStateKey(JSON.stringify(pstate));
         }
+        if (stopped()) throw new Error("stopped");
         const bundle = await removerCloud.find<SurveyBundle>(key, spansToScan, scriptsJson(), parentKey, stopped);
         if (stopped()) throw new Error("stopped");
         const verdicts = await judgeHooks.judge(join(root, "judge"), bundle.ask, [], bundle.sheetsB64).catch((error: unknown) => {
           diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
           return {} as Record<string, Verdict>;
         });
+        if (stopped()) throw new Error("stopped");
         const finished = finishSurvey(bundle, verdicts);
         found = finished.found;
         parentState = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: finished.parentVerdicts };
       } else if (localAvailable()) {
-        const { file, fetched } = await localFile(app, want.media);
-        try {
-          fs.mkdirSync(root, { recursive: true });
-          const spans = join(root, `${mid}.spans.json`);
-          fs.writeFileSync(spans, JSON.stringify(spansToScan));
-          const asked = (await python(app, ["survey", root, mid, file, spans, ...(parent === null ? [] : ["--parent", parent])])) as { ask: Asked[]; sheets: string[] };
-          // A judge that can't be reached leaves every answer "unclear": a label stays theirs, a one-off stays in.
-          const verdicts = await judgeHooks.judge(join(root, "judge"), asked.ask, asked.sheets).catch((error: unknown) => {
-            diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
-            return {} as Record<string, Verdict>;
-          });
-          const answers = join(root, `${mid}.verdicts.json`);
-          fs.writeFileSync(answers, JSON.stringify(verdicts));
-          const done = (await python(app, ["finish", root, mid, answers, ...(parent === null ? [] : ["--parent", parent])])) as { found: string };
-          found = JSON.parse(fs.readFileSync(done.found, "utf8")) as Found;
-          if (parent === null) parentState = readLocalParentState(app, want.source);
-          fs.rmSync(spans, { force: true });
-        } finally {
-          if (fetched) fs.rmSync(file, { force: true });
-        }
+        // Always serialize local GPU runs to 1 at a time even when RunPod is enabled with 6 cloud slots.
+        const localResult = await withLocalGpu(async () => {
+          if (stopped()) throw new Error("stopped");
+          if (want.parent !== null && !fs.existsSync(join(root, "f", "scan", `${parent}.zone.json`))) {
+            const pstate = readLocalParentState(app, want.parent.source) ?? (await fetchCloudFound(want.parent.source))?.parentState ?? null;
+            if (pstate !== null) writeLocalParentScanFiles(app, want.parent.source, pstate);
+          }
+          const { file, fetched } = await localFile(app, want.media);
+          try {
+            fs.mkdirSync(root, { recursive: true });
+            const spans = join(root, `${mid}.spans.json`);
+            fs.writeFileSync(spans, JSON.stringify(spansToScan));
+            const asked = (await python(app, ["survey", root, mid, file, spans, ...(parent === null ? [] : ["--parent", parent])])) as { ask: Asked[]; sheets: string[] };
+            if (stopped()) throw new Error("stopped");
+            // A judge that can't be reached leaves every answer "unclear": a label stays theirs, a one-off stays in.
+            const verdicts = await judgeHooks.judge(join(root, "judge"), asked.ask, asked.sheets).catch((error: unknown) => {
+              diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
+              return {} as Record<string, Verdict>;
+            });
+            if (stopped()) throw new Error("stopped");
+            const answers = join(root, `${mid}.verdicts.json`);
+            fs.writeFileSync(answers, JSON.stringify(verdicts));
+            const done = (await python(app, ["finish", root, mid, answers, ...(parent === null ? [] : ["--parent", parent])])) as { found: string };
+            const parsed = JSON.parse(fs.readFileSync(done.found, "utf8")) as Found;
+            const pstate = parent === null ? readLocalParentState(app, want.source) : null;
+            fs.rmSync(spans, { force: true });
+            return { found: parsed, parentState: pstate };
+          } finally {
+            if (fetched) fs.rmSync(file, { force: true });
+          }
+        });
+        found = localResult.found;
+        parentState = localResult.parentState;
       } else {
         throw new Error("the file isn't in the cloud yet");
       }
     }
   }
+  if (stopped()) throw new Error("stopped");
   writeLocalFound(app, want.source, found, parentState);
   if (!fromCloudCache && standIn === null) await saveCloudFound(want.source, found, parentState);
   const kinds = new Map<string, number>();
@@ -783,8 +860,9 @@ export function ensure(app: App, id: string, wants: Want[]): void {
       mine.set(key, { key, media: want.media.id, name: want.media.name, state: "done" });
       continue;
     }
-    // On a machine without a local finder (e.g. a Mac), wait quietly if the original isn't on R2 yet rather than failing permanently.
-    if (standIn === null && !localAvailable() && removerCloud.keyOf(want.media) === undefined) continue;
+    // On a machine without a local finder (e.g. a Mac), wait quietly if this file or its un-scanned parent isn't on R2 yet.
+    const parentWaitingUpload = want.parent !== null && foundOf(app, want.parent.source) === null && removerCloud.keyOf(want.parent.media) === undefined;
+    if (standIn === null && !localAvailable() && (removerCloud.keyOf(want.media) === undefined || parentWaitingUpload)) continue;
     const had = was?.get(key);
     if (had !== undefined && had.state === "failed") {
       mine.set(key, had);
@@ -792,32 +870,32 @@ export function ensure(app: App, id: string, wants: Want[]): void {
     }
     const piece: FindPiece = had !== undefined && had.state !== "done" ? had : { key, media: want.media.id, name: want.media.name, state: "queued" };
     mine.set(key, piece);
-    stoppedSources.delete(want.source);
-    let set = watchers.get(want.source);
-    if (set === undefined) {
-      set = new Set();
-      watchers.set(want.source, set);
-    }
-    set.add(id);
-    let run = reading.get(want.source);
-    if (run === undefined) {
+    let active = reading.get(want.source);
+    if (active !== undefined) {
+      active.watchers.add(id);
+    } else {
       // Everything of the file any project showed before is looked at again with what's shown now (one file of boxes a source).
       const shown = merged([...(found?.covered ?? []), ...want.shown]);
       let settle!: () => void;
-      run = new Promise<void>((resolve) => (settle = resolve));
+      const promise = new Promise<void>((resolve) => (settle = resolve));
+      const run: ActiveRun = { source: want.source, promise, watchers: new Set([id]), cancelled: false };
+      active = run;
       reading.set(want.source, run);
+      inFlight.add(promise);
       let failWhy: string | undefined;
       queue.push({
-        source: want.source,
         run: async () => {
-          const isStopped = () => stoppedSources.has(want.source);
+          const isStopped = () => run.cancelled;
           try {
             if (isStopped()) return;
             for (const projPieces of pieces.values()) {
               for (const p of projPieces.values()) if (p.media === want.media.id && p.state === "queued") p.state = "running";
             }
             // Its parent's read, when that's under way.
-            if (want.parent !== null) await reading.get(want.parent.source);
+            if (want.parent !== null) {
+              const parentRun = reading.get(want.parent.source);
+              if (parentRun !== undefined) await parentRun.promise;
+            }
             if (isStopped()) return;
             if (want.parent !== null && foundOf(app, want.parent.source) === null) throw new Error("the file it was slowed from couldn't be read");
             await find(app, { ...want, shown }, isStopped);
@@ -825,18 +903,20 @@ export function ensure(app: App, id: string, wants: Want[]): void {
             failWhy = diag.messageOf(error);
             if (!isStopped()) diag.warn("removal", `${want.media.name}: finder failed: ${failWhy}`);
           } finally {
-            reading.delete(want.source);
-            watchers.delete(want.source);
-            stoppedSources.delete(want.source);
-            if (failWhy !== undefined) lastError.set(want.source, failWhy);
-            else lastError.delete(want.source);
+            if (reading.get(want.source) === run) reading.delete(want.source);
+            inFlight.delete(promise);
+            if (!isStopped()) {
+              if (failWhy !== undefined) lastError.set(want.source, failWhy);
+              else lastError.delete(want.source);
+            }
             settle();
           }
         },
       });
     }
-    void run.then(() => {
-      if (!pieces.has(id)) return;
+    const joined = active;
+    void joined.promise.then(() => {
+      if (joined.cancelled || !pieces.has(id)) return;
       const now = foundOf(app, want.source);
       piece.state = now !== null && covers(now, want.shown) ? "done" : "failed";
       if (piece.state === "failed") piece.why = lastError.get(want.source) ?? "the file couldn't be read for what's laid over it";
@@ -857,8 +937,7 @@ export function reset(): void {
   pieces.clear();
   kept.clear();
   reading.clear();
-  watchers.clear();
-  stoppedSources.clear();
+  inFlight.clear();
   lastError.clear();
   queue.length = 0;
   availableHere = null;
@@ -866,8 +945,8 @@ export function reset(): void {
 
 /** Resolves once nothing is being read (tests). */
 export async function settled(): Promise<void> {
-  while (running > 0 || queue.length > 0 || reading.size > 0) {
-    if (reading.size > 0) await Promise.all(reading.values());
+  while (running > 0 || queue.length > 0 || reading.size > 0 || inFlight.size > 0) {
+    if (inFlight.size > 0) await Promise.all([...inFlight]);
     else await Bun.sleep(5);
   }
 }
