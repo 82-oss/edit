@@ -266,8 +266,42 @@ def mask_frame(frame_rgb, boxes, y0, scale):
             py = PAD_Y * scale + 0.15 * line
         a, b = max(0, int(bx0 - px)), min(bw, int(math.ceil(bx1 + px)))
         c, d = max(0, int(by0 - y0 - py)), min(bh, int(math.ceil(by1 - y0 + py)))
-        m[c:d, a:b] = 255
+        m[c:d, a:b] = letters_of(frame_rgb, a, b, c, d, scale) if line <= LETTERS_UNDER * scale else 255
     return m
+
+
+# A caption's box up to this tall (at 1080 lines) is cut down to its letters; a taller one is a logo, kept whole.
+LETTERS_UNDER = 170
+# Letters that fill less of their box than this weren't found (a caption fading in or out, or none there): the box whole.
+LETTERS_LEAST = 0.03
+
+
+def letters_of(frame_rgb, a, b, c, d, scale):
+    """The mask of one box cut down to the letters in it, grown to take their outline, shadow and glow (255 = theirs).
+    The model repaints at about half the picture's size, so a solid box comes back as a soft patch the size of the box
+    (Sphe, Nov 23: "a lot of things where we fall back to a blur", which were its cleans); round thin strokes the
+    picture's own pixels stay. A letter is what stands out from the picture with its fine detail taken off (a median
+    wider than a stroke), or a bold colour. Fine detail of the picture inside the box goes with them, which costs
+    nothing; with next to nothing found the whole box is kept."""
+    import cv2
+
+    bh, bw = frame_rgb.shape[:2]
+    if b - a < 4 or d - c < 4:
+        return 255
+    reach = int(40 * scale)
+    A, B, C, D = max(0, a - reach), min(bw, b + reach), max(0, c - reach), min(bh, d + reach)
+    lab = cv2.cvtColor(np.ascontiguousarray(frame_rgb[C:D, A:B]), cv2.COLOR_RGB2LAB)
+    flat = cv2.medianBlur(lab, int(41 * scale) | 1)
+    apart = np.abs(lab.astype(np.int16) - flat.astype(np.int16))
+    hsv = cv2.cvtColor(np.ascontiguousarray(frame_rgb[C:D, A:B]), cv2.COLOR_RGB2HSV)
+    core = ((apart[..., 0] * 0.6 + apart[..., 1] + apart[..., 2] > 26) | ((hsv[..., 1] > 110) & (hsv[..., 2] > 100))).astype(np.uint8)
+    core = cv2.morphologyEx(core, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    inside = core[c - C:d - C, a - A:b - A]
+    if inside.mean() < LETTERS_LEAST:
+        return 255
+    grow = int(9 * scale) * 2 + 1
+    grown = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow)))
+    return grown[c - C:d - C, a - A:b - A] * 255
 
 
 def alpha_of(mask, feather=FEATHER):
@@ -520,7 +554,7 @@ def clean(model, req, progress=lambda done, total: None):
                     strip.write(None, None)
                 else:
                     picture = cv2.resize(out[i], (width, bh), interpolation=cv2.INTER_CUBIC)
-                    feather = max(FEATHER, int(round(10 * scale))) if any((b[3] - b[1]) > 95 * scale for b in eff_boxes[i]) else FEATHER
+                    feather = max(FEATHER, int(round(10 * scale))) if any((b[3] - b[1]) > LETTERS_UNDER * scale for b in eff_boxes[i]) else FEATHER
                     alpha = alpha_of(m, feather)
                     # The original outside the mask (premultiplied, so only what's inside counts).
                     strip.write(picture, alpha)
