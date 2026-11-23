@@ -313,7 +313,18 @@ def letters_of(frame_rgb, a, b, c, d, scale):
         return 255
     core = cv2.morphologyEx(core, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     grow = int(9 * scale) * 2 + 1
-    return cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow))) * 255
+    grown = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow)))
+    # Their soft shadow reaches further than that (Nov 23, Boyfriends' second case: pale letters with a wide dark
+    # glow came out with the glow left behind, a row of dark smudges the shape of the words). Round the letters, what
+    # is darker than the picture with its fine detail taken off is their shadow, and goes too.
+    reach = int(30 * scale) * 2 + 1
+    near = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (reach, reach)))
+    flat = cv2.medianBlur(val, int(61 * scale) | 1)
+    shadow = ((flat.astype(np.int16) - val.astype(np.int16) > 10) & (near > 0)).astype(np.uint8)
+    shadow = cv2.morphologyEx(shadow, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    edge = int(4 * scale) * 2 + 1
+    shadow = cv2.dilate(shadow, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge, edge)))
+    return np.maximum(grown, shadow) * 255
 
 
 def alpha_of(mask, feather=FEATHER):
