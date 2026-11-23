@@ -8,15 +8,21 @@ def find(tag,mid,T=18):
     Z=json.load(open(f'{tag}/scan/{mid}.zone.json'))
     z=np.load(f'{tag}/scan/{mid}.thumbs.npz'); th={int(f):t.astype(np.int16) for f,t in zip(z['f'],z['t'])}
     def instamp(b): return any(b[0]>=s[0]-60 and b[2]<=s[2]+60 and b[1]>=s[1]-12 and b[3]<=s[3]+12 for s in Z['stamps'])
+    # A two-letter word counts only where it stays in one place for a good part of the file: a channel's initials (Nov 23,
+    # "RC" in red in the middle of an interrogation room, read in 4,930 of 5,000 looks and dropped for being short).
+    short=collections.Counter()
+    for r in rows:
+        short.update({(re.sub(r'[^a-z0-9]','',L[4].lower()),L[0]//24,L[1]//24) for L in r['lines'] if L[5]>=0.5 and len(re.sub(r'[^a-z0-9]','',L[4].lower()))==2})
+    initials={k for (k,_,_),n in short.items() if n>=max(30,0.3*len(rows))}
     words=collections.defaultdict(list)
     for r in rows:
         for L in r['lines']:
             k=re.sub(r'[^a-z0-9]','',L[4].lower())
-            if len(k)>=3 and L[5]>=0.5 and not STAMP.search(L[4]) and not AXON.search(L[4]) and not instamp(L): words[k].append((r['f'],L))
+            if (len(k)>=3 or k in initials) and L[5]>=0.5 and not STAMP.search(L[4]) and not AXON.search(L[4]) and not instamp(L): words[k].append((r['f'],L))
     gs=[]
     for k in sorted(words,key=lambda k:-len(words[k])):
         for g in gs:
-            if difflib.SequenceMatcher(None,k,g['key']).ratio()>0.7: g['v']+=words[k]; break
+            if (k==g['key'] if min(len(k),len(g['key']))<3 else difflib.SequenceMatcher(None,k,g['key']).ratio()>0.7): g['v']+=words[k]; break
         else:
             if len(gs)<300: gs.append({'key':k,'v':list(words[k])})
     out=[]
