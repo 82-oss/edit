@@ -5,7 +5,9 @@ import fs from "node:fs";
 import { join } from "node:path";
 
 import * as devtools from "../src/chrome_devtools.ts";
+import { beneathKey } from "../src/effect_inputs.ts";
 import * as effects from "../src/effects.ts";
+import type { Media, Project } from "../src/model.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 const opening = spyOn(devtools, "open");
@@ -53,3 +55,71 @@ test("a render whose code changed and came back to the same version is drawn aga
     cleanup();
   }
 }, 30_000);
+
+// ---------------------------------------------------------------------------
+// What's beneath a graphic is keyed by what the graphics below it are.
+
+function stack(): Project {
+  const track = (id: string) => ({ id, kind: "video", name: id, hidden: false, muted: false, locked: false });
+  const clip = (id: string, on: string, media: string, start: number, duration: number) => ({ id, type: "video", track: on, start, duration, media, source_in: 0, speed: 1 });
+  const media = (id: string, effect?: string) => ({ id, name: id, path: `/here/${id}.mp4`, kind: "video", duration: 60, width: 1920, height: 1080, fps: 30, has_audio: false, ...(effect === undefined ? {} : { effect, effect_key: `render-of-${effect}` }) });
+  return {
+    id: "p",
+    settings: { width: 1920, height: 1080, fps: 30 },
+    tracks: [track("t1"), track("t2"), track("t3")],
+    media: [media("footage"), media("m-low", "low"), media("m-top", "top")],
+    clips: [clip("c0", "t1", "footage", 0, 900), clip("c1", "t2", "m-low", 0, 300), clip("c2", "t3", "m-top", 0, 300)],
+  } as unknown as Project;
+}
+
+const codes = (low: string) => (name: string) => (name === "low" ? low : `code-of-${name}`);
+const lowOf = (project: Project) => project.media.find((one) => one.id === "m-low")!;
+
+test("what's beneath a graphic keeps its key when the one below it gets a new media, goes up to the cloud or sits on its placeholder", () => {
+  const before = stack();
+  const key = beneathKey(before, "top", codes("v1"));
+  expect(key).not.toBeNull();
+
+  // The same graphic as a new media.
+  const renamed = structuredClone(before);
+  lowOf(renamed).id = "m-low-2";
+  (renamed.clips.find((one) => one.id === "c1") as unknown as { media: string }).media = "m-low-2";
+  expect(beneathKey(renamed, "top", codes("v1"))).toBe(key);
+
+  // Its render's upload lands: a cloud source where there was a path.
+  const uploaded = structuredClone(before);
+  lowOf(uploaded).cloud = { source: "sha256:0123456789abcdef" } as NonNullable<Media["cloud"]>;
+  expect(beneathKey(uploaded, "top", codes("v1"))).toBe(key);
+
+  // Back on its clear still while it's drawn again, then its render of the same code.
+  const placeholder = structuredClone(before);
+  lowOf(placeholder).path = "/here/effect-stills/low.clear.png";
+  lowOf(placeholder).kind = "image";
+  delete lowOf(placeholder).effect_key;
+  expect(beneathKey(placeholder, "top", codes("v1"))).toBe(key);
+
+  // Its code changing is what changes it.
+  expect(beneathKey(before, "top", codes("v2"))).not.toBe(key);
+  // And so does the footage under them.
+  const recut = structuredClone(before);
+  recut.clips.find((one) => one.id === "c0")!.start = 5;
+  expect(beneathKey(recut, "top", codes("v1"))).not.toBe(key);
+});
+
+test("two graphics over each other's clips count each other without what's beneath them, so neither changes the other's key for ever", () => {
+  const crossed = stack();
+  // A second clip of the top graphic, under the low one.
+  crossed.clips.push({ ...structuredClone(crossed.clips.find((one) => one.id === "c2")!), id: "c3", track: "t1", start: 0, duration: 300 } as (typeof crossed.clips)[number]);
+  const asked: [string, boolean][] = [];
+  beneathKey(crossed, "low", (name, whole) => {
+    asked.push([name, whole]);
+    return "code";
+  });
+  expect(asked).toEqual([["top", false]]);
+});
+
+test("graphics are taken lowest lane first, whatever order their media are in", () => {
+  const project = stack();
+  project.media.reverse();
+  expect(effects.lowestFirst(project)).toEqual(["low", "top"]);
+});

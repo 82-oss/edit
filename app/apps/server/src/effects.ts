@@ -273,6 +273,23 @@ function keyOf(store: Store, project: string, dir: string, frame: { width: numbe
   return codeKey(codeIn(dir), frame, fontsUsed(store, project, dir));
 }
 
+/**
+ * Effect `name`'s version as it is here, for the key of what's beneath the graphics above it (effect_inputs.ts): `whole`
+ * false leaves out its own mark of what's beneath it. Null when its code isn't on this computer.
+ */
+export function codeNow(store: Store, project: string, name: string, whole = true): string | null {
+  const live = store.get(project);
+  if (live === null) return null;
+  try {
+    const dir = folder(store, project, name);
+    if (!fs.existsSync(join(dir, ENTRY))) return null;
+    const code = codeIn(dir).filter((file) => whole || file.path !== BENEATH_MARK);
+    return codeKey(code, frameOf(live.project), fontsUsed(store, project, dir));
+  } catch {
+    return null;
+  }
+}
+
 /** The fonts beyond Edit's own an effect's page names (fonts.ts), for its key: one changed or added re-renders only what uses it. */
 function fontsUsed(store: Store, project: string, dir: string): string {
   let code = "";
@@ -1544,6 +1561,85 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
   return { media: id, duration: probe.duration };
 }
 
+/** What an effect's folder says of the picture beneath it (effect_inputs.ts): an effect with one is drawn over what's below it. */
+export const BENEATH_MARK = ".beneath.json";
+
+/** The first clip of effect `name`, as what's beneath it is read (effect_inputs.ts `under`). */
+function clipOf(project: Project, name: string): { track: string; start: number; duration: number } | undefined {
+  const media = project.media.find((one) => one.effect === name);
+  return media === undefined ? undefined : project.clips.find((one) => one.type === "video" && one.media === media.id);
+}
+
+/** The other graphics on the lanes below effect `name`'s clip, within its span: what its picture of what's beneath shows. */
+function graphicsBelow(project: Project, name: string): string[] {
+  const clip = clipOf(project, name);
+  if (clip === undefined) return [];
+  const order = project.tracks.filter((one) => one.kind === "video").map((one) => one.id);
+  const below = new Set(order.slice(0, Math.max(0, order.indexOf(clip.track))));
+  // By id: a two-hour edit has thousands of clips, and this is asked of each graphic on the server's thread.
+  const graphics = new Map(project.media.filter((one) => typeof one.effect === "string").map((one) => [one.id, one.effect as string]));
+  const found = new Set<string>();
+  for (const one of project.clips) {
+    if (one.type !== "video" || !below.has(one.track) || one.start >= clip.start + clip.duration || one.start + one.duration <= clip.start) continue;
+    const effect = graphics.get(one.media);
+    if (effect !== undefined && effect !== name) found.add(effect);
+  }
+  return [...found];
+}
+
+/** The project's graphics, those on the lowest lanes first: each is drawn over the ones before it. */
+export function lowestFirst(project: Project): string[] {
+  const order = project.tracks.filter((one) => one.kind === "video").map((one) => one.id);
+  const lane = (name: string) => {
+    const clip = clipOf(project, name);
+    return clip === undefined ? -1 : order.indexOf(clip.track);
+  };
+  return onTimeline(project)
+    .map((name) => ({ name, lane: lane(name) }))
+    .sort((a, b) => a.lane - b.lane)
+    .map((one) => one.name);
+}
+
+/** Whether effect `name` draws what's beneath it. */
+function drawsBeneath(store: Store, project: string, name: string): boolean {
+  try {
+    return fs.existsSync(join(folder(store, project, name), BENEATH_MARK));
+  } catch {
+    return false;
+  }
+}
+
+/** The graphics below effect `name` whose render isn't of their code here yet: until they land, what's beneath it isn't what it will be. */
+export function belowNotDrawn(store: Store, project: string, name: string): string[] {
+  const live = store.get(project);
+  if (live === null) return [];
+  const below = new Set(graphicsBelow(live.project, name));
+  if (below.size === 0) return [];
+  return needed(store, project)
+    .filter((effect) => below.has(effect.name) && !effect.fresh && effect.current !== null)
+    .map((effect) => effect.name);
+}
+
+/**
+ * Of the graphics to draw (`todo`), those to start now, lowest lane first: one drawn over a graphic still to land waits
+ * for it, so it's drawn once, over the finished picture. A graphic below that failed holds nothing up, and if they
+ * all wait on each other (clips laid across each other's lanes) they all start.
+ */
+function startable<T extends { name: string; current: Effect | null }>(store: Store, project: string, todo: T[]): T[] {
+  const live = store.get(project);
+  if (live === null) return todo;
+  const coming = new Set(todo.filter((effect) => effect.current !== null && failureOf(id(project, effect.name, effect.current.key)) === undefined).map((effect) => effect.name));
+  const ready = todo.filter((effect) => !drawsBeneath(store, project, effect.name) || !graphicsBelow(live.project, effect.name).some((below) => coming.has(below)));
+  const order = lowestFirst(live.project);
+  return (ready.length > 0 ? ready : todo).slice().sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+}
+
+/** Whether a graphic above effect `name` is drawn over it: one `startable` holds back until this one has landed or failed. */
+function drawnOver(app: App, project: string, name: string): boolean {
+  const now = app.store.get(project)?.project;
+  return now !== undefined && onTimeline(now).some((other) => other !== name && drawsBeneath(app.store, project, other) && graphicsBelow(now, other).includes(name));
+}
+
 /** The effects a project's timeline shows, by the clips of their media. */
 export function onTimeline(project: Project): string[] {
   const names: string[] = [];
@@ -2040,6 +2136,8 @@ export function renderNow(app: App, project: string, name: string): Promise<void
         const again = setTimeout(() => renderSoon(app, project), until - now + 1_000);
         again.unref?.();
       }
+      // Its code's to fix, and nothing starts it again: the graphic held back for it goes on over what's there.
+      else if (drawnOver(app, project, name)) renderSoon(app, project);
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
       throw new Error(told);
     })
@@ -2164,6 +2262,8 @@ async function place(app: App, render: Render): Promise<void> {
   }
   if (before !== null) effectCloud.replaced(app.store.home, project, name, before);
   prune(app.store, project, name, out);
+  // A graphic drawn over this one can go now: its picture of what's beneath is made from this render, then it's drawn.
+  if (drawnOver(app, project, name)) renderSoon(app, project);
   // Its own preview: no copy of it made to seek in (see the encode above).
   app.media.ensure(out, probe, true);
   try {
@@ -2735,8 +2835,7 @@ function prepareAndRender(app: App, project: string): void {
       // Drawn by itself only where the project is being edited: its render is written into the project (an export asked
       // for here waits for it all the same, `waitForRenders`).
       if (!editingHere(app, project)) return;
-      for (const effect of needed(app.store, project)) {
-        if (effect.fresh || effect.current === null) continue;
+      for (const effect of startable(app.store, project, needed(app.store, project).filter((one) => !one.fresh && one.current !== null))) {
         renderNow(app, project, effect.name).catch(() => {});
       }
     })
@@ -2833,37 +2932,50 @@ async function preparedFor(work: Promise<void>, limitMs: number, signal?: AbortS
  */
 export async function waitForRenders(app: App, project: string, limitMs: number, signal?: AbortSignal): Promise<void> {
   const until = Date.now() + limitMs;
-  await preparedFor(readyToRender(app, project), limitMs, signal);
   // Every render it waits on is waited on from now (render_turns.ts: it goes ahead of renders nobody waits on, another
   // project's long one giving way at its next chunk), started now if it isn't under way.
-  const waits: { effect: ReturnType<typeof needed>[number]; done: Promise<void> }[] = [];
   const held: (() => void)[] = [];
   let abortWait = () => {};
+  // Its asker's Cancel (a share's) ends the wait, and lets go of the renders it put ahead of others (the Nov 21 audit).
+  const aborted = new Promise<"cancelled">((resolve) => {
+    abortWait = () => resolve("cancelled");
+    if (signal?.aborted === true) abortWait();
+    else signal?.addEventListener("abort", abortWait, { once: true });
+  });
   try {
-    for (const effect of needed(app.store, project)) {
-      if (effect.fresh) continue;
-      if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);
-      held.push(waitOn(project, effect.name));
-      const done = renderNow(app, project, effect.name);
-      // Said when its turn in the loop below comes; one failing before then isn't a rejection nobody heard.
-      done.catch(() => {});
-      waits.push({ effect, done });
-    }
-    // Its asker's Cancel (a share's) ends the wait, and lets go of the renders it put ahead of others (the Nov 21 audit).
-    const aborted = new Promise<"cancelled">((resolve) => {
-      abortWait = () => resolve("cancelled");
-      if (signal?.aborted === true) abortWait();
-      else signal?.addEventListener("abort", abortWait, { once: true });
-    });
-    for (const { effect, done } of waits) {
-      const left = until - Date.now();
-      const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true), aborted]);
-      if (timedOut === "cancelled") throw new Error("cancelled while waiting for its graphics");
-      if (timedOut) {
-        const state = renderState(project, effect.name, effect.current!.key);
-        if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
-        throw new Error(`The ${effect.name} effect is still rendering${state !== null && state.startsWith("rendering,") ? ` (${state.slice("rendering, ".length)})` : ""}: export again in a minute or two.`);
+    // In rounds, lowest lane first: a graphic drawn over another starts once that one has landed (`startable`), its
+    // picture of what's beneath made then. A round for each graphic at most, and what's still not drawn then is refused
+    // by the export itself (`notReady`).
+    const rounds = needed(app.store, project).length + 2;
+    for (let round = 0; round < rounds; round++) {
+      await preparedFor(readyToRender(app, project), limitMs, signal);
+      const todo = needed(app.store, project).filter((effect) => !effect.fresh);
+      if (todo.length === 0) return;
+      for (const effect of todo) {
+        if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);
       }
+      // Those that only now need drawing (one over a graphic that has just landed) are on its steps too.
+      const noted = waitedOn.get(project);
+      if (noted !== undefined) for (const effect of todo) if (!noted.includes(effect.name)) noted.push(effect.name);
+      const waits: { effect: (typeof todo)[number]; done: Promise<void> }[] = [];
+      for (const effect of startable(app.store, project, todo)) {
+        held.push(waitOn(project, effect.name));
+        const done = renderNow(app, project, effect.name);
+        // Said when its turn in the loop below comes; one failing before then isn't a rejection nobody heard.
+        done.catch(() => {});
+        waits.push({ effect, done });
+      }
+      for (const { effect, done } of waits) {
+        const left = until - Date.now();
+        const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true), aborted]);
+        if (timedOut === "cancelled") throw new Error("cancelled while waiting for its graphics");
+        if (timedOut) {
+          const state = renderState(project, effect.name, effect.current!.key);
+          if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
+          throw new Error(`The ${effect.name} effect is still rendering${state !== null && state.startsWith("rendering,") ? ` (${state.slice("rendering, ".length)})` : ""}: export again in a minute or two.`);
+        }
+      }
+      for (const done of held.splice(0)) done();
     }
   } finally {
     signal?.removeEventListener("abort", abortWait);

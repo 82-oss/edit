@@ -171,15 +171,17 @@ function footageAt(project: Project, frame: number) {
 
 /** What an effect's folder keeps of what's beneath it: the video, and what it was made from. */
 export const BENEATH = "beneath.mp4";
-const BENEATH_KEY = ".beneath.json";
 
 const beneathSlot = new Semaphore(1);
 
-/** How what's beneath is keyed now (3: with the order of its tracks, Nov 18). */
-const KEY_VERSION = 3;
+/** How what's beneath is keyed now (3: with the order of its tracks, Nov 18; 4: a graphic below by its code, Nov 23). */
+const KEY_VERSION = 4;
+
+/** A graphic's code as it is now (`whole` false: without what's beneath it), null when its code isn't on this computer. */
+type CodeOf = (name: string, whole: boolean) => string | null;
 
 /** The effect's clip, and the project as only the tracks below it: what it's laid over, or null when it isn't placed. */
-function under(project: Project, name: string): { start: number; end: number; project: Project; key: string; older: string[] } | null {
+function under(project: Project, name: string, codeOf?: CodeOf): { start: number; end: number; project: Project; key: string; older: string[] } | null {
   const media = project.media.find((one) => one.effect === name);
   if (media === undefined) return null;
   const clip = project.clips.find((one) => one.type === "video" && one.media === media.id);
@@ -200,10 +202,35 @@ function under(project: Project, name: string): { start: number; end: number; pr
   const sources = media_.map((one: Media) => ({ id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
   // A cleaned strip by its media alone: each piece cleaned again comes back as a new media (text_removal.ts,
   // watermark_removal.ts), and its upload filling in its cloud source afterwards is the same picture, not a new render.
-  const what = media_.map((one: Media) => (one.cleans != null ? { id: one.id, strip: true, effect_key: one.effect_key ?? null } : { id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
-  const key = hashed({ version: KEY_VERSION, settings: project.settings, start, end, layers, clips: byId, media: what });
-  // Marks written before (without the order of the tracks; before that, with paths): taken as what's beneath while they hold (markHolds).
+  const before = media_.map((one: Media) => (one.cleans != null ? { id: one.id, strip: true, effect_key: one.effect_key ?? null } : { id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
+  // A graphic below by what it is, its code: its media's id, its file, its upload and whether it's on its clear still
+  // this moment are none of it. Keyed by those, each graphic landing changed the key of those above it, the upload after
+  // it changed them again, and a placeholder put back returned them to an earlier key (Nov 23, Boyfriends: interview-audio,
+  // 17,460 frames, drawn four times in an afternoon). One placed on a lane that isn't below this one counts without what's
+  // beneath it, so two graphics over each other's clips can't each change the other's key for ever.
+  const lane = (effect: string) => {
+    const its = project.media.find((one) => one.effect === effect);
+    const placed = its === undefined ? undefined : project.clips.find((one) => one.type === "video" && one.media === its.id);
+    return placed === undefined ? -1 : order.indexOf(placed.track);
+  };
+  const own = order.indexOf(clip.track);
+  const graphic = (one: Media) => (typeof one.effect === "string" ? one.effect : null);
+  const what = media_
+    .map((one: Media, at) => {
+      const effect = graphic(one);
+      if (effect === null) return before[at]!;
+      return { effect, code: effect === name ? null : (codeOf?.(effect, lane(effect) < own) ?? one.effect_key ?? null) };
+    })
+    .sort((a, b) => {
+      const [x, y] = [stableStringify(a), stableStringify(b)];
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+  const named = new Map(media_.filter((one) => graphic(one) !== null).map((one) => [one.id, `effect:${one.effect}`]));
+  const placed = byId.map((one) => ("media" in one && typeof one.media === "string" && named.has(one.media) ? { ...one, media: named.get(one.media)! } : one));
+  const key = hashed({ version: KEY_VERSION, settings: project.settings, start, end, layers, clips: placed, media: what });
+  // Marks written before (keyed by the media below; before that, without the order of the tracks; before that, with paths): taken as what's beneath while they hold (markHolds).
   const older = [
+    hashed({ version: 3, settings: project.settings, start, end, layers, clips: byId, media: before }),
     hashed({ version: 2, settings: project.settings, start, end, clips, media: sources }),
     hashed({ version: 1, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, path: one.path, effect_key: one.effect_key ?? null })) }),
   ];
@@ -211,8 +238,13 @@ function under(project: Project, name: string): { start: number; end: number; pr
 }
 
 /** What's beneath effect `name` now, as its mark says it (null when it isn't placed): a change there is a new render. */
-export function beneathKey(project: Project, name: string): string | null {
-  return under(project, name)?.key ?? null;
+export function beneathKey(project: Project, name: string, codeOf?: CodeOf): string | null {
+  return under(project, name, codeOf)?.key ?? null;
+}
+
+/** The code of a project's graphics as they are on this computer, for what's beneath the ones above them. */
+function codeHere(app: App, projectId: string): CodeOf {
+  return (name, whole) => effects.codeNow(app.store, projectId, name, whole);
 }
 
 // What's beneath an effect is told by its `.beneath.json`, which is part of its
@@ -241,6 +273,34 @@ function readAdopted(cache: string): Record<string, { mark: string; key: string;
 function writeAdopted(cache: string, adopted: Record<string, { mark: string; key: string; v?: number }>): void {
   fs.mkdirSync(cache, { recursive: true });
   writeAtomic(join(cache, ADOPTED), JSON.stringify(adopted));
+}
+
+/** A mark made here is what was beneath: only a change from it makes it again, never taken as the new state because its render is current. */
+function ownMark(app: App, projectId: string, name: string, text: string, key: string): void {
+  const cache = app.store.cacheDir();
+  const adopted = readAdopted(cache);
+  adopted[`${projectId}/${name}`] = { mark: new Bun.CryptoHasher("sha256").update(text).digest("hex"), key, v: KEY_VERSION };
+  writeAdopted(cache, adopted);
+}
+
+/** The key a mark says, if it can be read. */
+function saidKey(text: string | null): string | undefined {
+  if (text === null) return undefined;
+  try {
+    return (JSON.parse(text) as { key?: string }).key;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a mark says its video was made over a graphic still on its clear picture: it's made again once that one is drawn. */
+function overStandIn(text: string | null): boolean {
+  if (text === null) return false;
+  try {
+    return (JSON.parse(text) as { over_stand_in?: unknown }).over_stand_in === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a mark says what's beneath now (`found`), taking one made elsewhere or keyed as before (see above). */
@@ -296,18 +356,22 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     if (live === null) throw new Error("no such project");
     const dir = effects.folder(app.store, projectId, name);
     if (!fs.existsSync(join(dir, effects.ENTRY))) throw new Error(`no effect "${name}"`);
-    const found = under(live.project, name);
+    const found = under(live.project, name, codeHere(app, projectId));
     if (found === null) throw new Error(`${name} isn't on the timeline: place it first (what's beneath it is what's on the tracks below its clip)`);
+    // A graphic below it not drawn yet shows as its clear still. The agent asking now gets that, marked so, and it's made
+    // again once that one is drawn; the key alone wouldn't say so, as it's of the graphic's code.
+    const early = effects.belowNotDrawn(app.store, projectId, name).length > 0;
     const fps = fpsOf(live.project);
     const seconds = (found.end - found.start) / fps;
-    const keyFile = join(dir, BENEATH_KEY);
+    const keyFile = join(dir, effects.BENEATH_MARK);
     let text: string | null = null;
     try {
       text = fs.readFileSync(keyFile, "utf8");
     } catch {
       // Never made: made now.
     }
-    const holds = markHolds(app, projectId, name, text, found);
+    // Over a stand-in only its own exact mark holds: taken as today's, an older one would stand once the graphic has landed.
+    const holds = early ? saidKey(text) === found.key : markHolds(app, projectId, name, text, found) && !overStandIn(text);
     if (holds && fs.existsSync(join(dir, BENEATH))) return { made: false, seconds };
     const work = join(app.store.cacheDir(), "beneath");
     fs.mkdirSync(work, { recursive: true });
@@ -336,7 +400,11 @@ export async function beneath(app: App, projectId: string, name: string): Promis
       await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", exported, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", fine ? "12" : "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial]);
       fs.renameSync(partial, join(dir, BENEATH));
       // The video alone when the mark still holds (it's never kept in the cloud: made again on each computer).
-      if (!holds) writeAtomic(keyFile, JSON.stringify({ key: found.key }));
+      if (!holds || early) {
+        const mark = JSON.stringify(early ? { key: found.key, over_stand_in: true } : { key: found.key });
+        writeAtomic(keyFile, mark);
+        ownMark(app, projectId, name, mark, found.key);
+      }
     } finally {
       fs.rmSync(exported, { force: true });
       fs.rmSync(partial, { force: true });
@@ -345,12 +413,17 @@ export async function beneath(app: App, projectId: string, name: string): Promis
   });
 }
 
-/** Before an HQ project's effects render: each one that draws what's beneath it gets it made again if that changed. */
+/**
+ * Before an HQ project's effects render: each one that draws what's beneath it gets it made again if that changed,
+ * lowest lane first, so a graphic is made over those below it as they end up. One with a graphic below it not drawn yet
+ * waits for that (`effects.belowNotDrawn`): its picture would be of the clear still, and it would be drawn twice.
+ */
 async function keepBeneath(app: App, projectId: string): Promise<void> {
   const live = app.store.get(projectId);
   if (live === null) return;
-  for (const name of effects.onTimeline(live.project)) {
-    if (!fs.existsSync(join(effects.folder(app.store, projectId, name), BENEATH_KEY))) continue;
+  for (const name of effects.lowestFirst(live.project)) {
+    if (!fs.existsSync(join(effects.folder(app.store, projectId, name), effects.BENEATH_MARK))) continue;
+    if (effects.belowNotDrawn(app.store, projectId, name).length > 0) continue;
     try {
       await beneath(app, projectId, name);
     } catch (error) {
