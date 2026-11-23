@@ -291,8 +291,12 @@ export function shownSeconds(project: Project, reused = false): Map<string, [num
     // Hidden only where a picture above fills the frame at full strength (a flash fading out, a dissolve: not there).
     const mine = index(clip.track);
     const [start, end] = [clip.start, clipEnd(clip)];
+    // A graphic is never what hides it: while one is drawn again its place is held by a still that fills the frame,
+    // and the footage under a cut-in's key line then counted as hidden, so the plan changed with every render, the
+    // strips laid by the old plan came off, the footage under the graphic changed, and it was drawn again (Nov 23).
     const above = project.clips
       .filter((other) => other.start < end && clipEnd(other) > start && other.id !== clip.id && index(other.track) > mine && !hidden(other.track))
+      .filter((other) => other.type !== "video" || footage.get(other.media)?.effect == null)
       .flatMap((other) => hidingFrames(project, other));
     const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
     for (const [a, b] of minus([[clip.start, clipEnd(clip)]], above)) out.set(media.id, [...(out.get(media.id) ?? []), [at(a), at(b)]]);

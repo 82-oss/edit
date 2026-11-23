@@ -169,6 +169,13 @@ test("a mark covers the shot it's in; a slowed copy reads as the file it was mad
   // At full strength throughout, it hides all six.
   (p.clips.find((one) => one.id === "flash") as { keyframes?: unknown }).keyframes = undefined;
   expect(tr.shownSeconds(p).get("m")![0]![0]).toBeCloseTo(12 + 6 / 30, 5);
+  // A graphic's still, holding its place while it's drawn again, fills the frame and hides nothing (Nov 23: the plan
+  // changed with every render of a cut-in's key line).
+  p.clips = p.clips.filter((one) => one.id !== "flash");
+  const before = tr.shownSeconds(p).get("m");
+  p.media.push({ id: "still", name: "cutin-keys", path: "/effect-stills/cutin-keys.clear.png", kind: "image", width: 1920, height: 1080, effect: "cutin-keys" } as unknown as Media);
+  p.clips.push({ id: "keys", track: "v3", start: 0, duration: 600, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "still", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as unknown as Project["clips"][number]);
+  expect(tr.shownSeconds(p).get("m")).toEqual(before!);
 });
 
 test("a still blur left standing in for removal goes on the next save, its clip there or not (Nov 19, the Boyfriends intro: five over cleaned or empty frames, one on a clip re-cut since)", () => {
