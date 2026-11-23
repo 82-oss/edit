@@ -1282,7 +1282,7 @@ describe("relay music removal", () => {
     } }) },
   } as unknown as Env;
   const send = (file: Uint8Array, token = EDITOR, given = env) => relay.fetch(new Request("https://relay.test/v1/isolate", {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "audio/wav", "content-length": String(file.byteLength) }, body: file,
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "audio/wav", "content-length": String(file.byteLength) }, body: new Uint8Array(file).buffer,
   }), given);
   afterEach(() => { vi.unstubAllGlobals(); reservations.length = 0; allowed = true; });
 

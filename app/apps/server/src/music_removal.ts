@@ -64,13 +64,48 @@ function isFootageSound(project: Project, clip: Clip): clip is AudioClip {
 /** The sounds in frames from–to that remove_music should clean, by the source they play. */
 export function soundsToClean(project: Project, from: number, to: number): Map<string, AudioClip[]> {
   const out = new Map<string, AudioClip[]>();
+  // A muted track isn't heard, so it's never paid for.
+  const muted = new Set(project.tracks.filter((track) => track.muted).map((track) => track.id));
   for (const clip of project.clips) {
-    if (clipEnd(clip) <= from || clip.start >= to || !isFootageSound(project, clip) || isOriginalPiece(clip)) continue;
+    if (clipEnd(clip) <= from || clip.start >= to || muted.has(clip.track) || !isFootageSound(project, clip) || isOriginalPiece(clip)) continue;
     const media = mediaOf(project, clip.media)!;
     const source = cleanedInfo(media)?.of ?? media.id;
     out.set(source, [...(out.get(source) ?? []), clip]);
   }
   return out;
+}
+
+/** The seconds of its source a sound plays within frames from–to: what's asked for is all that's sent. */
+export function playedIn(project: Project, clip: AudioClip, from: number, to: number): Stretch {
+  const rate = fpsOf(project);
+  const at = (frame: number) => clip.source_in + ((frame - clip.start) / rate) * clip.speed;
+  return [at(Math.max(clip.start, from)), at(Math.min(clipEnd(clip), to))];
+}
+
+/**
+ * The part of each sound inside frames from–to plays the cleaned file, the
+ * rest staying as it was, with a crossfade where a take carries on across the
+ * edge. Returns how many sounds moved.
+ */
+export function moveToCleaned(project: Project, ids: readonly string[], original: string, cleaned: string, stretches: readonly Stretch[], from: number, to: number): number {
+  let count = 0;
+  for (const id of ids) {
+    const clip = project.clips.find((one): one is AudioClip => one.id === id && one.type === "audio" && one.media === original);
+    if (clip === undefined || clipEnd(clip) <= from || clip.start >= to) continue;
+    const [start, end] = playedIn(project, clip, from, to);
+    if (!covers(stretches, start, end)) continue;
+    splitLinked(project, clip, from);
+    const inside = clip.start >= from ? clip : audioAt(project, clip.track, (one) => one.start === from && one.media === original && continues(project, clip, one));
+    if (inside === undefined) continue;
+    splitLinked(project, inside, to);
+    const before = audioAt(project, inside.track, (one) => clipEnd(one) === inside.start && one.media === original && continues(project, one, inside));
+    const after = audioAt(project, inside.track, (one) => one.start === clipEnd(inside) && one.media === original && continues(project, inside, one));
+    inside.media = cleaned;
+    if (before !== undefined) inside.crossfade = FADE_FRAMES;
+    if (after !== undefined) after.crossfade = FADE_FRAMES;
+    count++;
+  }
+  return count;
 }
 
 /** Stretches no longer than a request takes. */
@@ -152,7 +187,9 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
   const live = app.store.get(id);
   if (live === null) throw new Error("no such project");
   const rate = fpsOf(live.project);
-  const groups = soundsToClean(live.project, from === null ? 0 : Math.floor(from * rate), to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate));
+  const first = from === null ? 0 : Math.floor(from * rate);
+  const last = to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate);
+  const groups = soundsToClean(live.project, first, last);
   if (groups.size === 0) throw new Error("there's no footage sound in that span");
   let paidSeconds = 0;
   let moved = 0;
@@ -164,7 +201,7 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
     const had = before === undefined ? [] : (cleanedInfo(before)?.stretches ?? []);
     const wanted = merged(
       sounds.map((clip): Stretch => {
-        const [start, end] = sourceRange(project, clip);
+        const [start, end] = playedIn(project, clip, first, last);
         return [Math.max(0, start - HANDLE), Math.min(original.duration, end + HANDLE)];
       }),
     );
@@ -198,24 +235,17 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
       await fs.promises.rm(dir, { recursive: true, force: true });
     }
     if (cleanedId === undefined) continue;
-    const ids = new Set(sounds.map((clip) => clip.id));
+    const ids = sounds.map((clip) => clip.id);
     const newId = cleanedId;
     const [, changed] = await app.store.update(id, "agent", (draft) => {
       const media = mediaOf(draft, newId);
       if (media === undefined) throw new Error("the cleaned sound went missing");
       media.markers = [cleanedMarker({ of: originalId, stretches })];
-      let count = 0;
-      for (const clip of draft.clips) {
-        if (clip.type !== "audio") continue;
-        if (before !== undefined && clip.media === before.id && newId !== before.id) clip.media = newId;
-        if (!ids.has(clip.id) || clip.media !== originalId) continue;
-        const [start, end] = sourceRange(draft, clip);
-        if (!covers(stretches, start, end)) continue;
-        clip.media = newId;
-        count++;
+      if (before !== undefined && newId !== before.id) {
+        for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
+        draft.media = draft.media.filter((one) => one.id !== before.id);
       }
-      if (before !== undefined && newId !== before.id) draft.media = draft.media.filter((one) => one.id !== before.id);
-      return count;
+      return moveToCleaned(draft, ids, originalId, newId, stretches, first, last);
     });
     moved += changed;
   }
@@ -260,14 +290,16 @@ function continues(project: Project, before: AudioClip, after: AudioClip): boole
   return Math.abs(sourceRange(project, before)[1] - after.source_in) < 0.5 / fpsOf(project);
 }
 
+/** What differs between the two halves of a split: everything else (a level, a side, a crop, a look) must match to join them. */
+const SEAM_FIELDS = new Set(["id", "start", "duration", "link", "source_in", "fade_in", "fade_out", "keyframes", "room", "crossfade"]);
+const playback = (clip: Clip) => stableStringify(Object.fromEntries(Object.entries(clip).filter(([key]) => !SEAM_FIELDS.has(key))));
+
 /** Whether `after` is the same take carrying on from `before`, nothing to tell them apart at the seam. */
 function sameTake(project: Project, before: Clip, after: Clip): boolean {
-  if (before.type !== after.type || before.track !== after.track || clipEnd(before) !== after.start || before.name !== after.name) return false;
-  if (before.fade_out !== 0 || after.fade_in !== 0 || before.parent !== after.parent) return false;
+  if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || playback(before) !== playback(after)) return false;
   if ((before.type !== "video" && before.type !== "audio") || (after.type !== "video" && after.type !== "audio")) return false;
-  if (before.media !== after.media || before.speed !== after.speed) return false;
   if (Math.abs(before.source_in + (before.duration / fpsOf(project)) * before.speed - after.source_in) >= 0.5 / fpsOf(project)) return false;
-  if (before.type === "audio" && after.type === "audio" && ((after.crossfade ?? 0) !== 0 || JSON.stringify(before.mutes ?? []) !== JSON.stringify(after.mutes ?? []))) return false;
+  if (after.type === "audio" && (after.crossfade ?? 0) !== 0) return false;
   // A split leaves both halves the same keys, the right one's shifted back.
   const shifted = Object.fromEntries(Object.entries(after.keyframes ?? {}).map(([param, keys]) => [param, keys.map((key) => ({ ...key, frame: key.frame + before.duration }))]));
   return JSON.stringify(shifted) === JSON.stringify(before.keyframes ?? {});

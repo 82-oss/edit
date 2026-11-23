@@ -5,7 +5,7 @@
 import { beforeEach, expect, test } from "bun:test";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, offWord, ORIGINAL_SOUND, requests, soundsToClean } from "../src/music_removal.ts";
+import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, type Stretch } from "../src/music_removed.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
@@ -115,6 +115,45 @@ test("a span with no cleaned sound says so", () => {
   const project = edit();
   expect(() => applyBringBack(project, 2000, 2010, 6, false)).toThrow("no cleaned sound");
   expect(() => applyBringBack(project, 30, 30, 6, false)).toThrow("end must be after start");
+});
+
+test("a muted track is never paid for", () => {
+  const project = edit();
+  project.tracks.find((track) => track.kind === "audio")!.muted = true;
+  expect(soundsToClean(project, 0, Number.MAX_SAFE_INTEGER).size).toBe(0);
+});
+
+test("asked for ten seconds of a long clip, only those ten seconds are sent and change", () => {
+  const project = edit();
+  const sound = audio(project)[0]!;
+  sound.media = "m1";
+  expect(playedIn(project, sound, 300, 600)).toEqual([20, 30]);
+  expect(moveToCleaned(project, ["snd"], "m1", "m2", [[19, 31]], 300, 600)).toBe(1);
+  const [left, middle, right] = audio(project);
+  expect([left!.media, middle!.media, right!.media]).toEqual(["m1", "m2", "m1"]);
+  expect([middle!.start, middle!.duration, middle!.source_in]).toEqual([300, 300, 20]);
+  expect([middle!.crossfade, right!.crossfade]).toEqual([6, 6]);
+  expect(project.clips.filter((one) => one.type === "video").map((one) => one.start).sort((a, b) => a - b)).toEqual([0, 300, 600]);
+});
+
+test("a span that isn't cleaned stays as it was, uncut", () => {
+  const project = edit();
+  audio(project)[0]!.media = "m1";
+  expect(moveToCleaned(project, ["snd"], "m1", "m2", [[19, 25]], 300, 600)).toBe(0);
+  expect(audio(project).map((one) => [one.start, one.duration])).toEqual([[0, 1800]]);
+});
+
+test("undo never joins two pieces with different levels", () => {
+  const project = edit();
+  const first = audio(project)[0]!;
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  first.duration = 300;
+  picture.duration = 300;
+  project.clips.push(clip({ id: "pic2", type: "video", track: picture.track, media: "m1", start: 300, duration: 300, source_in: 20, speed: 1, link: "l2" }));
+  project.clips.push(clip({ id: "snd2", type: "audio", track: first.track, media: "m2", start: 300, duration: 300, source_in: 20, speed: 1, volume_db: -20, link: "l2" }));
+  applyBringBack(project, 300, 330, 6, false);
+  applyBringBack(project, 300, 330, 6, true);
+  expect(audio(project).map((one) => [one.start, one.duration, one.volume_db])).toEqual([[0, 300, 0], [300, 300, -20]]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {
