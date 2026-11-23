@@ -417,6 +417,13 @@ test("malformed R2 cache (missing or non-tuple covered) is treated as a miss, sh
   expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.roam.ext.json"), "utf8"))).toEqual([-5, -5, 5, 5]);
   const verdicts = JSON.parse(fs.readFileSync(path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "verdicts.json"), "utf8")) as Record<string, unknown>;
   expect(verdicts["drive-malformed:labels"]).toEqual(["new-lbl"]);
+
+  // A subsequent refresh with roamExt: null removes the obsolete .roam.ext.json file
+  fs.writeFileSync(sidecarFile, JSON.stringify({ ...newState, roamExt: null }));
+  const newestMs = Date.now() + 20_000;
+  fs.utimesSync(sidecarFile, newestMs / 1000, newestMs / 1000);
+  await found.syncLocalParentScanFiles(app, "drive:malformed");
+  expect(fs.existsSync(path.join(scanDir, "drive-malformed.roam.ext.json"))).toBe(false);
 });
 
 test("queued child never deadlocks a single-slot drain behind a stopped-and-replaced parent expansion", async () => {

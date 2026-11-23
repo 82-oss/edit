@@ -644,7 +644,9 @@ export function writeLocalParentScanFiles(app: App, source: string, state: Paren
   writeJson(join(scanDir, `${mid}.marks.json`), state.marks);
   writeJson(join(scanDir, `${mid}.notes.json`), state.notes);
   writeJson(join(scanDir, `${mid}.cands.json`), state.cands);
-  if (state.roamExt !== undefined && state.roamExt !== null) writeJson(join(scanDir, `${mid}.roam.ext.json`), state.roamExt);
+  const roamExtFile = join(scanDir, `${mid}.roam.ext.json`);
+  if (state.roamExt !== undefined && state.roamExt !== null) writeJson(roamExtFile, state.roamExt);
+  else fs.rmSync(roamExtFile, { force: true });
   const verdictsFile = join(root, "verdicts.json");
   let all: Record<string, unknown> = {};
   try {
