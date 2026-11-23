@@ -223,6 +223,25 @@ test("a stretch the model fails on stays blurred: tried once more, then left, sa
   }
 });
 
+test("two stretches of a video from the same second are made in files of their own", async () => {
+  const { app, cleanup } = fixtureHome("text-inpaint-same-start");
+  try {
+    const outs: string[] = [];
+    inpaint.useCleaner({ clean: async (request) => (outs.push(request.out), { ok: false, error: "stand-in" }) });
+    const footage = media({ id: "m1", name: "tape.mp4", path: join(app.store.home, "tape.mp4"), kind: "video", duration: 10, width: 64, height: 36, fps: 30 }) as Media;
+    const created = app.store.create("A", { width: 1280, height: 720, fps: 30 }).project as Project;
+    await app.store.update(created.id, "test", (project) => void project.media.push(footage));
+    const plan = [{ media: footage, source: "sha256:abc", spans: [[0, 2], [0, 3]] as [number, number][] }];
+    const masksOf: inpaint.MasksOf = (_s, _f, _t, _fps, _first, frames) => Array.from({ length: frames }, (): Box[] => [[0.1, 0.8, 0.9, 0.9]]);
+    await inpaint.ensure(app, created.id, plan, masksOf);
+    await inpaint.settled();
+    expect(outs.length).toBe(2);
+    expect(new Set(outs).size).toBe(2);
+  } finally {
+    cleanup();
+  }
+});
+
 const PYTHON = join(inpaint.REMOVER, "venv", "bin", "python");
 
 test.skipIf(!fs.existsSync(PYTHON))("the worker streams a stretch through a stand-in model: every frame out at its size, see-through without words, only chunks with words given to the model, seams crossfaded", async () => {

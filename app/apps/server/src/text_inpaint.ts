@@ -17,7 +17,7 @@
 // still being cleaned when the server stopped is planned again from the edit when it starts (removal_schedule
 // `resume`) and cleaned again.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -633,7 +633,9 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
   tries.set(job, (tries.get(job) ?? 0) + 1);
   const dir = join(app.store.cacheDir(), "cleaned", "work");
   fs.mkdirSync(dir, { recursive: true });
-  const out = join(dir, `${id}-${plan.media.id}-${Math.round(from * 1000)}.minimax.mp4`);
+  // Its own file each run: two stretches of a video from the same second shared one, and each took the other's away
+  // (Nov 23, 3 of the Boyfriends intro's 41 stayed blurred).
+  const out = join(dir, `${id}-${plan.media.id}-${Math.round(from * 1000)}-${randomUUID()}.minimax.mp4`);
   const label = `${plan.media.name} ${Math.round(from)}–${Math.round(to)} s`;
   try {
     const fps = plan.media.fps || 30;
