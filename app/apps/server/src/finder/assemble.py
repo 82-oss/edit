@@ -34,8 +34,19 @@ def whole(tag,mid,box,frames,W,H,stamps=()):
     g=np.median(gs[gs.sum(1)>0],0)
     if g[0]>=3*w-1 or g[2]>=3*w-1: return box   # ran on without end: a plain wall or sky, not a plate
     return [max(0,int(x0-g[0]-3)),max(0,int(y0-g[1]-3)),min(W,int(x1+g[2]+3)),min(H,int(y1+g[3]+3))]
+def off_stamps(box,stamps):
+    """A label's box kept off the camera's own stamp beside it: where the two overlap by a sliver (the label's plate and
+    its padding reaching into the stamp's last line), the box stops short of the stamp (Nov 23, Boyfriends 20:06 to
+    32:18: the blur over "OFFICER n" took the bottom line of the Axon stamp with it)."""
+    x0,y0,x1,y1=box; mid=(y0+y1)/2
+    for sx0,sy0,sx1,sy1 in stamps:
+        if sx1<=x0 or sx0>=x1 or sy1<=y0 or sy0>=y1: continue
+        if min(y1,sy1)-max(y0,sy0)>0.4*(y1-y0): continue   # mostly over it: not a sliver, left as it is
+        if sy1<=mid: y0=max(y0,sy1+2)
+        elif sy0>=mid: y1=min(y1,sy0-2)
+    return [x0,y0,x1,y1] if y1-y0>=8 else list(box)
 def label_masks(Z,marks,kinds=('label',),tag=None,mid=None):
-    W,H=Z['W'],Z['H']; out=[]
+    W,H=Z['W'],Z['H']; out=[]; stamps=Z.get('stamps') or []
     for m in marks:
         if m['kind'] not in kinds: continue
         places=[]; full=[r for r in m['reads'] if abs((r[3]-r[1])-m['w'])<0.12*m['w']]
@@ -50,11 +61,11 @@ def label_masks(Z,marks,kinds=('label',),tag=None,mid=None):
             if tag: box=whole(tag,mid,box,fs,W,H,Z['stamps'])
             # a faint mark is read now and then: it's taken as there between its sightings (up to 5 min apart)
             faint=len(fs)<0.5*(fs[-1]-fs[0])/10
-            if faint and m['n']>=100: out.append([-1,10**9,*pad(box,W,H),m['kind']]); continue   # faint and all through the file: there throughout
+            if faint and m['n']>=100: out.append([-1,10**9,*off_stamps(pad(box,W,H),stamps),m['kind']]); continue   # faint and all through the file: there throughout
             for f in fs[1:]:
-                if f-e>(9000 if faint else 300): out.append([s-9,e+9,*pad(box,W,H),m['kind']]); s=f
+                if f-e>(9000 if faint else 300): out.append([s-9,e+9,*off_stamps(pad(box,W,H),stamps),m['kind']]); s=f
                 e=f
-            out.append([s-9,e+9,*pad(box,W,H),m['kind']])
+            out.append([s-9,e+9,*off_stamps(pad(box,W,H),stamps),m['kind']])
     return out
 def backing(tag,mid,ms,W,H):
     """Captions on a plate of one colour: how far the plate reaches past the words, measured on 40 captions, and every
