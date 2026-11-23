@@ -60,14 +60,17 @@ const poolOf = (kind: Kind): Pool => (kind === "clean" ? "gpu" : "cpu");
  * each pays its ~1.5 min boot and a minute idle after). Two 32-core CPU machines: a video's watermarks and tracks
  * (~21 core-hours, measured Nov 20) in ~20 minutes for ~$0.75; more were barely quicker for more.
  */
-export const MAX_PODS: Record<Pool, number> = { gpu: 4, cpu: 2 };
+export const MAX_PODS: Record<Pool, number> = { gpu: 16, cpu: 2 };
 /**
  * GPU work one rented GPU is given before another is rented: its boot and idle minute (~2.5 min paid) stay a few
  * percent of what it does, so more GPUs cost about the same as one and finish sooner (Nov 20: SMART Cops' ~2,300 s
- * to clean was ~3.5 h on one 4090). A clean's work: ~5 s of GPU a footage second (a 4090, measured Nov 20).
+ * to clean was ~3.5 h on one 4090). A clean's work: ~8 s of GPU a footage second (Nov 22, Boyfriends: 1,560 s of
+ * tall caption bands took ~3.3 card-hours on a 5090 and a 3090; at 5 s and 45 minutes a card, two cards were rented
+ * and this morning's 376 s took two hours). A quarter of an hour's work a card, up to sixteen cards (Sphe, Nov 23:
+ * eight videos on one afternoon): a video's ~1,500 s is on a dozen cards and back in about a quarter of an hour.
  */
-const GPU_WORK_EACH_S = 45 * 60;
-const GPU_S_A_FOOTAGE_S = 5;
+const GPU_WORK_EACH_S = 15 * 60;
+const GPU_S_A_FOOTAGE_S = 8;
 /** Jobs a CPU machine does at once (cpu.ts LANES on 32 cores): how many waiting jobs one machine covers. */
 const CPU_LANES = 5;
 /** A rented machine that hasn't asked for work by now (booting: pulling the image, installing, loading) is let go. */
@@ -86,12 +89,13 @@ const GPU_IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404";
 /** The engine is built on Ubuntu 26.04 (glibc 2.43): its machines run the same. */
 const CPU_IMAGE = "ubuntu:26.04";
 /**
- * The cards tried for cleaning, cheapest a clip first (measured Nov 19 on an 8 s clip: 3090 41 s, 5090 16 s, A5000
- * ~41 s, 4090 22 s), each where it's offered; the first one RunPod has is rented. The model needs ~13 GB.
+ * The cards tried for cleaning, quickest first, then cheapest a clip (measured Nov 19 on an 8 s clip: 3090 41 s, 5090
+ * 16 s, A5000 ~41 s, 4090 22 s; the 5090 is ~2.5 times as quick as the 3090 for about a fifth more a clip), each
+ * where it's offered; the first one RunPod has is rented. The model needs ~13 GB.
  */
 export const GPUS: { id: string; cloud: "COMMUNITY" | "SECURE" }[] = [
-  { id: "NVIDIA GeForce RTX 3090", cloud: "COMMUNITY" },
   { id: "NVIDIA GeForce RTX 5090", cloud: "COMMUNITY" },
+  { id: "NVIDIA GeForce RTX 3090", cloud: "COMMUNITY" },
   { id: "NVIDIA RTX A5000", cloud: "SECURE" },
   { id: "NVIDIA GeForce RTX 4090", cloud: "COMMUNITY" },
   { id: "NVIDIA GeForce RTX 4090", cloud: "SECURE" },
