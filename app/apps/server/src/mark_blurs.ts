@@ -87,15 +87,20 @@ function ownAlpha(clip: Clip, frame: number): number {
 
 /** How much of the clip shows at each frame of its span: its own alpha under every frame-filling picture above it. */
 function visibility(project: Project, clip: VideoClip): number[] {
-  const index = (track: string) => project.tracks.findIndex((one) => one.id === track);
-  const mine = index(clip.track);
+  const lanes = new Map<string, number>();
+  project.tracks.forEach((track, at) => {
+    if (!lanes.has(track.id)) lanes.set(track.id, at);
+  });
+  const mine = lanes.get(clip.track) ?? -1;
+  const end = clipEnd(clip);
+  // The cheap test first: most clips are nowhere near this one.
   const above = project.clips.filter(
     (other) =>
-      other.id !== clip.id &&
-      index(other.track) > mine &&
-      trackOf(project, other.track)?.hidden !== true &&
-      other.start < clipEnd(clip) &&
+      other.start < end &&
       clipEnd(other) > clip.start &&
+      other.id !== clip.id &&
+      (lanes.get(other.track) ?? -1) > mine &&
+      trackOf(project, other.track)?.hidden !== true &&
       fillsFrame(project, other),
   );
   const out: number[] = [];

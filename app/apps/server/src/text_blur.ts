@@ -186,24 +186,43 @@ export function boxAt(samples: Sample[], t: number): Box | null {
 // ---------------------------------------------------------------------------
 // Laid on the timeline
 
+/** How near a slope is to the edge of what fits before rounding could decide it. */
+const SLOPE_EDGE = 1e-9;
+
 /** Keys over frames [0, values.length) that follow `values` within `tolerance`, linear between (a jump is two keys a frame apart). */
 export function keysFor(values: number[], tolerance: number): Keyframe[] {
   const keys: number[] = [0];
   let last = 0;
+  // The slopes from the last key that pass within tolerance of every frame since: one look a frame, not a walk back
+  // over all of them (a long still caption's walk was most of a plan's time). Only a slope on the very edge is walked,
+  // so the keys come out exactly as that walk made them and a saved blur still matches its saved self.
+  let low = -Infinity;
+  let high = Infinity;
   for (let end = 2; end <= values.length; end++) {
     // Can the line from the last key to frame end-1 carry every frame between within tolerance?
     const to = end - 1;
-    let fits = true;
-    for (let f = last + 1; f < to; f++) {
-      const expected = values[last]! + ((values[to]! - values[last]!) * (f - last)) / (to - last);
-      if (Math.abs(expected - values[f]!) > tolerance) {
-        fits = false;
-        break;
+    if (to - 1 > last) {
+      const run = to - 1 - last;
+      low = Math.max(low, (values[to - 1]! - tolerance - values[last]!) / run);
+      high = Math.min(high, (values[to - 1]! + tolerance - values[last]!) / run);
+    }
+    const slope = (values[to]! - values[last]!) / (to - last);
+    let fits = slope > low + SLOPE_EDGE && slope < high - SLOPE_EDGE;
+    if (!fits && slope >= low - SLOPE_EDGE && slope <= high + SLOPE_EDGE) {
+      fits = true;
+      for (let f = last + 1; f < to; f++) {
+        const expected = values[last]! + ((values[to]! - values[last]!) * (f - last)) / (to - last);
+        if (Math.abs(expected - values[f]!) > tolerance) {
+          fits = false;
+          break;
+        }
       }
     }
     if (!fits) {
       keys.push(to - 1);
       last = to - 1;
+      low = -Infinity;
+      high = Infinity;
     }
   }
   if (values.length > 1 && keys.at(-1) !== values.length - 1) keys.push(values.length - 1);
@@ -327,26 +346,71 @@ const ownerOf = (clip: Project["clips"][number]) => (clip.name ?? "").slice(`${T
  * graphics over it (Nov 19, the Boyfriends intro: a lane "above every picture" sat over caption tracks that also
  * hold B-roll and the title card, and Kelly's and the officer's captions were blurred). [first index, last index].
  */
-function aboveOwner(project: Project, owner: string): [number, number] | null {
-  const track = project.clips.find((clip) => clip.id === owner)?.track;
-  const at = project.tracks.findIndex((one) => one.id === track);
+function aboveOwner(project: Project, lanes: Lanes, owner: string): [number, number] | null {
+  const track = lanes.clips.get(owner)?.track;
+  const at = track === undefined ? -1 : (lanes.at.get(track) ?? -1);
   if (at < 0) return null;
   let last = at;
   for (let index = at + 1; index < project.tracks.length; index++) {
-    const mine = project.clips.filter((clip) => clip.track === project.tracks[index]!.id);
-    if (mine.length === 0 || !mine.every((clip) => isOverlay(clip) || isTracked(clip))) break;
+    if (!laidOver(lanes, project.tracks[index]!.id)) break;
     last = index;
   }
   return [at + 1, last];
 }
 
+/**
+ * The project's clips and lanes looked up by id for one `lay`. Each of a long edit's blurs asked for its lane by walking
+ * every clip once per lane: 4.5 s of the server's one thread per plan on the Boyfriends edit (683 blurs, 3,672 clips),
+ * every time the finder finished a file.
+ */
+type Lanes = {
+  clips: Map<string, Project["clips"][number]>;
+  onTrack: Map<string, Project["clips"][number][]>;
+  at: Map<string, number>;
+  /** Whether a lane holds only what's laid over a picture (asked once, until a clip lands on it). */
+  over: Map<string, boolean>;
+};
+
+function indexOfTracks(project: Project): Map<string, number> {
+  const at = new Map<string, number>();
+  project.tracks.forEach((track, index) => {
+    if (!at.has(track.id)) at.set(track.id, index);
+  });
+  return at;
+}
+
+function lanesOf(project: Project): Lanes {
+  const lanes: Lanes = { clips: new Map(), onTrack: new Map(), at: indexOfTracks(project), over: new Map() };
+  for (const clip of project.clips) landed(lanes, clip);
+  return lanes;
+}
+
+/** Notes `clip` on its lane. */
+function landed(lanes: Lanes, clip: Project["clips"][number]): void {
+  if (!lanes.clips.has(clip.id)) lanes.clips.set(clip.id, clip);
+  const mine = lanes.onTrack.get(clip.track);
+  if (mine === undefined) lanes.onTrack.set(clip.track, [clip]);
+  else mine.push(clip);
+  lanes.over.delete(clip.track);
+}
+
+function laidOver(lanes: Lanes, track: string): boolean {
+  let over = lanes.over.get(track);
+  if (over === undefined) {
+    const mine = lanes.onTrack.get(track) ?? [];
+    over = mine.length > 0 && mine.every((clip) => isOverlay(clip) || isTracked(clip));
+    lanes.over.set(track, over);
+  }
+  return over;
+}
+
 /** A lane for a tracked blur over `owner`'s frames [start, end): one of the tracked blurs' own among `aboveOwner`, free then, else a new one at its top. */
-function laneOver(project: Project, owner: string, start: number, end: number): string {
-  const span = aboveOwner(project, owner);
+function laneOver(project: Project, lanes: Lanes, owner: string, start: number, end: number): string {
+  const span = aboveOwner(project, lanes, owner);
   if (span === null) return markBlurs.laneFor(project, start, end, TRACKED);
   for (let index = span[0]; index <= span[1]; index++) {
     const lane = project.tracks[index]!;
-    const mine = project.clips.filter((clip) => clip.track === lane.id);
+    const mine = lanes.onTrack.get(lane.id) ?? [];
     if (mine.length > 0 && mine.every(isTracked) && !mine.some((clip) => clip.start < end && start < clipEnd(clip))) return lane.id;
   }
   const id = addTrack(project, "video");
@@ -357,9 +421,9 @@ function laneOver(project: Project, owner: string, start: number, end: number): 
 }
 
 /** Whether a tracked blur sits where `laneOver` would put it (a blur laid before Nov 19's fix may sit over our captions). */
-function wellPlaced(project: Project, clip: Project["clips"][number]): boolean {
-  const span = aboveOwner(project, ownerOf(clip));
-  const at = project.tracks.findIndex((one) => one.id === clip.track);
+function wellPlaced(project: Project, lanes: Lanes, clip: Project["clips"][number]): boolean {
+  const span = aboveOwner(project, lanes, ownerOf(clip));
+  const at = lanes.at.get(clip.track) ?? -1;
   return span === null || (at >= span[0] && at <= span[1]);
 }
 
@@ -370,8 +434,15 @@ function wellPlaced(project: Project, clip: Project["clips"][number]): boolean {
  */
 export function lay(project: Project, want: AdjustmentClip[]): boolean {
   const standing = new Map<string, string[]>();
+  const before = lanesOf(project);
   // One on a lane over our captions (laid before the lane rule) is laid again where it belongs.
-  for (const clip of project.clips) if (isTracked(clip) && wellPlaced(project, clip)) standing.set(shapeOf(clip), [...(standing.get(shapeOf(clip)) ?? []), clip.id]);
+  for (const clip of project.clips) {
+    if (!isTracked(clip) || !wellPlaced(project, before, clip)) continue;
+    const shape = shapeOf(clip);
+    const alike = standing.get(shape);
+    if (alike === undefined) standing.set(shape, [clip.id]);
+    else alike.push(clip.id);
+  }
   const kept = new Set<string>();
   const missing: AdjustmentClip[] = [];
   for (const one of want) {
@@ -381,13 +452,19 @@ export function lay(project: Project, want: AdjustmentClip[]): boolean {
   }
   const gone = project.clips.filter((clip) => isTracked(clip) && !kept.has(clip.id));
   if (gone.length === 0 && missing.length === 0) return false;
-  const lanes = new Set(gone.map((clip) => clip.track));
-  project.clips = project.clips.filter((clip) => !gone.includes(clip));
-  project.tracks = project.tracks.filter((track) => !lanes.has(track.id) || project.clips.some((clip) => clip.track === track.id));
+  const emptied = new Set(gone.map((clip) => clip.track));
+  const leaving = new Set(gone);
+  project.clips = project.clips.filter((clip) => !leaving.has(clip));
+  const used = new Set(project.clips.map((clip) => clip.track));
+  project.tracks = project.tracks.filter((track) => !emptied.has(track.id) || used.has(track.id));
+  const lanes = lanesOf(project);
   for (const one of missing) {
     const clip = { ...one, id: freshId(project, "c") } as AdjustmentClip;
-    clip.track = laneOver(project, ownerOf(clip), clip.start, clipEnd(clip));
+    const count = project.tracks.length;
+    clip.track = laneOver(project, lanes, ownerOf(clip), clip.start, clipEnd(clip));
+    if (project.tracks.length !== count) lanes.at = indexOfTracks(project);
     project.clips.push(clip);
+    landed(lanes, clip);
   }
   return true;
 }

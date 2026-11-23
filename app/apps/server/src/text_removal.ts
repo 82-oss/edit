@@ -274,15 +274,25 @@ function minus(spans: [number, number][], holes: [number, number][]): [number, n
 export function shownSeconds(project: Project, reused = false): Map<string, [number, number][]> {
   const fps = fpsOf(project);
   const ours = reused ? new Set<string>() : reusedMedia(project);
-  const index = (track: string) => project.tracks.findIndex((one) => one.id === track);
+  // Looked up by id: walking the lanes for every pair of clips held the server's thread for seconds on a long edit.
+  const lanes = new Map<string, { at: number; hidden: boolean }>();
+  project.tracks.forEach((track, at) => {
+    if (!lanes.has(track.id)) lanes.set(track.id, { at, hidden: track.hidden === true });
+  });
+  const footage = new Map<string, Project["media"][number]>();
+  for (const one of project.media) if (!footage.has(one.id)) footage.set(one.id, one);
+  const index = (track: string) => lanes.get(track)?.at ?? -1;
+  const hidden = (track: string) => lanes.get(track)?.hidden === true;
   const out = new Map<string, [number, number][]>();
   for (const clip of project.clips) {
-    if (clip.type !== "video" || isOverlay(clip) || trackOf(project, clip.track)?.hidden === true || !(clip.speed > 0)) continue;
-    const media = project.media.find((one) => one.id === clip.media);
+    if (clip.type !== "video" || isOverlay(clip) || hidden(clip.track) || !(clip.speed > 0)) continue;
+    const media = footage.get(clip.media);
     if (media === undefined || media.kind !== "video" || ours.has(media.id) || media.cleans != null || media.effect != null) continue;
     // Hidden only where a picture above fills the frame at full strength (a flash fading out, a dissolve: not there).
+    const mine = index(clip.track);
+    const [start, end] = [clip.start, clipEnd(clip)];
     const above = project.clips
-      .filter((other) => other.id !== clip.id && index(other.track) > index(clip.track) && trackOf(project, other.track)?.hidden !== true && other.start < clipEnd(clip) && clipEnd(other) > clip.start)
+      .filter((other) => other.start < end && clipEnd(other) > start && other.id !== clip.id && index(other.track) > mine && !hidden(other.track))
       .flatMap((other) => hidingFrames(project, other));
     const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
     for (const [a, b] of minus([[clip.start, clipEnd(clip)]], above)) out.set(media.id, [...(out.get(media.id) ?? []), [at(a), at(b)]]);
