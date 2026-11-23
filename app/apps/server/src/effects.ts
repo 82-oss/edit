@@ -2008,8 +2008,14 @@ export function renderNow(app: App, project: string, name: string): Promise<void
     })
     .catch((error: unknown) => {
       // The code changed under it: started again once the code has settled, never at once (Nov 11, on kenobi: renders
-      // restarted every 60 frames for as long as the agent kept saving, and left 4.6 GB of frames behind).
-      if (error instanceof Outdated) return settled(app, project, name).then(() => renderNow(app, project, name));
+      // restarted every 60 frames for as long as the agent kept saving, and left 4.6 GB of frames behind). It leaves the
+      // list first: when the code came back to this same key meanwhile, the render asked for next found this one still
+      // listed and waited on it, which was waiting on that, for ever, with nothing drawing and "180 of 8250 frames" said
+      // until Edit restarted (Nov 23, cutin-keys, stuck from 15:52 to 16:11; the same at 12:29, 14:10 and 14:29).
+      if (error instanceof Outdated) {
+        if (renders.get(id(project, name, key)) === render) renders.delete(id(project, name, key));
+        return settled(app, project, name).then(() => renderNow(app, project, name));
+      }
       let said = diag.messageOf(error);
       let kind = failureKind(error);
       // What breaks while the network is down (a tile that never came, a place not found) is the network's, not the code's.
@@ -2041,7 +2047,10 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       strikes.delete(id(project, name, key));
       passingTries.delete(id(project, name, key));
     })
-    .finally(() => renders.delete(id(project, name, key)));
+    .finally(() => {
+      // Only its own place: the render that took over from it may be under the same key.
+      if (renders.get(id(project, name, key)) === render) renders.delete(id(project, name, key));
+    });
   renders.set(id(project, name, key), render);
   // Its error goes to whoever waits on it; one nobody waits on is in the log.
   render.done.catch(() => {});
@@ -2785,6 +2794,37 @@ export function untoldFailures(app: App, project: string): string[] {
   return out;
 }
 
+/** The longest an export waits for what comes before its renders (what's beneath each graphic), however short its own limit. */
+const PREPARE_MS = 20 * 60_000;
+
+/**
+ * What comes before the renders, waited for no longer than the export would wait and never past its Cancel: this wait
+ * had neither, so a step that never came back held the share at "waiting" with nothing said (Nov 23, 14:10 and 14:29).
+ */
+async function preparedFor(work: Promise<void>, limitMs: number, signal?: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = () => {};
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), Math.max(limitMs, PREPARE_MS));
+    timer.unref?.();
+  });
+  const aborted = new Promise<"cancelled">((resolve) => {
+    onAbort = () => resolve("cancelled");
+    if (signal?.aborted === true) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  // One given up on still ends by itself, in the log if it fails.
+  work.catch(() => {});
+  try {
+    const ended = await Promise.race([work.then(() => "ready" as const), late, aborted]);
+    if (ended === "cancelled") throw new Error("cancelled while waiting for its graphics");
+    if (ended === "late") throw new Error("Its graphics are still rendering: export again in a minute or two.");
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /**
  * Waits (up to `limitMs`) for every effect on the timeline to be rendered from
  * its code as it is, starting any render that isn't under way: an export never
@@ -2793,7 +2833,7 @@ export function untoldFailures(app: App, project: string): string[] {
  */
 export async function waitForRenders(app: App, project: string, limitMs: number, signal?: AbortSignal): Promise<void> {
   const until = Date.now() + limitMs;
-  await readyToRender(app, project);
+  await preparedFor(readyToRender(app, project), limitMs, signal);
   // Every render it waits on is waited on from now (render_turns.ts: it goes ahead of renders nobody waits on, another
   // project's long one giving way at its next chunk), started now if it isn't under way.
   const waits: { effect: ReturnType<typeof needed>[number]; done: Promise<void> }[] = [];
