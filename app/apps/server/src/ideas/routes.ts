@@ -501,7 +501,7 @@ export function routes(router: Router<App>): void {
         const shown = await page(params.id!);
         // Footage nobody has checked (an idea from before Nov 2, a card's), named as it's opened.
         void nameFootage(app, shown.idea.id, by(), shown.idea);
-        return json(shown);
+        return json(cloud.takeUndone(shown.idea.id) ? { ...shown, undone: true } : shown);
       } catch (error) {
         failed(error);
       }

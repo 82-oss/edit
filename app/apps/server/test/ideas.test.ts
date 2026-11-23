@@ -734,3 +734,31 @@ test("a run is held by a lease its Mac renews while it goes; another Mac takes i
     runLease.lease.renewMs = renew;
   }
 });
+
+test("two Macs that both began a run with the relay out: the one whose lease reached the cloud second stops", async () => {
+  const renew = runLease.lease.renewMs;
+  runLease.lease.renewMs = 20;
+  try {
+    await cloud.commit(videoIdea("i15-test"), 0, "Sphe");
+    let stopped = false;
+    run.asking.ask = async (question) => {
+      await cloud.settled();
+      const now = rows.get("i15-test")!;
+      const body = structuredClone(now.body);
+      body.run = { what: "chat", state: "running", holder: "other-mac", by: "JJ", startedAt: Date.now(), renewedAt: Date.now() };
+      await cloud.commit(body, now.rev, "JJ");
+      return new Promise((_, reject) =>
+        question.signal?.addEventListener("abort", () => {
+          stopped = true;
+          reject(new Error("Stopped by you. Completed work is saved."));
+        }, { once: true }),
+      );
+    };
+    await run.chat(context(), "i15-test", "go on");
+    const idea = await settled("i15-test");
+    expect(stopped).toBe(true);
+    expect(idea.run).toMatchObject({ state: "running", holder: "other-mac" });
+  } finally {
+    runLease.lease.renewMs = renew;
+  }
+});

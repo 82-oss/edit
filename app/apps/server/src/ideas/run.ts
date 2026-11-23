@@ -797,13 +797,15 @@ async function begin(context: Context, id: string, what: IdeaRun["what"], asked:
   if (restart.preparing) runs.get(id)!.abort.abort();
 }
 
-/** Renews this Mac's lease on a run while it goes. */
+/** Renews this Mac's lease on a run while it goes; stops the run here if another Mac's reached the cloud first (both began with the relay out). */
 function renewLease(context: Context, id: string, startedAt: number): () => void {
-  return runLease.renewing(context.home, jobOf(id), () =>
-    cloud.change(id, context.by, (idea) => {
+  return runLease.renewing(context.home, jobOf(id), async () => {
+    const { idea: now } = await cloud.change(id, context.by, (idea) => {
       if (idea.run === null || idea.run.holder !== context.holder || idea.run.startedAt !== startedAt || (idea.run.state !== "running" && idea.run.state !== "queued")) return false;
       idea.run = { ...idea.run, renewedAt: Date.now() };
-    }), "ideas");
+    });
+    if (runLease.heldElsewhere(now.run, context.holder) && runs.get(id)?.startedAt === startedAt) stop(id);
+  }, "ideas");
 }
 
 /** An ending as noted in jobs.json, and how it's saved on the idea. */

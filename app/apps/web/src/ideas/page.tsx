@@ -84,9 +84,10 @@ export function IdeaScreen({ id }: { id: string }) {
         .then((answer) => {
           setPage(answer);
           setMissing(null);
+          if (answer.undone === true) toastError(new Error("It was put back, so make it again."), "save your last change");
         })
         .catch((error: unknown) => setMissing(error ?? new Error("Can't reach Edit's server"))),
-    [id],
+    [id, toastError],
   );
   const active = page !== null && working(page.idea);
   // Footage the server is still naming: looked at again soon.

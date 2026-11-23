@@ -110,6 +110,9 @@ export async function change(id: string, by: string, change: (idea: Idea) => boo
   return { idea: body, rev };
 }
 
+/** Whether a change to this idea was refused after the page had moved on (asked once). */
+export const takeUndone = (id: string): boolean => docs.takeUndone(id);
+
 /** A source's key: a video by its id, an article by its link. */
 export const keyOf = (source: Idea["sources"][number]): string => (source.kind === "youtube" ? `youtube:${source.videoId}` : source.url);
 

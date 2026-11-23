@@ -1068,12 +1068,14 @@ async function work(context: Context, id: string, asked: string, given: string[]
   let ending: Ending;
   const folder = join(context.cacheDir, "thumbnails", `run-${id}-${Date.now()}`);
   const home = context.home ?? null;
-  // This Mac's lease on the turn, renewed while it goes.
-  const stopRenewing = runLease.renewing(home, jobOf(id), () =>
-    cloud.change(id, context.by, (thumb) => {
+  // This Mac's lease on the turn, renewed while it goes; stopped here if another Mac's reached the cloud first (both began with the relay out).
+  const stopRenewing = runLease.renewing(home, jobOf(id), async () => {
+    const { thumb: now } = await cloud.change(id, context.by, (thumb) => {
       if (thumb.run === null || thumb.run.holder !== context.holder || thumb.run.startedAt !== running.startedAt || (thumb.run.state !== "running" && thumb.run.state !== "queued")) return false;
       thumb.run = { ...thumb.run, renewedAt: Date.now() };
-    }), "thumbnails");
+    });
+    if (runLease.heldElsewhere(now.run, context.holder) && runs.get(id)?.startedAt === running.startedAt) stop(id);
+  }, "thumbnails");
   try {
     ending = await slot(async () => {
       if (signal.aborted) return { state: "stopped" as const, text: "Stopped." };

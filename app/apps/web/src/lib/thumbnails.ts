@@ -31,7 +31,7 @@ const base = (id: string) => `/api/thumbnails/${encodeURIComponent(id)}`;
 export const thumbnailsApi = {
   list: () => call<{ thumbnails: ThumbRow[] }>("GET", "/api/thumbnails"),
   create: (title = "", brief = "", channel: string | null = null) => call<{ id: string }>("POST", "/api/thumbnails", { title, brief, ...(channel !== null ? { channel } : {}) }),
-  get: (id: string) => call<{ thumb: Thumbnail; rev: number }>("GET", base(id)),
+  get: (id: string) => call<{ thumb: Thumbnail; rev: number; undone?: boolean }>("GET", base(id)),
   change: (id: string, change: { title?: string; brief?: string }) => call<{ thumb: Thumbnail; rev: number }>("PUT", base(id), change),
   remove: (id: string) => call<void>("DELETE", base(id)),
   /** A message, with the version the person is looking at (the one the turn works on). */

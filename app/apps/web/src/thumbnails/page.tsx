@@ -155,12 +155,13 @@ export function ThumbnailScreen({ id }: { id: string }) {
     () =>
       thumbnailsApi
         .get(id)
-        .then(({ thumb, rev }) => {
+        .then(({ thumb, rev, undone }) => {
           setMissing(null);
           if (revOf(thumb, rev) !== shownRev.current && switching.current === 0) show(thumb, rev);
+          if (undone === true) toastError(new Error("It was put back, so make it again."), "save your last change");
         })
         .catch((error: unknown) => setMissing(error ?? new Error("Can't reach Edit's server"))),
-    [id, show],
+    [id, show, toastError],
   );
   const running = thumb !== null && working(thumb);
   useEffect(() => {

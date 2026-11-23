@@ -164,9 +164,18 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
     for (const id of [...this.docs.keys()]) this.push(id);
   }
 
+  /** Documents with a change the cloud refused after its caller had gone on, for their page to say. */
+  private readonly undone = new Set<string>();
+
+  /** Whether a change made here was undone since this was last asked. */
+  takeUndone(id: string): boolean {
+    return this.undone.delete(id);
+  }
+
   /** Lets go of every copy in memory (tests; a new home). */
   forget(): void {
     for (const doc of this.docs.values()) if (doc.timer !== null) clearTimeout(doc.timer);
+    this.undone.clear();
     this.docs.clear();
     this.fetching.clear();
     this.rows = null;
@@ -243,7 +252,10 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
     const change = doc.changes.at(-1)!;
     const settled = settleMs > 0 ? new Promise<void>((resolve, reject) => (change.done = { resolve, reject })) : null;
     this.push(id);
-    if (settled !== null) await Promise.race([settled, Bun.sleep(settleMs)]);
+    if (settled !== null) {
+      await Promise.race([settled, Bun.sleep(settleMs)]);
+      delete change.done;
+    }
     const now = this.docs.get(id);
     if (now === undefined) throw this.spec.missing();
     return this.out(now);
@@ -260,7 +272,10 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
     const change = doc.changes.at(-1)!;
     const settled = settleMs > 0 ? new Promise<void>((resolve, reject) => (change.done = { resolve, reject })) : null;
     this.push(made.id);
-    if (settled !== null) await Promise.race([settled, Bun.sleep(settleMs)]);
+    if (settled !== null) {
+      await Promise.race([settled, Bun.sleep(settleMs)]);
+      delete change.done;
+    }
     const now = this.docs.get(made.id);
     if (now === undefined) throw this.spec.missing();
     return this.out(now);
@@ -524,6 +539,7 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
         } catch (error) {
           // It doesn't hold on the newer copy (another Mac took the run meanwhile): its caller told, the rest go on.
           doc.changes = doc.changes.filter((one) => one !== change);
+          if (change.done === undefined) this.undone.add(id);
           change.done?.reject(error);
           diag.info(this.spec.kind, `${id}: a change made here no longer holds on the cloud's newer copy: ${diag.messageOf(error)}`);
         }
@@ -553,6 +569,8 @@ export class TeamDocs<T extends { id: string; updatedAt?: number }, R extends { 
       this.drop(id, error);
       return;
     }
+    // Nobody waiting on it (none at all after a restart): the page says it.
+    if (doc.changes.length === 0 || doc.changes.some((change) => change.done === undefined)) this.undone.add(id);
     for (const change of doc.changes) change.done?.reject(error);
     doc.changes = [];
     if (doc.base !== null) doc.body = doc.base;

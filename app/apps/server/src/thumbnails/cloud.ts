@@ -104,6 +104,9 @@ export async function change(id: string, by: string, change: (thumb: Thumbnail) 
   return { thumb: body, rev };
 }
 
+/** Whether a change to this thumbnail was refused after the page had moved on (asked once). */
+export const takeUndone = (id: string): boolean => docs.takeUndone(id);
+
 /** Where bytes go on R2 under `folder`: named by their hash. */
 export function keyOf(folder: string, bytes: Uint8Array, extension: string): string {
   const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, 24);

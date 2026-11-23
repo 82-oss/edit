@@ -149,6 +149,19 @@ test("a refusal (no permission) undoes the change here and says it to a caller t
   expect(docs.waiting()).toBe(0);
 });
 
+test("a refusal after the page has gone on is there for the page to say, once; one a caller heard isn't", async () => {
+  seed("a", { titles: ["Kept"] });
+  await docs.get("a");
+  refuse = true;
+  await expect(docs.change("a", "Sphe", (doc) => void doc.titles.push("Heard"), { settleMs: 1_000 })).rejects.toThrow("not allowed");
+  expect(docs.takeUndone("a")).toBe(false);
+  await docs.change("a", "Sphe", (doc) => void doc.titles.push("Gone on"));
+  await docs.settled();
+  expect((await docs.get("a"))!.body.titles).toEqual(["Kept"]);
+  expect(docs.takeUndone("a")).toBe(true);
+  expect(docs.takeUndone("a")).toBe(false);
+});
+
 test("changes a restart left unsent go up at the next start, merged with what changed there meanwhile, field by field", async () => {
   seed("a", { titles: ["One"], chat: ["hello"] });
   await docs.get("a");

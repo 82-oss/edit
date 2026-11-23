@@ -151,7 +151,7 @@ export function routes(router: Router<App>): void {
         const live = run.liveOf(found.thumb.id);
         // Going on a Mac that stopped renewing its lease: stopped, not "running" for good.
         const thumb = found.thumb.run === null ? found.thumb : live !== null ? { ...found.thumb, run: { ...found.thumb.run, ...live } } : { ...found.thumb, run: stale(found.thumb.run) };
-        return json({ thumb, rev: found.rev });
+        return json({ thumb, rev: found.rev, ...(cloud.takeUndone(found.thumb.id) ? { undone: true } : {}) });
       } catch (error) {
         failed(error);
       }
