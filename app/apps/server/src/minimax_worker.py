@@ -273,35 +273,44 @@ def mask_frame(frame_rgb, boxes, y0, scale):
 # A caption's box up to this tall (at 1080 lines) is cut down to its letters; a taller one is a logo, kept whole.
 LETTERS_UNDER = 170
 # Letters that fill less of their box than this weren't found (a caption fading in or out, or none there): the box whole.
-LETTERS_LEAST = 0.03
+LETTERS_LEAST = 0.006
 
 
 def letters_of(frame_rgb, a, b, c, d, scale):
     """The mask of one box cut down to the letters in it, grown to take their outline, shadow and glow (255 = theirs).
     The model repaints at about half the picture's size, so a solid box comes back as a soft patch the size of the box
     (Sphe, Nov 23: "a lot of things where we fall back to a blur", which were its cleans); round thin strokes the
-    picture's own pixels stay. A letter is what stands out from the picture with its fine detail taken off (a median
-    wider than a stroke), or a bold colour. Fine detail of the picture inside the box goes with them, which costs
-    nothing; with next to nothing found the whole box is kept."""
+    picture's own pixels stay. The letters are told by their own colour: a bold-coloured caption's fill is the commonest
+    bold hue in the box, a white one's is bright, colourless and edged in dark. Anything that merely stands out from
+    the picture is not a letter (the first try took a rug's weave and a cupboard's edges with them, Nov 23). With next
+    to nothing found, a fade or a caption of another make, the whole box is kept."""
     import cv2
 
-    bh, bw = frame_rgb.shape[:2]
     if b - a < 4 or d - c < 4:
         return 255
-    reach = int(40 * scale)
-    A, B, C, D = max(0, a - reach), min(bw, b + reach), max(0, c - reach), min(bh, d + reach)
-    lab = cv2.cvtColor(np.ascontiguousarray(frame_rgb[C:D, A:B]), cv2.COLOR_RGB2LAB)
-    flat = cv2.medianBlur(lab, int(41 * scale) | 1)
-    apart = np.abs(lab.astype(np.int16) - flat.astype(np.int16))
-    hsv = cv2.cvtColor(np.ascontiguousarray(frame_rgb[C:D, A:B]), cv2.COLOR_RGB2HSV)
-    core = ((apart[..., 0] * 0.6 + apart[..., 1] + apart[..., 2] > 26) | ((hsv[..., 1] > 110) & (hsv[..., 2] > 100))).astype(np.uint8)
-    core = cv2.morphologyEx(core, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    inside = core[c - C:d - C, a - A:b - A]
-    if inside.mean() < LETTERS_LEAST:
+    hsv = cv2.cvtColor(np.ascontiguousarray(frame_rgb[c:d, a:b]), cv2.COLOR_RGB2HSV)
+    hue, sat, val = hsv[..., 0].astype(np.int16), hsv[..., 1], hsv[..., 2]
+    bold = (sat > 110) & (val > 120)
+    core = None
+    if bold.mean() >= LETTERS_LEAST:
+        # The fill's hue: the commonest among the bold pixels (OpenCV's hue runs 0-179 and wraps).
+        top = int(np.bincount(hue[bold], minlength=180).argmax())
+        near = np.minimum(np.abs(hue - top), 180 - np.abs(hue - top)) <= 10
+        fill = (bold & near).astype(np.uint8)
+        if fill.mean() >= LETTERS_LEAST:
+            core = fill
+    if core is None:
+        white = ((sat < 45) & (val > 205)).astype(np.uint8)
+        edge = int(4 * scale) * 2 + 1
+        dark = cv2.erode(val, np.ones((edge, edge), np.uint8)) < 70
+        white = white & dark.astype(np.uint8)
+        if white.mean() >= LETTERS_LEAST:
+            core = white
+    if core is None:
         return 255
+    core = cv2.morphologyEx(core, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     grow = int(9 * scale) * 2 + 1
-    grown = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow)))
-    return grown[c - C:d - C, a - A:b - A] * 255
+    return cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow, grow))) * 255
 
 
 def alpha_of(mask, feather=FEATHER):
