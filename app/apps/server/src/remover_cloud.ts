@@ -89,8 +89,8 @@ export interface Started {
   out: string;
 }
 
-/** Starts a job of `kind` (the relay's request for it), `worker` for a GPU clean. */
-export async function start(kind: "clean" | "learn" | "watermark" | "track", request: Record<string, unknown>, worker?: string): Promise<Started> {
+/** Starts a job of `kind` (the relay's request for it), `worker` for GPU clean/find jobs. */
+export async function start(kind: "clean" | "learn" | "watermark" | "track" | "find", request: Record<string, unknown>, worker?: string): Promise<Started> {
   return (await call<Started>("POST", "/v1/remover/jobs", { kind, request, ...(worker === undefined ? {} : { worker }) })).value;
 }
 
@@ -217,4 +217,36 @@ export async function track(key: string, size: [number, number], fps: number, re
   for (let at = samples.length - 1; at > 0; at--) if (samples[at]!.t === samples[at - 1]!.t) samples.splice(at, 1);
   diag.info("removal", `track ${from.toFixed(1)}–${to.toFixed(1)} s read on rented machines in ${parts.length} part${parts.length === 1 ? "" : "s"} (${samples.length} reads)`);
   return samples;
+}
+
+// ---------------------------------------------------------------------------
+// The finder (captions, labels, marks and notes on rented GPUs)
+
+/** Parent finder state put on R2 for slowed-copy find jobs, by its hash. */
+const parentStatesUp = new Map<string, Promise<string>>();
+
+export async function parentStateKey(stateJson: string): Promise<string> {
+  const hash = createHash("sha256").update(stateJson).digest("hex").slice(0, 32);
+  let up = parentStatesUp.get(hash);
+  if (up === undefined) {
+    up = (async () => {
+      const key = `edit/cleaned/finder/${hash}.json`;
+      if ((await cloud.head(key).catch(() => null)) === null) {
+        const put = await fetch(await cloud.presign(key, "PUT"), { method: "PUT", body: stateJson, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(300_000) });
+        if (!put.ok) throw new Error(`the parent finder state couldn't go up (${put.status})`);
+      }
+      return key;
+    })();
+    up.catch(() => parentStatesUp.delete(hash));
+    parentStatesUp.set(hash, up);
+  }
+  return up;
+}
+
+/** Runs finder `survey` on a rented GPU for a file on R2 and returns its packed SurveyBundle JSON. */
+export async function find<T>(key: string, spans: [number, number][], worker: string, parentKey: string | null = null, stopped: () => boolean = () => false): Promise<T> {
+  const job = await start("find", { input: key, spans, ...(parentKey === null ? {} : { parent: parentKey }) }, worker);
+  const answer = await wait<{ ok: boolean; error?: string; seconds?: number }>(job, stopped);
+  if (!answer.ok) throw new Error(answer.error ?? "the finder couldn't read the file");
+  return JSON.parse(await take(job.out)) as T;
 }

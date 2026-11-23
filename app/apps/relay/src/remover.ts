@@ -48,12 +48,14 @@ const URL_SECONDS = 6 * 3600;
 const OUT_PREFIX = "edit/cleaned/work/";
 /** The marks' models Edit puts up for the watermark jobs (remover_cloud.ts `modelKey`). */
 const MODEL_PREFIX = "edit/cleaned/models/";
+/** Parent finder state Edit puts up for slowed-copy find jobs (remover_cloud.ts `parentStateKey`). */
+const FINDER_PREFIX = "edit/cleaned/finder/";
 const MAX_FRAMES = 36_000;
 const MAX_WORKER = 200_000;
 
-type Kind = "clean" | "learn" | "watermark" | "track";
+type Kind = "clean" | "learn" | "watermark" | "track" | "find";
 type Pool = "gpu" | "cpu";
-const poolOf = (kind: Kind): Pool => (kind === "clean" ? "gpu" : "cpu");
+const poolOf = (kind: Kind): Pool => (kind === "clean" || kind === "find" ? "gpu" : "cpu");
 
 /**
  * Machines rented at once a pool. One GPU, the cheapest way (Sphe, Nov 20: "lets go ahead and do it the cheap way":
@@ -71,6 +73,10 @@ export const MAX_PODS: Record<Pool, number> = { gpu: 16, cpu: 2 };
  */
 const GPU_WORK_EACH_S = 15 * 60;
 const GPU_S_A_FOOTAGE_S = 8;
+/** Weight of one finder job when deciding how many GPUs to rent: ~1 s of card weight per footage second plus 60 s overhead,
+ * so one short file or a handful of tiny clips share a card while several long files rent cards in parallel (and stay warm for cleans). */
+const FIND_S_A_FOOTAGE_S = 1;
+const FIND_OVERHEAD_S = 60;
 /** Jobs a CPU machine does at once (cpu.ts LANES on 32 cores): how many waiting jobs one machine covers. */
 const CPU_LANES = 5;
 /** A rented machine that hasn't asked for work by now (booting: pulling the image, installing, loading) is let go. */
@@ -145,6 +151,13 @@ export function readRequest(kind: Kind, value: unknown): Record<string, unknown>
     if (!validKey(r.model) || !(r.model as string).startsWith(MODEL_PREFIX)) return null;
     return { input: r.input, size: r.size, fps: r.fps, from: r.from, to: r.to, model: r.model, keep: r.keep ?? [] };
   }
+  if (kind === "find") {
+    if (!Array.isArray(r.spans) || r.spans.length === 0 || r.spans.length > 2000) return null;
+    if (!r.spans.every((span) => Array.isArray(span) && span.length === 2 && num(span[0], 0, 1e6) && num(span[1], 0, 1e6) && (span[1] as number) >= (span[0] as number))) return null;
+    const parent = r.parent === undefined || r.parent === null ? null : validKey(r.parent) && String(r.parent).startsWith(FINDER_PREFIX) ? String(r.parent) : undefined;
+    if (parent === undefined) return null;
+    return { input: r.input, spans: r.spans, ...(parent === null ? {} : { parent }) };
+  }
   // track
   const plan = r.plan as Record<string, unknown> | undefined;
   if (!isSize(r.size) || !num(r.fps, 1, 240) || !num(r.from, 0, 1e6) || !num(r.to, 0, 1e6) || !(r.to > r.from) || !isBox(r.region)) return null;
@@ -189,15 +202,15 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
     }
     // Builds before kinds sent a clean alone.
     const kind = (body.kind ?? "clean") as Kind;
-    if (!["clean", "learn", "watermark", "track"].includes(kind)) return json(400, { error: "kind is clean, learn, watermark or track." });
-    if (kind === "clean" && (typeof body.worker !== "string" || body.worker.length === 0 || body.worker.length > MAX_WORKER)) return json(400, { error: "worker must be the worker's code." });
+    if (!["clean", "learn", "watermark", "track", "find"].includes(kind)) return json(400, { error: "kind is clean, learn, watermark, track or find." });
+    if ((kind === "clean" || kind === "find") && (typeof body.worker !== "string" || body.worker.length === 0 || body.worker.length > MAX_WORKER)) return json(400, { error: "worker must be the worker's code." });
     const job = readRequest(kind, body.request);
     if (job === null) return json(400, { error: `request isn't a ${kind} job.` });
     if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `remover:${burstKey(request, found)}` })).success) return json(429, { error: "Too many jobs at once; try again in a minute." });
     const id = crypto.randomUUID();
-    const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" ? "json" : "mp4"}`;
+    const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" || kind === "find" ? "json" : "mp4"}`;
     const backlog = typeof body.backlog === "number" && Number.isFinite(body.backlog) ? Math.min(Math.max(0, body.backlog), 86_400) : 0;
-    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" ? body.worker : undefined, request: job, relay: url.origin, backlog });
+    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" || kind === "find" ? body.worker : undefined, request: job, relay: url.origin, backlog });
     if (!answer.ok) return answer;
     // The same job already queued or under way (Edit restarted mid-job and sent it again): that one, not a twin.
     const twin = (await answer.json()) as { id?: string; out?: string };
@@ -302,9 +315,15 @@ export class RemoverPods {
     for (let at = 0; at < ids.length; at += 128) {
       const jobs = await this.storage().get<Job>(ids.slice(at, at + 128).map((id) => `j:${id}`));
       for (const job of jobs.values()) {
-        const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
-        const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
-        seconds += (frames / fps) * GPU_S_A_FOOTAGE_S;
+        if (job.kind === "find") {
+          const spans = Array.isArray(job.request.spans) ? (job.request.spans as [number, number][]) : [];
+          const shown = spans.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
+          seconds += shown * FIND_S_A_FOOTAGE_S + FIND_OVERHEAD_S;
+        } else {
+          const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
+          const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
+          seconds += (frames / fps) * GPU_S_A_FOOTAGE_S;
+        }
       }
     }
     return seconds;
@@ -419,6 +438,10 @@ export class RemoverPods {
       const beneath = await Promise.all(((r.beneath as Beneath[] | undefined) ?? []).map(async (one) => ({ file: await get(one.key), from: one.from, box: one.box })));
       return { ...base, worker: job.worker, beneath, from: r.from, fps: r.fps, width: r.width, height: r.height, matrix: r.matrix, masks: r.masks };
     }
+    if (job.kind === "find") {
+      const parentUrl = typeof r.parent === "string" ? await get(r.parent) : null;
+      return { ...base, worker: job.worker, spans: r.spans, ...(parentUrl === null ? {} : { parent_url: parentUrl }) };
+    }
     if (job.kind === "watermark") return { ...base, size: r.size, fps: r.fps, from: r.from, to: r.to, keep: r.keep, model_url: await get(String(r.model)) };
     if (job.kind === "learn") return { ...base, size: r.size, duration: r.duration, hint: r.hint, avoid: r.avoid };
     return { ...base, size: r.size, fps: r.fps, region: r.region, plan: r.plan, from: r.from, to: r.to };
@@ -530,7 +553,7 @@ export class RemoverPods {
               gpu: { id: gpu.id, count: 1, minCudaVersion: "12.8" },
               image: GPU_IMAGE,
               cmd: ['mkdir -p /tmp/remover && echo "$BOOTSTRAP_B64" | base64 -d > /tmp/remover/bootstrap.sh && echo "$POD_B64" | base64 -d > /tmp/remover/pod.py && exec bash /tmp/remover/bootstrap.sh'],
-              disk: 30,
+              disk: 40,
               env: { BOOTSTRAP_B64, POD_B64, REMOVER_RELAY: relay, REMOVER_TOKEN: token },
             },
           }))

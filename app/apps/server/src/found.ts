@@ -23,22 +23,27 @@
 // cleans the captions' band, the blur keeps the rest (a label at the top and a
 // caption at the bottom would be one band the height of the picture).
 //
-// The finder runs on this machine where it's installed (Linux, an NVIDIA GPU,
-// `~/.local/share/edit-finder/venv`); elsewhere `available()` is false and
-// removal goes on as before, by the agent's marks.
+// The finder runs on RunPod's GPU pool when RunPod removal is on (remover_cloud.ts:
+// every Mac gets the new finder, files scan side by side, and finished boxes are
+// shared on R2 by source so nothing is scanned twice). When RunPod is off it runs
+// locally where installed (Linux, an NVIDIA GPU, `~/.local/share/edit-finder/venv`);
+// elsewhere `available()` is false and removal goes on as before, by the agent's marks.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import * as claudeAi from "./ai_claude.ts";
 import type { App } from "./app.ts";
+import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import type { Media } from "./model.ts";
 import type { Box } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { merged } from "./removal_sections.ts";
+import * as removerCloud from "./remover_cloud.ts";
 import type { Sample } from "./text_track.ts";
 import * as claude from "./writer/claude.ts";
 
@@ -101,6 +106,10 @@ const AROUND_S = 0.25;
 export const LONGEST_S = 30;
 
 const INSTALLED = join(os.homedir(), ".local", "share", "edit-finder");
+/** Files scanned in parallel when the finder runs on RunPod (local GPU stays 1 at a time). */
+const CLOUD_AT_ONCE = 6;
+let scriptsJsonCache: string | null = null;
+const scriptsJson = (): string => (scriptsJsonCache ??= JSON.stringify(SCRIPTS));
 
 // ---------------------------------------------------------------------------
 // Where it runs
@@ -117,12 +126,18 @@ export const useFinderForTests = (given: StandIn | null): void => {
 };
 
 let availableHere: boolean | null = null;
-/** Whether this machine finds what's theirs itself: Linux, an NVIDIA GPU, the finder's Python installed. */
-export function available(): boolean {
-  if (standIn !== null) return true;
+/** Whether this machine has the local Linux NVIDIA finder installed. */
+function localAvailable(): boolean {
   if (availableHere !== null) return availableHere;
   availableHere = process.env.NODE_ENV !== "test" && process.platform === "linux" && fs.existsSync(join(INSTALLED, "venv", "bin", "python")) && fs.existsSync("/dev/nvidiactl");
   return availableHere;
+}
+
+/** Whether Edit finds what's theirs with the finder: via RunPod (every OS) or locally (Linux + NVIDIA). */
+export function available(): boolean {
+  if (standIn !== null) return true;
+  if (removerCloud.now()) return true;
+  return localAvailable();
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +145,8 @@ export function available(): boolean {
 
 const slug = (source: string) => source.replace(/[^a-z0-9]+/giu, "-").slice(0, 80);
 const fileOf = (app: App, source: string) => join(app.store.cacheDir(), "cleaned", "found", `${slug(source)}.v${VERSION}.json`);
+const parentFileOf = (app: App, source: string) => join(app.store.cacheDir(), "cleaned", "found", `${slug(source)}.v${VERSION}.parent.json`);
+const cloudKeyOf = (source: string) => `edit/cleaned/found/${createHash("sha256").update(source).digest("hex").slice(0, 32)}.v${VERSION}.json`;
 const kept = new Map<string, Found | null>();
 
 /** A file's boxes, when the finder has read it. */
@@ -294,12 +311,13 @@ The list below gives each tile's words as a reader read them (often garbled) and
 Answer with one JSON object and nothing else, every tile's number to its word: {"0": "overlay", "1": "scene", ...}`;
 
 /** The judge's word on each thing asked (Opus, 64 tiles a question); anything it gave no word on is "unclear". */
-export async function judge(scratchDir: string, ask: Asked[], sheets: string[]): Promise<Record<string, Verdict>> {
+export async function judge(scratchDir: string, ask: Asked[], sheets: string[], sheetsB64?: string[]): Promise<Record<string, Verdict>> {
   const out: Record<string, Verdict> = {};
   if (ask.length === 0) return out;
+  const images = sheetsB64 ?? sheets.map((file) => fs.readFileSync(file).toString("base64"));
   const PER = 4;
-  for (let at = 0; at < sheets.length; at += PER) {
-    const pictures = sheets.slice(at, at + PER);
+  for (let at = 0; at < images.length; at += PER) {
+    const pictures = images.slice(at, at + PER);
     const list = ask
       .map((one, index) => ({ one, index }))
       .slice(at * 16, (at + PER) * 16)
@@ -311,7 +329,7 @@ export async function judge(scratchDir: string, ask: Asked[], sheets: string[]):
       messages: [
         {
           role: "user",
-          content: [{ type: "text", text: `${JUDGE}\n\n${list}` }, ...pictures.map((file) => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(file).toString("base64")}` } }))],
+          content: [{ type: "text", text: `${JUDGE}\n\n${list}` }, ...pictures.map((b64) => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }))],
         },
       ],
     };
@@ -327,6 +345,122 @@ export async function judge(scratchDir: string, ask: Asked[], sheets: string[]):
     }
   }
   return out;
+}
+
+/** Seams for tests (replacing the Opus judge call). */
+export const judgeHooks = { judge };
+
+// ---------------------------------------------------------------------------
+// Cloud survey bundle → Found (pure TypeScript mirror of find.py finish + assemble.py build)
+
+export interface SurveyAsk extends Asked {
+  f: number;
+  masks?: Mask[];
+  note?: [number, number, number, number, number, number];
+}
+
+export interface ParentVerdicts {
+  yes: [string, string, number][];
+  labels: string[];
+}
+
+export interface ParentState {
+  zone: unknown;
+  marks: unknown;
+  notes: unknown;
+  cands: unknown;
+  roamExt?: unknown;
+  verdicts?: ParentVerdicts;
+}
+
+/** Everything `find.py survey --pack` writes on RunPod so Edit finishes on any OS with no Python. */
+export interface SurveyBundle {
+  version: 1;
+  width: number;
+  height: number;
+  fps: number;
+  frames: number;
+  covered: [number, number][];
+  baseMasks: Mask[];
+  baseNotes: [number, number, number, number, number, number][];
+  roamMasks: Mask[];
+  ask: SurveyAsk[];
+  sheetsB64: string[];
+  parentState?: ParentState;
+}
+
+function padBox(b: [number, number, number, number], width: number, height: number): [number, number, number, number] {
+  const h = b[3] - b[1];
+  const py = Math.max(6, 0.12 * h);
+  const px = 0.3 * h;
+  return [Math.max(0, Math.trunc(b[0] - px)), Math.max(0, Math.trunc(b[1] - py)), Math.min(width, Math.trunc(b[2] + px)), Math.min(height, Math.trunc(b[3] + py))];
+}
+
+/**
+ * Turns a RunPod `SurveyBundle` and the judge's verdicts into `Found`, matching `find.py finish` + `assemble.py build`
+ * identically so Macs and Linux machines without Python need no second pod round-trip.
+ */
+export function finishSurvey(bundle: SurveyBundle, verdicts: Record<string, Verdict>): { found: Found; parentVerdicts: ParentVerdicts } {
+  const yes: [string, string, number][] = [];
+  const labels: string[] = [];
+  const masks: Mask[] = [...bundle.baseMasks];
+  const one: [number, number, number, number, number, number][] = bundle.baseNotes.map((n) => [...n] as [number, number, number, number, number, number]);
+  let includeRoam = false;
+
+  for (let i = 0; i < bundle.ask.length; i++) {
+    const item = bundle.ask[i]!;
+    const v: Verdict = verdicts[String(i)] ?? "unclear";
+    if (item.kind === "label" || item.kind === "roamer") {
+      // A label the judge couldn't make out stays theirs (it held its place through scene changes); the camera's goes.
+      if (v === "overlay" || v === "unclear") {
+        labels.push(item.text);
+        if (item.kind === "label" && item.masks !== undefined) masks.push(...item.masks);
+        if (item.kind === "roamer") includeRoam = true;
+      }
+    } else if (v === "overlay") {
+      yes.push([item.kind, item.text, item.f]);
+      if (item.masks !== undefined) masks.push(...item.masks);
+      if (item.note !== undefined) one.push([...item.note] as [number, number, number, number, number, number]);
+    }
+  }
+  if (includeRoam) masks.push(...bundle.roamMasks);
+
+  // Merge notes & approved one-off lines on screen together into one block (assemble.py lines 115–124).
+  one.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3] || a[4] - b[4] || a[5] - b[5]);
+  const blocks: [number, number, number, number, number, number][] = [];
+  for (const o of one) {
+    let mergedInto = false;
+    for (const b of blocks) {
+      const h = Math.max(o[5] - o[3], b[5] - b[3]);
+      if (o[0] <= b[1] + 60 && Math.min(o[5], b[5]) - Math.max(o[3], b[3]) > -1.5 * h && Math.min(o[4], b[4]) - Math.max(o[2], b[2]) > -6 * h) {
+        b[1] = Math.max(b[1], o[1]);
+        b[2] = Math.min(b[2], o[2]);
+        b[3] = Math.min(b[3], o[3]);
+        b[4] = Math.max(b[4], o[4]);
+        b[5] = Math.max(b[5], o[5]);
+        mergedInto = true;
+        break;
+      }
+    }
+    if (!mergedInto) blocks.push([...o] as [number, number, number, number, number, number]);
+  }
+  for (const b of blocks) {
+    const box = padBox([b[2], b[3], b[4], b[5]], bundle.width, bundle.height);
+    const ex = Math.trunc(0.5 * (b[5] - b[3]));
+    masks.push([b[0] - 10, b[1] + 10, Math.max(0, box[0] - ex), box[1], Math.min(bundle.width, box[2] + ex), box[3], "note"]);
+  }
+
+  const last = Math.max(0, Math.trunc(bundle.frames) - 1);
+  const out: Mask[] = [];
+  for (const m of masks) {
+    if (m[1] >= 0 && m[0] <= last && m[4] > m[2] && m[5] > m[3]) {
+      out.push([Math.max(0, Math.trunc(m[0])), Math.min(last, Math.trunc(m[1])), Math.trunc(m[2]), Math.trunc(m[3]), Math.trunc(m[4]), Math.trunc(m[5]), m[6] === "note" ? "note" : m[6]]);
+    }
+  }
+  return {
+    found: { version: 1, width: bundle.width, height: bundle.height, fps: bundle.fps, covered: bundle.covered, masks: out },
+    parentVerdicts: { yes, labels },
+  };
 }
 
 /** The judge's answer read: the first JSON object in it, each known word kept. */
@@ -359,8 +493,11 @@ export interface FindPiece {
 const pieces = new Map<string, Map<string, FindPiece>>();
 /** Files being read or waiting, by source: one read a file, whichever projects want it. */
 const reading = new Map<string, Promise<void>>();
-const queue: (() => Promise<void>)[] = [];
-let busy: Promise<void> | null = null;
+/** Projects currently waiting on each source (when the last one stops, a RunPod job for it is cancelled). */
+const watchers = new Map<string, Set<string>>();
+const stoppedSources = new Set<string>();
+const queue: { source: string; run: () => Promise<void> }[] = [];
+let running = 0;
 
 /** Called with a file's source when its boxes are written (text_blur.ts lets go of the tracks it made from the old ones). */
 export const whenRead: ((source: string) => void)[] = [];
@@ -372,15 +509,145 @@ export const piecesOf = (id: string): FindPiece[] => [...(pieces.get(id)?.values
 /** How many of the project's files are still being read. */
 export const outOf = (id: string): number => piecesOf(id).filter((one) => one.state === "queued" || one.state === "running").length;
 
+/** Stops finder work for project `id`: cancels queued/running RunPod jobs nobody else waits on. */
+export function stop(id: string): void {
+  pieces.delete(id);
+  for (const [source, projects] of watchers) {
+    projects.delete(id);
+    if (projects.size === 0) {
+      watchers.delete(source);
+      stoppedSources.add(source);
+    }
+  }
+}
+
 function drain(): void {
-  if (busy !== null) return;
-  // One file at a time: the reads are the GPU's, and the picture's decoding takes the cores.
-  busy = (async () => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next();
-  })().finally(() => {
-    busy = null;
-    if (queue.length > 0) drain();
-  });
+  const limit = standIn === null && removerCloud.now() ? CLOUD_AT_ONCE : 1;
+  while (running < limit && queue.length > 0) {
+    const item = queue.shift()!;
+    running += 1;
+    void item
+      .run()
+      .catch(() => {})
+      .finally(() => {
+        running -= 1;
+        drain();
+      });
+  }
+}
+
+interface CloudFoundRecord {
+  found: Found;
+  parentState?: ParentState;
+}
+
+/** Shared finder boxes from R2 (so no two machines scan the same footage twice). */
+async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null> {
+  if (standIn !== null || !cloud.enabled()) return null;
+  try {
+    const answer = await fetch(await cloud.presign(cloudKeyOf(source), "GET"), { signal: AbortSignal.timeout(30_000) });
+    if (!answer.ok) return null;
+    const raw = (await answer.json()) as Partial<CloudFoundRecord> & Partial<Found>;
+    // Accept either { found, parentState } or a bare Found record.
+    if (raw.found !== undefined && raw.found.version === VERSION && Array.isArray(raw.found.masks)) {
+      return { found: raw.found, parentState: raw.parentState };
+    }
+    if (raw.version === VERSION && Array.isArray(raw.masks)) {
+      return { found: raw as Found };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveCloudFound(source: string, found: Found, parentState: ParentState | null): Promise<void> {
+  if (standIn !== null || !cloud.enabled()) return;
+  try {
+    const body = JSON.stringify(parentState === null ? { found } : { found, parentState });
+    const put = await fetch(await cloud.presign(cloudKeyOf(source), "PUT"), { method: "PUT", body, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(60_000) });
+    if (!put.ok) diag.warn("removal", `found cache couldn't go up (${put.status})`);
+  } catch (error) {
+    diag.warn("removal", `found cache couldn't go up: ${diag.messageOf(error)}`);
+  }
+}
+
+function writeLocalFound(app: App, source: string, found: Found, parentState: ParentState | null): void {
+  const file = fileOf(app, source);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(found));
+  fs.renameSync(`${file}.tmp`, file);
+  if (parentState !== null) {
+    const pfile = parentFileOf(app, source);
+    fs.writeFileSync(`${pfile}.tmp`, JSON.stringify(parentState));
+    fs.renameSync(`${pfile}.tmp`, pfile);
+  }
+  kept.set(source, found);
+  for (const listener of whenRead) listener(source);
+}
+
+function readLocalParentState(app: App, source: string): ParentState | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(parentFileOf(app, source), "utf8")) as ParentState;
+    if (raw !== null && typeof raw === "object" && raw.zone !== undefined) return raw;
+  } catch {
+    // Fall back to local finder/f/scan files when the parent was scanned locally by an older build.
+  }
+  try {
+    const root = join(app.store.cacheDir(), "cleaned", "finder", "f");
+    const mid = slug(source);
+    const zone = JSON.parse(fs.readFileSync(join(root, "scan", `${mid}.zone.json`), "utf8")) as unknown;
+    const marks = JSON.parse(fs.readFileSync(join(root, "scan", `${mid}.marks.json`), "utf8")) as unknown;
+    const notes = JSON.parse(fs.readFileSync(join(root, "scan", `${mid}.notes.json`), "utf8")) as unknown;
+    const cands = JSON.parse(fs.readFileSync(join(root, "scan", `${mid}.cands.json`), "utf8")) as unknown;
+    let roamExt: unknown = null;
+    try {
+      roamExt = JSON.parse(fs.readFileSync(join(root, "scan", `${mid}.roam.ext.json`), "utf8")) as unknown;
+    } catch {
+      roamExt = null;
+    }
+    let verdicts: ParentVerdicts = { yes: [], labels: [] };
+    try {
+      const all = JSON.parse(fs.readFileSync(join(root, "verdicts.json"), "utf8")) as Record<string, unknown>;
+      verdicts = {
+        yes: Array.isArray(all[mid]) ? (all[mid] as [string, string, number][]) : [],
+        labels: Array.isArray(all[`${mid}:labels`]) ? (all[`${mid}:labels`] as string[]) : [],
+      };
+    } catch {
+      // No verdicts saved.
+    }
+    return { zone, marks, notes, cands, roamExt, verdicts };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveParentState(app: App, parent: { media: Media; source: string }, stopped: () => boolean): Promise<ParentState> {
+  const local = readLocalParentState(app, parent.source);
+  if (local !== null) return local;
+  const remote = await fetchCloudFound(parent.source);
+  if (remote?.parentState !== undefined) {
+    writeLocalFound(app, parent.source, remote.found, remote.parentState);
+    return remote.parentState;
+  }
+  // Parent was read earlier without saved parent state (e.g., an older local build): scan parent on RunPod now.
+  const key = removerCloud.keyOf(parent.media);
+  if (key === undefined) throw new Error("the file it was slowed from isn't in the cloud yet");
+  const existing = foundOf(app, parent.source);
+  const spans: [number, number][] = existing !== null && existing.covered.length > 0 ? existing.covered : [[0, parent.media.duration ?? 0]];
+  const bundle = await removerCloud.find<SurveyBundle>(key, spans, scriptsJson(), null, stopped);
+  const verdicts = await judgeHooks
+    .judge(join(app.store.cacheDir(), "cleaned", "finder", "judge"), bundle.ask, [], bundle.sheetsB64)
+    .catch((error: unknown) => {
+      diag.warn("removal", `${parent.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
+      return {} as Record<string, Verdict>;
+    });
+  const { found: parentFound, parentVerdicts } = finishSurvey(bundle, verdicts);
+  const pstate: ParentState | null = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: parentVerdicts };
+  writeLocalFound(app, parent.source, parentFound, pstate);
+  await saveCloudFound(parent.source, parentFound, pstate);
+  if (pstate === null) throw new Error("the file it was slowed from produced no parent state");
+  return pstate;
 }
 
 /** The finder's scripts, written where its Python runs them (the same words every start, so only once). */
@@ -427,45 +694,78 @@ interface Want {
   parent: { media: Media; source: string } | null;
 }
 
-async function find(app: App, want: Want): Promise<void> {
+async function find(app: App, want: Want, stopped: () => boolean): Promise<void> {
   const root = join(app.store.cacheDir(), "cleaned", "finder");
   const mid = slug(want.source);
   const parent = want.parent === null ? null : slug(want.parent.source);
   const started = Date.now();
   let found: Found;
+  let parentState: ParentState | null = null;
+  let fromCloudCache = false;
+  let viaRunPod = false;
+
   if (standIn !== null) {
     const asked = await standIn.find({ mid, video: want.media.path, spans: want.shown, parent });
-    found = await standIn.finish({ mid, parent, verdicts: await judge(join(root, "judge"), asked.ask, asked.sheets) });
+    found = await standIn.finish({ mid, parent, verdicts: await judgeHooks.judge(join(root, "judge"), asked.ask, asked.sheets) });
   } else {
-    const { file, fetched } = await localFile(app, want.media);
-    try {
-      fs.mkdirSync(root, { recursive: true });
-      const spans = join(root, `${mid}.spans.json`);
-      fs.writeFileSync(spans, JSON.stringify(want.shown));
-      const asked = (await python(app, ["survey", root, mid, file, spans, ...(parent === null ? [] : ["--parent", parent])])) as { ask: Asked[]; sheets: string[] };
-      // A judge that can't be reached leaves every answer "unclear": a label stays theirs, a one-off stays in.
-      const verdicts = await judge(join(root, "judge"), asked.ask, asked.sheets).catch((error: unknown) => {
-        diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
-        return {} as Record<string, Verdict>;
-      });
-      const answers = join(root, `${mid}.verdicts.json`);
-      fs.writeFileSync(answers, JSON.stringify(verdicts));
-      const done = (await python(app, ["finish", root, mid, answers, ...(parent === null ? [] : ["--parent", parent])])) as { found: string };
-      found = JSON.parse(fs.readFileSync(done.found, "utf8")) as Found;
-      fs.rmSync(spans, { force: true });
-    } finally {
-      if (fetched) fs.rmSync(file, { force: true });
+    // Check shared R2 cache first: if another machine already scanned all of these spans, reuse it immediately.
+    const remote = await fetchCloudFound(want.source);
+    if (remote !== null && covers(remote.found, want.shown)) {
+      found = remote.found;
+      parentState = remote.parentState ?? null;
+      fromCloudCache = true;
+    } else {
+      const spansToScan = remote !== null ? merged([...remote.found.covered, ...want.shown]) : want.shown;
+      const key = removerCloud.keyOf(want.media);
+      const useRunPod = key !== undefined && (await removerCloud.on());
+      if (useRunPod) {
+        viaRunPod = true;
+        let parentKey: string | null = null;
+        if (want.parent !== null) {
+          const pstate = await resolveParentState(app, want.parent, stopped);
+          parentKey = await removerCloud.parentStateKey(JSON.stringify(pstate));
+        }
+        const bundle = await removerCloud.find<SurveyBundle>(key, spansToScan, scriptsJson(), parentKey, stopped);
+        if (stopped()) throw new Error("stopped");
+        const verdicts = await judgeHooks.judge(join(root, "judge"), bundle.ask, [], bundle.sheetsB64).catch((error: unknown) => {
+          diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
+          return {} as Record<string, Verdict>;
+        });
+        const finished = finishSurvey(bundle, verdicts);
+        found = finished.found;
+        parentState = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: finished.parentVerdicts };
+      } else if (localAvailable()) {
+        const { file, fetched } = await localFile(app, want.media);
+        try {
+          fs.mkdirSync(root, { recursive: true });
+          const spans = join(root, `${mid}.spans.json`);
+          fs.writeFileSync(spans, JSON.stringify(spansToScan));
+          const asked = (await python(app, ["survey", root, mid, file, spans, ...(parent === null ? [] : ["--parent", parent])])) as { ask: Asked[]; sheets: string[] };
+          // A judge that can't be reached leaves every answer "unclear": a label stays theirs, a one-off stays in.
+          const verdicts = await judgeHooks.judge(join(root, "judge"), asked.ask, asked.sheets).catch((error: unknown) => {
+            diag.warn("removal", `${want.media.name}: the judge couldn't be asked (${diag.messageOf(error)}); what it would have settled is left as found`);
+            return {} as Record<string, Verdict>;
+          });
+          const answers = join(root, `${mid}.verdicts.json`);
+          fs.writeFileSync(answers, JSON.stringify(verdicts));
+          const done = (await python(app, ["finish", root, mid, answers, ...(parent === null ? [] : ["--parent", parent])])) as { found: string };
+          found = JSON.parse(fs.readFileSync(done.found, "utf8")) as Found;
+          if (parent === null) parentState = readLocalParentState(app, want.source);
+          fs.rmSync(spans, { force: true });
+        } finally {
+          if (fetched) fs.rmSync(file, { force: true });
+        }
+      } else {
+        throw new Error("the file isn't in the cloud yet");
+      }
     }
   }
-  const file = fileOf(app, want.source);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(found));
-  fs.renameSync(`${file}.tmp`, file);
-  kept.set(want.source, found);
-  for (const listener of whenRead) listener(want.source);
+  writeLocalFound(app, want.source, found, parentState);
+  if (!fromCloudCache && standIn === null) await saveCloudFound(want.source, found, parentState);
   const kinds = new Map<string, number>();
   for (const mask of found.masks) kinds.set(mask[6], (kinds.get(mask[6]) ?? 0) + 1);
-  diag.info("removal", `${want.media.name}: read for what's laid over it in ${Math.round((Date.now() - started) / 1000)} s (${[...kinds].map(([kind, n]) => `${n} ${kind}`).join(", ") || "nothing of theirs"})`);
+  const where = fromCloudCache ? "from the cloud cache" : viaRunPod ? "on RunPod" : "here";
+  diag.info("removal", `${want.media.name}: read for what's laid over it ${where} in ${Math.round((Date.now() - started) / 1000)} s (${[...kinds].map(([kind, n]) => `${n} ${kind}`).join(", ") || "nothing of theirs"})`);
 }
 
 /**
@@ -483,6 +783,8 @@ export function ensure(app: App, id: string, wants: Want[]): void {
       mine.set(key, { key, media: want.media.id, name: want.media.name, state: "done" });
       continue;
     }
+    // On a machine without a local finder (e.g. a Mac), wait quietly if the original isn't on R2 yet rather than failing permanently.
+    if (standIn === null && !localAvailable() && removerCloud.keyOf(want.media) === undefined) continue;
     const had = was?.get(key);
     if (had !== undefined && had.state === "failed") {
       mine.set(key, had);
@@ -490,6 +792,13 @@ export function ensure(app: App, id: string, wants: Want[]): void {
     }
     const piece: FindPiece = had !== undefined && had.state !== "done" ? had : { key, media: want.media.id, name: want.media.name, state: "queued" };
     mine.set(key, piece);
+    stoppedSources.delete(want.source);
+    let set = watchers.get(want.source);
+    if (set === undefined) {
+      set = new Set();
+      watchers.set(want.source, set);
+    }
+    set.add(id);
     let run = reading.get(want.source);
     if (run === undefined) {
       // Everything of the file any project showed before is looked at again with what's shown now (one file of boxes a source).
@@ -497,28 +806,48 @@ export function ensure(app: App, id: string, wants: Want[]): void {
       let settle!: () => void;
       run = new Promise<void>((resolve) => (settle = resolve));
       reading.set(want.source, run);
-      queue.push(async () => {
-        try {
-          // Its parent's read, when that's under way.
-          if (want.parent !== null) await reading.get(want.parent.source);
-          if (want.parent !== null && foundOf(app, want.parent.source) === null) throw new Error("the file it was slowed from couldn't be read");
-          await find(app, { ...want, shown });
-        } finally {
-          reading.delete(want.source);
-          settle();
-        }
+      let failWhy: string | undefined;
+      queue.push({
+        source: want.source,
+        run: async () => {
+          const isStopped = () => stoppedSources.has(want.source);
+          try {
+            if (isStopped()) return;
+            for (const projPieces of pieces.values()) {
+              for (const p of projPieces.values()) if (p.media === want.media.id && p.state === "queued") p.state = "running";
+            }
+            // Its parent's read, when that's under way.
+            if (want.parent !== null) await reading.get(want.parent.source);
+            if (isStopped()) return;
+            if (want.parent !== null && foundOf(app, want.parent.source) === null) throw new Error("the file it was slowed from couldn't be read");
+            await find(app, { ...want, shown }, isStopped);
+          } catch (error) {
+            failWhy = diag.messageOf(error);
+            if (!isStopped()) diag.warn("removal", `${want.media.name}: finder failed: ${failWhy}`);
+          } finally {
+            reading.delete(want.source);
+            watchers.delete(want.source);
+            stoppedSources.delete(want.source);
+            if (failWhy !== undefined) lastError.set(want.source, failWhy);
+            else lastError.delete(want.source);
+            settle();
+          }
+        },
       });
     }
     void run.then(() => {
+      if (!pieces.has(id)) return;
       const now = foundOf(app, want.source);
       piece.state = now !== null && covers(now, want.shown) ? "done" : "failed";
-      if (piece.state === "failed") piece.why ??= "the file couldn't be read for what's laid over it";
+      if (piece.state === "failed") piece.why = lastError.get(want.source) ?? "the file couldn't be read for what's laid over it";
       for (const listener of whenFound) listener(app, id);
     });
   }
   pieces.set(id, mine);
   drain();
 }
+
+const lastError = new Map<string, string>();
 
 /** A project's want for each footage file it shows (text_removal.ts gives the sources and what's a slowed copy of what). */
 export type { Want };
@@ -528,11 +857,18 @@ export function reset(): void {
   pieces.clear();
   kept.clear();
   reading.clear();
+  watchers.clear();
+  stoppedSources.clear();
+  lastError.clear();
   queue.length = 0;
+  availableHere = null;
 }
 
 /** Resolves once nothing is being read (tests). */
 export async function settled(): Promise<void> {
-  while (busy !== null || reading.size > 0) await (busy ?? Promise.all(reading.values()));
+  while (running > 0 || queue.length > 0 || reading.size > 0) {
+    if (reading.size > 0) await Promise.all(reading.values());
+    else await Bun.sleep(5);
+  }
 }
 

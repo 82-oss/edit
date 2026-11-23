@@ -10,7 +10,7 @@
 #
 # <root>/f holds every file's reads (scan/), so a slowed copy (--parent) reads as the file it was made from: its caption
 # zone, labels and marks. Each step is one of the scripts beside this one, run in order; what each does is at its top.
-import sys, os, json, subprocess
+import sys, os, json, subprocess, base64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TAG = "f"
@@ -64,7 +64,83 @@ def sheets_of(mid, count):
     return [os.path.abspath(f"{TAG}/look/{mid}.cands{n}.jpg") for n in range((count + 15) // 16)]
 
 
-def survey(mid, video, spans, parent):
+def pack_bundle(mid, parent, out_path):
+    """Packs everything Edit's server needs to judge and finish without Python or the video (RunPod cloud finder):
+    precomputed mask groups (captions with backing, per-label/unsure masks with plate growth, roaming masks, base
+    notes), candidate tile JPEGs as base64, and parent state for slowed copies."""
+    import cv2
+    sys.path.insert(0, HERE)
+    import assemble
+    from captions import captions, pad
+
+    cap = cv2.VideoCapture(f"{TAG}/src/{mid}.mp4")
+    Z = load(f"{TAG}/scan/{parent if parent is not None else mid}.zone.json")
+    fps = cap.get(cv2.CAP_PROP_FPS) or Z["fps"]
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    W, H = Z["W"], Z["H"]
+    covered = load(f"{TAG}/shown.json", {}).get(mid, [])
+    ask_items = []
+    parent_state = None
+    if parent is not None:
+        base_masks = load(f"{TAG}/scan/{mid}.masks.json", [])
+        base_notes = []
+        roam_masks = []
+        for c in load(f"{TAG}/scan/{mid}.cands.json", []):
+            rs = c["reads"]
+            r = rs[len(rs) // 2]
+            b = pad([min(x[1] for x in rs), min(x[2] for x in rs), max(x[3] for x in rs), max(x[4] for x in rs)], W, H)
+            ex = int(0.5 * (b[3] - b[1]))
+            mask = [rs[0][0] - 10, rs[-1][0] + 10, max(0, b[0] - ex), b[1], min(W, b[2] + ex), b[3], "note"]
+            ask_items.append({"kind": "one-off", "text": c["text"], "n": c["n"], "f": r[0], "masks": [mask]})
+    else:
+        ms = captions(TAG, mid, Z)[0] if Z["zone"] else []
+        base_masks = assemble.backing(TAG, mid, ms, W, H)
+        base_notes = [[n["f0"], n["f1"], *n["box"]] for n in load(f"{TAG}/scan/{mid}.notes.json", [])]
+        roam_masks = load(f"{TAG}/scan/{mid}.roam.masks.json", [])
+        for a in assemble.ask_list(TAG, mid):
+            item = {"kind": a["kind"], "text": a["text"], "n": a["n"], "f": a["f"]}
+            if a["kind"] == "label":
+                item["masks"] = assemble.label_masks(Z, [a["mark"]], tag=TAG, mid=mid)
+            elif a["kind"] == "unsure":
+                item["masks"] = assemble.label_masks(Z, [dict(a["mark"], kind="label")], tag=TAG, mid=mid)
+            elif a["kind"] == "one-off":
+                rs = a["reads"]
+                item["note"] = [rs[0][0], rs[-1][0], min(r[1] for r in rs), min(r[2] for r in rs), max(r[3] for r in rs), max(r[4] for r in rs)]
+            ask_items.append(item)
+        parent_state = {
+            "zone": Z,
+            "marks": load(f"{TAG}/scan/{mid}.marks.json", []),
+            "notes": load(f"{TAG}/scan/{mid}.notes.json", []),
+            "cands": load(f"{TAG}/scan/{mid}.cands.json", []),
+            "roamExt": load(f"{TAG}/scan/{mid}.roam.ext.json"),
+        }
+    sheets_b64 = []
+    for path in sheets_of(mid, len(ask_items)):
+        with open(path, "rb") as f:
+            sheets_b64.append(base64.b64encode(f.read()).decode("ascii"))
+    bundle = {
+        "version": 1,
+        "width": W,
+        "height": H,
+        "fps": fps,
+        "frames": frames,
+        "covered": covered,
+        "baseMasks": base_masks,
+        "baseNotes": base_notes,
+        "roamMasks": roam_masks,
+        "ask": ask_items,
+        "sheetsB64": sheets_b64,
+    }
+    if parent_state is not None:
+        bundle["parentState"] = parent_state
+    tmp = f"{out_path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(bundle, f)
+    os.replace(tmp, out_path)
+
+
+def survey(mid, video, spans, parent, pack_path=None):
     for d in ("src", "scan", "look", "found"):
         os.makedirs(f"{TAG}/{d}", exist_ok=True)
     link = f"{TAG}/src/{mid}.mp4"
@@ -86,8 +162,15 @@ def survey(mid, video, spans, parent):
             for old in (f"{TAG}/scan/{mid}.roam.ext.json", f"{TAG}/scan/{mid}.roam.raw.json"):
                 if os.path.exists(old): os.remove(old)
             run("roamtrack.py", mid); run("glide.py", mid)
-        run("assemble.py", mid)
+        if pack_path is not None:
+            sys.path.insert(0, HERE)
+            import assemble
+            assemble.sheet(TAG, mid)
+        else:
+            run("assemble.py", mid)
         ask = load(f"{TAG}/scan/{mid}.ask.json", [])
+    if pack_path is not None:
+        pack_bundle(mid, parent, pack_path)
     print(json.dumps({"ask": [{"kind": a["kind"], "text": a["text"], "n": a["n"]} for a in ask], "sheets": sheets_of(mid, len(ask))}))
 
 
@@ -126,7 +209,8 @@ def finish(mid, verdicts, parent):
 if __name__ == "__main__":
     step, root, mid = sys.argv[1:4]
     parent = sys.argv[sys.argv.index("--parent") + 1] if "--parent" in sys.argv else None
+    pack_path = os.path.abspath(sys.argv[sys.argv.index("--pack") + 1]) if "--pack" in sys.argv else None
     os.makedirs(root, exist_ok=True); os.chdir(root)
-    if step == "survey": survey(mid, sys.argv[4], [[a, b] for a, b, *_ in json.load(open(sys.argv[5]))], parent)
+    if step == "survey": survey(mid, sys.argv[4], [[a, b] for a, b, *_ in json.load(open(sys.argv[5]))], parent, pack_path)
     elif step == "finish": finish(mid, json.load(open(sys.argv[4])), parent)
     else: raise SystemExit(f"unknown step {step}")
