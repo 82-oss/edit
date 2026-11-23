@@ -366,12 +366,12 @@ test("Stop cancels a running RunPod find job, a new project right after Stop sta
   expect(found.piecesOf("p2").every((p) => p.state === "done")).toBe(true);
 });
 
-test("malformed R2 cache without covered array is treated as a miss, shared job output stays on R2, and RunPod parent state materializes for local slowed copies", async () => {
+test("malformed R2 cache (missing or non-tuple covered) is treated as a miss, shared job output stays on R2, and newer RunPod parent state refreshes local scan files", async () => {
   const app = makeApp(path.join(tmpDir, "mac-edge"));
-  // Seed a malformed R2 found record (missing `covered`)
+  // Seed a malformed R2 found record (`covered: [null]` would throw inside covers() if accepted)
   const { createHash } = await import("node:crypto");
   const badKey = `edit/cleaned/found/${createHash("sha256").update("drive:malformed").digest("hex").slice(0, 32)}.v1.json`;
-  r2Store.set(badKey, JSON.stringify({ version: 1, width: 1920, height: 1080, fps: 30, masks: [] }));
+  r2Store.set(badKey, JSON.stringify({ version: 1, width: 1920, height: 1080, fps: 30, masks: [], covered: [null] }));
   // Mark job #1 as shared so removerCloud.find leaves job.out on R2 for other callers
   sharedJobIds.add("00000000-0000-4000-8000-000000000001");
 
@@ -383,19 +383,86 @@ test("malformed R2 cache without covered array is treated as a miss, shared job 
   // Shared output key was NOT deleted by client
   expect(r2Store.has("edit/cleaned/work/00000000-0000-4000-8000-000000000001.json")).toBe(true);
 
-  // Materialize local scan files from RunPod parent state for a local slowed copy
-  const pstate: found.ParentState = {
+  // Materialize local scan files from RunPod parent state, then verify syncLocalParentScanFiles prefers whichever is newer
+  const scanDir = path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "scan");
+  const zoneFile = path.join(scanDir, "drive-malformed.zone.json");
+  const sidecarFile = path.join(tmpDir, "mac-edge", "cleaned", "found", "drive-malformed.v1.parent.json");
+  const oldState: found.ParentState = {
     zone: { W: 1920, H: 1080, fps: 30, zone: [0.7, 0.9] },
-    marks: [{ key: "lbl", kind: "label", reads: [] }],
+    marks: [{ key: "old-lbl", kind: "label", reads: [] }],
     notes: [],
     cands: [],
     roamExt: [-10, -10, 10, 10],
-    verdicts: { yes: [["one-off", "hi", 15]], labels: ["lbl"] },
+    verdicts: { yes: [], labels: ["old-lbl"] },
   };
-  found.writeLocalParentScanFiles(app, "drive:malformed", pstate);
-  const scanDir = path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "scan");
-  expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.zone.json"), "utf8"))).toEqual(pstate.zone);
-  expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.roam.ext.json"), "utf8"))).toEqual([-10, -10, 10, 10]);
+  found.writeLocalParentScanFiles(app, "drive:malformed", oldState);
+  const olderMs = Date.now() - 60_000;
+  fs.utimesSync(zoneFile, olderMs / 1000, olderMs / 1000);
+
+  // RunPod rescan saves a newer sidecar with updated verdicts -> syncLocalParentScanFiles refreshes the local scan files
+  const newState: found.ParentState = {
+    zone: { W: 1920, H: 1080, fps: 30, zone: [0.75, 0.92] },
+    marks: [{ key: "new-lbl", kind: "label", reads: [] }],
+    notes: [],
+    cands: [],
+    roamExt: [-5, -5, 5, 5],
+    verdicts: { yes: [["one-off", "hi", 15]], labels: ["new-lbl"] },
+  };
+  fs.writeFileSync(sidecarFile, JSON.stringify(newState));
+  const newerMs = Date.now() + 10_000;
+  fs.utimesSync(sidecarFile, newerMs / 1000, newerMs / 1000);
+
+  await found.syncLocalParentScanFiles(app, "drive:malformed");
+  expect(JSON.parse(fs.readFileSync(zoneFile, "utf8"))).toEqual(newState.zone);
+  expect(JSON.parse(fs.readFileSync(path.join(scanDir, "drive-malformed.roam.ext.json"), "utf8"))).toEqual([-5, -5, 5, 5]);
   const verdicts = JSON.parse(fs.readFileSync(path.join(tmpDir, "mac-edge", "cleaned", "finder", "f", "verdicts.json"), "utf8")) as Record<string, unknown>;
-  expect(verdicts["drive-malformed:labels"]).toEqual(["lbl"]);
+  expect(verdicts["drive-malformed:labels"]).toEqual(["new-lbl"]);
+});
+
+test("queued child never deadlocks a single-slot drain behind a stopped-and-replaced parent expansion", async () => {
+  const app = makeApp(path.join(tmpDir, "single-slot"));
+  let releaseBlocker!: () => void;
+  const blockerGate = new Promise<void>((resolve) => (releaseBlocker = resolve));
+  const order: string[] = [];
+
+  // Use standIn so drain() uses its 1-slot limit (same as local GPU / RunPod-off mode)
+  found.useFinderForTests({
+    async find(req) {
+      order.push(req.mid);
+      if (req.mid === "blk") await blockerGate;
+      return { ask: [], sheets: [] };
+    },
+    async finish() {
+      return { version: 1, width: 1920, height: 1080, fps: 30, masks: [], covered: [[0, 60]] };
+    },
+  });
+  try {
+    // Seed an initial parent result so p1 is queuing a parent expansion ([0, 40]) while blk holds the only slot
+    const parentFile = path.join(tmpDir, "single-slot", "cleaned", "found", "par.v1.json");
+    fs.mkdirSync(path.dirname(parentFile), { recursive: true });
+    fs.writeFileSync(parentFile, JSON.stringify({ version: 1, width: 1920, height: 1080, fps: 30, masks: [], covered: [[0, 10]] }));
+
+    const blk = makeMedia("mb", "blk.mp4");
+    const par = makeMedia("mp", "par.mp4");
+    const child = makeMedia("mc", "child.mp4");
+
+    // 1. blk occupies the single slot
+    found.ensure(app, "p0", [{ media: blk, source: "blk", shown: [[0, 10]], parent: null }]);
+    // 2. p1 queues parent expansion, p2 queues slowed child behind it
+    found.ensure(app, "p1", [{ media: par, source: "par", shown: [[0, 40]], parent: null }]);
+    found.ensure(app, "p2", [{ media: child, source: "child", shown: [[0, 10]], parent: { media: par, source: "par" } }]);
+    // 3. p1 stops -> cancels and detaches queued parent expansion
+    found.stop("p1");
+    // 4. p3 queues replacement parent expansion AFTER child in the queue
+    found.ensure(app, "p3", [{ media: par, source: "par", shown: [[0, 50]], parent: null }]);
+
+    // 5. Release blocker: drain() must skip child and run replacement parent first instead of deadlocking
+    releaseBlocker();
+    await found.settled();
+    expect(order).toEqual(["blk", "par", "child"]);
+    expect(found.piecesOf("p2")[0]?.state).toBe("done");
+    expect(found.piecesOf("p3")[0]?.state).toBe("done");
+  } finally {
+    found.useFinderForTests(null);
+  }
 });

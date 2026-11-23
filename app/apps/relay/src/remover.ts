@@ -315,26 +315,30 @@ export class RemoverPods {
     return (await this.storage().get<string[]>(`order:${pool}`)) ?? (pool === "gpu" ? ((await this.storage().get<string[]>("order")) ?? []) : []);
   }
 
-  /** GPU seconds the waiting cleans come to (their frames, and what Edit said it holds back, at ~5 s a footage second). */
-  private async gpuWork(): Promise<number> {
+  /** GPU seconds waiting in the queue (total across cleans + backlog + finds, plus find-only work and count). */
+  private async gpuWork(): Promise<{ total: number; find: number; waitingFind: number }> {
     const ids = await this.order("gpu");
     const held = await this.storage().get<{ seconds: number; at: number }>("backlog:gpu");
-    let seconds = held !== undefined && Date.now() - held.at < 5 * 60_000 ? held.seconds * GPU_S_A_FOOTAGE_S : 0;
+    let clean = held !== undefined && Date.now() - held.at < 5 * 60_000 ? held.seconds * GPU_S_A_FOOTAGE_S : 0;
+    let find = 0;
+    let waitingFind = 0;
     for (let at = 0; at < ids.length; at += 128) {
       const jobs = await this.storage().get<Job>(ids.slice(at, at + 128).map((id) => `j:${id}`));
       for (const job of jobs.values()) {
+        if (job.state !== "queued") continue;
         if (job.kind === "find") {
           const spans = Array.isArray(job.request.spans) ? (job.request.spans as [number, number][]) : [];
           const shown = spans.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
-          seconds += shown * FIND_S_A_FOOTAGE_S + FIND_OVERHEAD_S;
+          find += shown * FIND_S_A_FOOTAGE_S + FIND_OVERHEAD_S;
+          waitingFind += 1;
         } else {
           const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
           const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
-          seconds += (frames / fps) * GPU_S_A_FOOTAGE_S;
+          clean += (frames / fps) * GPU_S_A_FOOTAGE_S;
         }
       }
     }
-    return seconds;
+    return { total: clean + find, find, waitingFind };
   }
 
   private async setOrder(pool: Pool, order: string[]): Promise<void> {
@@ -539,17 +543,14 @@ export class RemoverPods {
       const free = mine.reduce((sum, pod) => sum + Math.max(0, lanes - pod.jobs.length), 0);
       let needed: number;
       if (pool === "gpu") {
-        // Pre-find GPU pods cannot run "find" jobs: if any find job waits and no canFind pod is free, rent a fresh pod.
-        let waitingFind = 0;
-        for (let at = 0; at < waitingIds.length; at += 128) {
-          const batch = await this.storage().get<Job>(waitingIds.slice(at, at + 128).map((id) => `j:${id}`));
-          for (const one of batch.values()) if (one.state === "queued" && one.kind === "find") waitingFind += 1;
-        }
+        // Pre-find GPU pods cannot run "find" jobs: evaluate general GPU demand and find-only demand independently
+        // so legacy pods neither block finder rentals nor inflate find-only rentals with clean work.
+        const work = await this.gpuWork();
         const canFindPods = mine.filter((pod) => pod.canFind === true);
         const freeCanFind = canFindPods.reduce((sum, pod) => sum + Math.max(0, 1 - pod.jobs.length), 0);
-        if (waiting > free) needed = Math.max(1, Math.ceil((await this.gpuWork()) / GPU_WORK_EACH_S)) - mine.length;
-        else if (waitingFind > freeCanFind) needed = Math.max(1, Math.ceil((await this.gpuWork()) / GPU_WORK_EACH_S) - canFindPods.length);
-        else needed = 0;
+        const generalNeeded = waiting > free ? Math.max(1, Math.ceil(work.total / GPU_WORK_EACH_S)) - mine.length : 0;
+        const findNeeded = work.waitingFind > freeCanFind ? Math.max(1, Math.ceil(work.find / GPU_WORK_EACH_S)) - canFindPods.length : 0;
+        needed = Math.max(generalNeeded, findNeeded);
       } else {
         needed = Math.ceil(Math.max(0, waiting - free) / lanes);
       }
@@ -563,21 +564,42 @@ export class RemoverPods {
     }
     await this.storage().put("pods", pods);
     // Shared outputs are cleaned 10 min after completion (giving every deduplicated caller time to read them);
-    // jobs a day old are forgotten (Edit has long taken what they made).
+    // jobs a day old are forgotten once any shared R2 output has been deleted.
+    const SHARED_OUT_TTL_MS = 10 * 60_000;
+    let nextCleanupAt: number | null = null;
     const r2 = r2Config(this.env);
     const jobs = await this.storage().list<Job>({ prefix: "j:" });
     for (const [key, job] of jobs) {
-      if (job.state === "done" && job.shared && !job.outCleaned && now - job.at > 10 * 60_000 && r2 !== null) {
-        await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true }).catch(() => {});
-        job.outCleaned = true;
-        await this.storage().put(key, job);
+      if (job.state === "done" && job.shared && !job.outCleaned && r2 !== null) {
+        const dueAt = job.at + SHARED_OUT_TTL_MS;
+        if (now >= dueAt) {
+          try {
+            await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
+            job.outCleaned = true;
+            await this.storage().put(key, job);
+          } catch {
+            nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
+          }
+        } else {
+          nextCleanupAt = nextCleanupAt === null ? dueAt : Math.min(nextCleanupAt, dueAt);
+        }
       }
       if (!((job.state === "done" || job.state === "failed" || job.state === "cancelled") && now - job.at > 86400_000)) continue;
-      if (job.shared && !job.outCleaned && r2 !== null) await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true }).catch(() => {});
+      if (job.shared && !job.outCleaned && r2 !== null) {
+        if (job.state === "done") continue;
+        try {
+          await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
+          job.outCleaned = true;
+        } catch {
+          nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
+          continue;
+        }
+      }
       await this.storage().delete(key);
       if (job.twin !== undefined) await this.storage().delete(`twin:${job.twin}`);
     }
     if (busy || Object.keys(pods).length > 0) await this.storage().setAlarm(now + 30_000);
+    else if (nextCleanupAt !== null) await this.storage().setAlarm(Math.max(now + 1_000, nextCleanupAt));
     else await this.storage().deleteAlarm();
   }
 

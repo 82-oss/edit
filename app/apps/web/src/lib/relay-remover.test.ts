@@ -177,4 +177,108 @@ describe("relay RunPod finder jobs (remover.ts)", () => {
     const st = await pods.fetch(new Request("https://remover/status", { method: "POST", body: JSON.stringify({ id: newNext.job.id }) }));
     expect(await st.json()).toEqual({ ok: true, ask: 0, sheets: 0, seconds: 5, shared: true });
   });
+
+  it("sizes find-only GPU rentals independently of legacy pods and clean backlog, and keeps/retries shared output cleanup alarms", async () => {
+    const env: RemoverEnv = {
+      REMOVER: "pods",
+      RUNPOD_API_KEY: "test-key",
+      R2_ACCOUNT_ID: "acct",
+      R2_ACCESS_KEY_ID: "ak",
+      R2_SECRET_ACCESS_KEY: "sk",
+      R2_BUCKET: "bucket",
+    };
+
+    // Case 1: 1 idle pre-find GPU + 2 queued 60s finds (waiting > free, total work = 240s <= 600s) MUST rent 1 canFind pod.
+    const storage1 = new MemStorage();
+    await storage1.put("pods", {
+      "old-1": { pool: "gpu", token: "t1", machine: "RTX 4090", cloud: "COMMUNITY", rentedAt: Date.now(), seenAt: Date.now(), jobs: [] },
+    });
+    const rented1: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "https://api.runpod.io/v2/pods" && init?.method === "POST") {
+        const id = `cf-${rented1.length + 1}`;
+        rented1.push(id);
+        return Response.json({ id });
+      }
+      if (url === "https://api.runpod.io/v2/pods") return Response.json({ pods: [{ id: "old-1" }, ...rented1.map((id) => ({ id }))] });
+      return Response.json({ ok: true });
+    });
+    const pods1 = new RemoverPods({ storage: storage1 as never, blockConcurrencyWhile: (fn) => fn() }, env);
+    await storage1.put("order:gpu", ["f1", "f2"]);
+    await storage1.put("j:f1", { id: "f1", kind: "find", out: "edit/cleaned/work/f1.json", request: { input: "edit/originals/drive/a/1.mp4", spans: [[0, 60]] }, state: "queued", tries: 0, at: Date.now() });
+    await storage1.put("j:f2", { id: "f2", kind: "find", out: "edit/cleaned/work/f2.json", request: { input: "edit/originals/drive/a/2.mp4", spans: [[0, 60]] }, state: "queued", tries: 0, at: Date.now() });
+    await pods1.alarm();
+    expect(rented1).toHaveLength(1);
+
+    // Case 2: 10 idle legacy GPUs + 5 queued heavy cleans + 1 queued 60s find -> rents ONLY 1 canFind pod (clean work fits legacy lanes).
+    const storage2 = new MemStorage();
+    const legacyPods: Record<string, unknown> = {};
+    for (let i = 0; i < 10; i++) {
+      legacyPods[`leg-${i}`] = { pool: "gpu", token: `t${i}`, machine: "RTX 4090", cloud: "COMMUNITY", rentedAt: Date.now(), seenAt: Date.now(), jobs: [] };
+    }
+    await storage2.put("pods", legacyPods);
+    const rented2: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "https://api.runpod.io/v2/pods" && init?.method === "POST") {
+        const id = `cf2-${rented2.length + 1}`;
+        rented2.push(id);
+        return Response.json({ id });
+      }
+      if (url === "https://api.runpod.io/v2/pods") {
+        return Response.json({ pods: [...Object.keys(legacyPods).map((id) => ({ id })), ...rented2.map((id) => ({ id }))] });
+      }
+      return Response.json({ ok: true });
+    });
+    const pods2 = new RemoverPods({ storage: storage2 as never, blockConcurrencyWhile: (fn) => fn() }, env);
+    const order2: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      order2.push(`c${i}`);
+      await storage2.put(`j:c${i}`, { id: `c${i}`, kind: "clean", out: `edit/cleaned/work/c${i}.mp4`, request: { input: `edit/originals/drive/c/${i}.mp4`, fps: 30, masks: new Array(30 * 120).fill([0, 0, 10, 10]) }, state: "queued", tries: 0, at: Date.now() });
+    }
+    order2.push("f-one");
+    await storage2.put("j:f-one", { id: "f-one", kind: "find", out: "edit/cleaned/work/f-one.json", request: { input: "edit/originals/drive/f/one.mp4", spans: [[0, 60]] }, state: "queued", tries: 0, at: Date.now() });
+    await storage2.put("order:gpu", order2);
+    await pods2.alarm();
+    expect(rented2).toHaveLength(1);
+
+    // Case 3: Shared output cleanup keeps an alarm after the last pod leaves, and retries after a 503 DELETE failure.
+    const storage3 = new MemStorage();
+    await storage3.put("pods", {});
+    const doneAt = Date.now() - 2 * 60_000; // 2 min ago (< 10 min TTL)
+    await storage3.put("j:sh1", { id: "sh1", kind: "find", out: "edit/cleaned/work/sh1.json", request: { input: "edit/originals/drive/s/1.mp4", spans: [[0, 10]] }, state: "done", tries: 0, at: doneAt, shared: true });
+    let deleteAttempts = 0;
+    let failDelete = true;
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "https://api.runpod.io/v2/pods") return Response.json({ pods: [] });
+      if (init?.method === "DELETE" && url.includes("edit/cleaned/work/sh1.json")) {
+        deleteAttempts += 1;
+        return new Response(failDelete ? "unavailable" : null, { status: failDelete ? 503 : 204 });
+      }
+      return Response.json({ ok: true });
+    });
+    const pods3 = new RemoverPods({ storage: storage3 as never, blockConcurrencyWhile: (fn) => fn() }, env);
+    await pods3.alarm();
+    expect(deleteAttempts).toBe(0);
+    // Alarm stays scheduled for the 10-min cleanup deadline even with 0 pods
+    expect(storage3.alarm).not.toBeNull();
+
+    // Advance past 10 min (even past 24h expiry): 503 DELETE must NOT mark outCleaned or drop the job
+    await storage3.put("j:sh1", { id: "sh1", kind: "find", out: "edit/cleaned/work/sh1.json", request: { input: "edit/originals/drive/s/1.mp4", spans: [[0, 10]] }, state: "done", tries: 0, at: Date.now() - 25 * 3600_000, shared: true });
+    await pods3.alarm();
+    expect(deleteAttempts).toBe(1);
+    const afterFail = (await storage3.get<{ outCleaned?: boolean }>("j:sh1")) as { outCleaned?: boolean } | undefined;
+    expect(afterFail).toBeDefined();
+    expect(afterFail?.outCleaned).toBeUndefined();
+    expect(storage3.alarm).not.toBeNull();
+
+    // Next alarm succeeds -> deletes object, expires old job, clears alarm
+    failDelete = false;
+    await pods3.alarm();
+    expect(deleteAttempts).toBe(2);
+    expect(await storage3.get("j:sh1")).toBeUndefined();
+    expect(storage3.alarm).toBeNull();
+  });
 });
