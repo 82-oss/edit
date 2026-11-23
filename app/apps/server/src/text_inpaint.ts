@@ -661,13 +661,33 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
   }
 }
 
+/** The lanes at work now: each takes stretches off the queue one after another until it's empty. */
+const lanes = new Set<Promise<void>>();
+
+/**
+ * Starts lanes for what waits, up to as many as run at once. Asked again whenever stretches are queued: the lanes
+ * were all started together and never again while any was still at work, so stretches queued after the first few
+ * had begun went through the one or two lanes still going (Nov 23: 59 stretches sent back while 3 were running were
+ * cleaned one at a time, 58 queued and 1 running, on a relay with cards to spare).
+ */
 function drain(): void {
-  if (busy !== null) return;
-  busy = (async () => {
-    const lane = async () => {
+  const most = cloudNow() ? AT_ONCE_CLOUD : 1;
+  while (lanes.size < most && queue.length > 0) {
+    // Its first stretch is taken off the queue before this line returns, so the count above is right.
+    const lane = (async () => {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
-    };
-    await Promise.all(Array.from({ length: cloudNow() ? AT_ONCE_CLOUD : 1 }, lane));
+    })();
+    lanes.add(lane);
+    void lane
+      .catch(() => {})
+      .finally(() => {
+        lanes.delete(lane);
+        if (queue.length > 0) drain();
+      });
+  }
+  if (lanes.size === 0 || busy !== null) return;
+  busy = (async () => {
+    while (lanes.size > 0) await Promise.allSettled([...lanes]);
   })().finally(() => {
     busy = null;
     if (queue.length > 0) drain();
