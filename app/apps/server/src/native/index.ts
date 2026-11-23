@@ -163,6 +163,8 @@ export interface ExportStart {
   sounds?: Record<string, string>;
   /** Stretches of cloud originals cut to this Mac, read instead of their URLs (export_excerpts.ts). */
   excerpts?: ExportExcerpt[];
+  /** Media id → what it is, where the server knows it (exports.ts `contentsOf`): a chunk is reused by its picture. */
+  contents?: Record<string, string>;
   /** Smooth playback's render: it doesn't take the foreground, so imports and background work run on beside it. */
   background?: boolean;
 }

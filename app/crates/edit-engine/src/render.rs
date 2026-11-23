@@ -2585,6 +2585,39 @@ pub fn export_file(
     cancel: &AtomicBool,
     progress: impl FnMut(f32),
 ) -> Result<(), String> {
+    export_file_of(
+        project,
+        options,
+        plan,
+        output,
+        cache,
+        sounds,
+        &HashMap::new(),
+        cancel,
+        progress,
+    )
+}
+
+/// Whether a failure was of a file not being there: its chunks tried again
+/// can still copy what's left of the last export, and render only what's gone.
+fn missing_file(error: &str) -> bool {
+    error.contains("No such file or directory")
+}
+
+/// [`export_file`], with `contents` naming each media by what it is where the
+/// server knows it (`chunks::split`), so a chunk is reused by its picture.
+#[allow(clippy::too_many_arguments)]
+pub fn export_file_of(
+    project: &Project,
+    options: &ExportOptions,
+    plan: &Plan,
+    output: &Path,
+    cache: &Path,
+    sounds: &HashMap<String, PathBuf>,
+    contents: &HashMap<String, String>,
+    cancel: &AtomicBool,
+    progress: impl FnMut(f32),
+) -> Result<(), String> {
     remove_stale_partials(output, &project.id, options.format);
     let path = partial_path(output, &project.id, options.format);
     std::fs::OpenOptions::new()
@@ -2599,16 +2632,23 @@ pub fn export_file(
     // What failed before the way that's tried next, the first cause first: each fallback hid the one before it, and
     // the export's failure (and so a report) said only the last (Nov 22).
     let mut tried = Tried::default();
+    let mut folder = None;
     if let Some(settings) = settings {
-        // Tried twice before exporting it whole: the chunks made are kept, so
-        // a second try only makes the rest. A sound encoder that stalled once
+        let held = crate::chunks::take(&chunk_folder(cache, project, options, plan), cancel)?;
+        // Tried again before exporting it whole: the chunks made are kept, so
+        // another try only makes the rest. A sound encoder that stalled once
         // under load (card 1, Oct 29) sent a 93-minute edit to the whole
-        // export, hours where the chunks take minutes. The second try copies
+        // export, hours where the chunks take minutes. A retry copies
         // nothing out of the last export: what it copied may be what was
         // wrong, and copying it again fails the same way (Nov 2, JJ's Mom
         // Secretly v2: both joins had 53141 frames, not 53036, and the whole
-        // export after stalled on a Mac out of memory).
-        for attempt in 1..=2 {
+        // export after stalled on a Mac out of memory). Only a file that
+        // wasn't there keeps the copies for one more try: what's gone is
+        // rendered, and the rest of a two-hour edit isn't (Nov 23).
+        let mut reuse = true;
+        let mut tries = 0;
+        loop {
+            tries += 1;
             match export_chunked(
                 project,
                 options,
@@ -2616,8 +2656,10 @@ pub fn export_file(
                 settings,
                 &temporary.0,
                 cache,
+                held.dir(),
                 sounds,
-                attempt == 1,
+                contents,
+                reuse,
                 cancel,
                 &mut progress,
             ) {
@@ -2628,14 +2670,8 @@ pub fn export_file(
                 Err(error) if error == "cancelled" || cancel.load(Ordering::Acquire) => {
                     return Err("cancelled".to_owned())
                 }
-                Err(error) if attempt == 1 => {
-                    crate::log::warn(
-                        "export",
-                        format!("a chunked export failed ({error}); trying the chunks again, rendering what it had copied from the last export"),
-                    );
-                    tried.failed("the chunked export", error);
-                }
-                Err(error) => {
+                // The same file missing twice is the file: a third try would only render what it could copy.
+                Err(error) if !reuse || tries >= 3 || (tries == 2 && missing_file(&error)) => {
                     crate::log::warn(
                         "export",
                         format!(
@@ -2644,8 +2680,34 @@ pub fn export_file(
                         ),
                     );
                     tried.failed("the chunks again", error);
+                    break;
+                }
+                Err(error) => {
+                    reuse = tries == 1 && missing_file(&error);
+                    crate::log::warn(
+                        "export",
+                        format!(
+                            "a chunked export failed ({error}); trying the chunks again, {}",
+                            if reuse {
+                                "rendering what's gone and copying the rest from the last export"
+                            } else {
+                                "rendering what it had copied from the last export"
+                            }
+                        ),
+                    );
+                    tried.failed(
+                        if tries == 1 {
+                            "the chunked export"
+                        } else {
+                            "the chunks again"
+                        },
+                        error,
+                    );
                 }
             }
+        }
+        if made.is_some() {
+            folder = Some(held);
         }
     }
     if made.is_none() {
@@ -2693,17 +2755,22 @@ pub fn export_file(
         return Err("cancelled".to_owned());
     }
     std::fs::rename(&temporary.0, output).map_err(|error| error.to_string())?;
-    if let Some((chunks, sound)) = made {
-        let dir = chunk_folder(cache, project, options, plan);
-        // Its chunks are in the file now, which the next export copies them out of.
-        crate::chunks::tidy(&dir, &[], options.format.extension());
-        if let Err(error) =
-            crate::chunks::Manifest::save(&dir, output, project.fps(), &chunks, sound)
-        {
-            crate::log::warn(
-                "export",
-                format!("couldn't remember the export's chunks: {error}"),
-            );
+    if let (Some((chunks, sound)), Some(held)) = (made, folder.as_ref()) {
+        let dir = held.dir();
+        if is_part(project, options, plan) {
+            // A part's file isn't what the next export is made from: nothing of it is kept.
+            let _ = std::fs::remove_dir_all(dir);
+        } else if !held.private {
+            // Its chunks are in the file now, which the next export copies them out of.
+            crate::chunks::tidy(dir, &[], options.format.extension());
+            if let Err(error) =
+                crate::chunks::Manifest::save(dir, output, project.fps(), &chunks, sound)
+            {
+                crate::log::warn(
+                    "export",
+                    format!("couldn't remember the export's chunks: {error}"),
+                );
+            }
         }
     }
     Ok(())
@@ -2721,7 +2788,9 @@ fn export_chunked(
     settings: WriterOptions,
     output: &Path,
     cache: &Path,
+    dir: &Path,
     sounds: &HashMap<String, PathBuf>,
+    contents: &HashMap<String, String>,
     reuse_last: bool,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(f32),
@@ -2731,8 +2800,7 @@ fn export_chunked(
     let fps = project.fps();
     let seconds = plan.seconds(fps);
     let extension = options.format.extension();
-    let dir = chunk_folder(cache, project, options, plan);
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let framed = framing(project, options, plan);
     let mut key = format!(
         "{:?}|{}x{}|{}|{}|{}",
@@ -2742,16 +2810,16 @@ fn export_chunked(
         key.push_str(&format!("|{:?}", framed.fill));
     }
     let list = crate::log::time_on("export", "export: chunks", &project.id, || {
-        Ok::<_, String>(chunks::split(project, plan, &key))
+        Ok::<_, String>(chunks::split(project, plan, &key, contents))
     })?;
-    let last = chunks::Manifest::load(&dir, fps).filter(|_| reuse_last);
+    let last = chunks::Manifest::load(dir, fps).filter(|_| reuse_last);
     // A chunk kept from a run that stopped is reused only when it's whole: it
     // opens and has the frames its place in the plan says. A short or long one
     // went into every export of its stretch, failing each join ("joined 33826
     // frames, not 33786", Marc) until the folder was cleared days later.
     let kept: Vec<(PathBuf, i64)> = list
         .iter()
-        .map(|chunk| (chunks::made(&dir, &chunk.key, extension), chunk.frames()))
+        .map(|chunk| (chunks::made(dir, &chunk.key, extension), chunk.frames()))
         .filter(|(file, _)| file.exists())
         .collect();
     for (file, why) in chunks::not_whole(&kept) {
@@ -2768,7 +2836,7 @@ fn export_chunked(
     let mut todo = Vec::new();
     let mut copied = 0;
     for chunk in &list {
-        let file = chunks::made(&dir, &chunk.key, extension);
+        let file = chunks::made(dir, &chunk.key, extension);
         if file.exists() {
             copied += chunk.frames();
             pieces.push((Piece::File(file), chunk.frames()));
@@ -2793,9 +2861,9 @@ fn export_chunked(
         pieces.push((Piece::File(file), chunk.frames()));
     }
     // Chunks of other exports, and any cut short, go.
-    chunks::tidy(&dir, &list.iter().collect::<Vec<_>>(), extension);
+    chunks::tidy(dir, &list.iter().collect::<Vec<_>>(), extension);
     // What's to come, for smooth playback to serve each chunk as it lands.
-    chunks::write_plan(&dir, &list, extension)?;
+    chunks::write_plan(dir, &list, extension)?;
     // Smooth playback's from the viewer's playhead on, then what's before it.
     if let Some(focus) = plan.focus {
         todo.sort_by_key(|chunk| chunks::focus_order(chunk, focus));
@@ -2810,7 +2878,7 @@ fn export_chunked(
     } else {
         Vec::new()
     };
-    let sound_key = (!parts.is_empty()).then(|| sound_key(options, &parts, seconds));
+    let sound_key = (!parts.is_empty()).then(|| sound_key(options, &parts, seconds, contents));
     let old_sound = last
         .as_ref()
         .filter(|last| sound_key.is_some() && last.sound == sound_key)
@@ -2877,7 +2945,7 @@ fn export_chunked(
                     (
                         chunk.start,
                         chunk.end,
-                        chunks::made(&dir, &chunk.key, extension),
+                        chunks::made(dir, &chunk.key, extension),
                     )
                 })
                 .collect(),
@@ -3374,16 +3442,34 @@ fn mix_sound(
     std::fs::rename(&mixing.0, destination).map_err(|error| format!("the sound's mix: {error}"))
 }
 
-/// What a mix of `parts` sounds like, as a key: the parts (their files by
-/// content), the loudness and the codec. The same key is the same sound.
-pub fn sound_key(options: &ExportOptions, parts: &[crate::mix::Part], seconds: f64) -> String {
+/// What a mix of `parts` sounds like, as a key: the parts (each by what it
+/// is, `contents`, else its file's content; never by clip or media id or by
+/// where it's read from now), the loudness and the codec. The same key is the
+/// same sound.
+pub fn sound_key(
+    options: &ExportOptions,
+    parts: &[crate::mix::Part],
+    seconds: f64,
+    contents: &HashMap<String, String>,
+) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "sound-v2".hash(&mut hasher);
+    "sound-v3".hash(&mut hasher);
     env!("EDIT_SOUND_SOURCE").hash(&mut hasher);
-    format!("{parts:?}").hash(&mut hasher);
     for part in parts {
-        crate::chunks::content_key(&part.path).hash(&mut hasher);
+        let heard = contents
+            .get(&part.segment.media)
+            .cloned()
+            .unwrap_or_else(|| crate::chunks::content_key(&part.path));
+        let mut segment = part.segment.clone();
+        segment.clip.clear();
+        segment.media.clear();
+        format!(
+            "{heard}|{segment:?}|{}|{}",
+            part.elapsed.to_bits(),
+            part.original.to_bits()
+        )
+        .hash(&mut hasher);
     }
     format!("{:?}", options.target_loudness()).hash(&mut hasher);
     crate::export::audio_args(options).hash(&mut hasher);
@@ -3647,15 +3733,34 @@ fn chunk_folder(cache: &Path, project: &Project, options: &ExportOptions, plan: 
     )
 }
 
+/// Whether this export is of a part of the edit: a span asked for (what's
+/// beneath a graphic, a marked stretch, a motion sample) or its in and out
+/// points. Smooth playback's render keeps the folder it's read from.
+fn is_part(project: &Project, options: &ExportOptions, plan: &Plan) -> bool {
+    !project.id.ends_with(".playback")
+        && (options.range.is_some() || plan.start != 0 || plan.end < project.duration())
+}
+
 /// The name of an export's chunk folder (`chunks::folder`) when it isn't the
-/// project's own: a framed export's. The server restores and clears by it.
+/// project's own: a framed export's, and a part's, so neither takes the place
+/// of the record the next whole export copies its chunks from. The server
+/// restores and clears by it.
 pub fn chunk_name(project: &Project, options: &ExportOptions, plan: &Plan) -> Option<String> {
-    framing(project, options, plan).map(|framed| {
+    let framed = framing(project, options, plan).map(|framed| {
         format!(
             "{}.{}x{}-{:?}",
             project.id, framed.width, framed.height, framed.fill
         )
-    })
+    });
+    if !is_part(project, options, plan) {
+        return framed;
+    }
+    Some(format!(
+        "{}.part-{}-{}",
+        framed.as_deref().unwrap_or(&project.id),
+        plan.start,
+        plan.end
+    ))
 }
 
 /// An export's other shape or size, framed on the GPU (`edit_render::frame`)

@@ -19,11 +19,22 @@
 //! disk) and renders the rest; the sound too when nothing heard changed. The
 //! chunks of an export that stopped part-way (cancelled, Edit quit) stay in
 //! that folder, so running it again carries on.
+//!
+//! That folder and its manifest are the last *whole* export's alone (Nov 23,
+//! Boyfriends, 2 h 6 min: every picture-beneath a graphic, every range and
+//! motion sample was an export of the same project into the same folder, so
+//! each replaced the manifest with its own few frames and deleted the files of
+//! whatever ran beside it; a re-export reused 0 of 159 chunks, failed on its
+//! own deleted chunks and went round whole in 47 minutes). An export of a part
+//! has a folder of its own (`render::chunk_name`), and one export at a time
+//! works in a folder ([`take`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use edit_core::{evaluate_seen, Layer, Project, Scene};
 use serde::{Deserialize, Serialize};
@@ -115,8 +126,17 @@ fn clips(scene: &Scene) -> Vec<&str> {
 }
 
 /// Splits `plan`'s frames into chunks keyed by their content and `settings`
-/// (whatever else changes the encoded picture: size, codec, bitrate).
-pub fn split(project: &Project, plan: &Plan, settings: &str) -> Vec<Chunk> {
+/// (whatever else changes the encoded picture: size, codec, bitrate). `contents`
+/// names media by what they are, where the server knows it (exports.ts
+/// `contentsOf`: a graphic by its code, footage by its cloud source): the same
+/// picture attached again, or read from another place, keeps its chunks. Media
+/// it doesn't name are keyed by their file, as before.
+pub fn split(
+    project: &Project,
+    plan: &Plan,
+    settings: &str,
+    contents: &HashMap<String, String>,
+) -> Vec<Chunk> {
     let fps = project.fps();
     let shortest = (MIN_SECONDS * fps).round() as i64;
     let longest = (MAX_SECONDS * fps).round() as i64;
@@ -124,6 +144,9 @@ pub fn split(project: &Project, plan: &Plan, settings: &str) -> Vec<Chunk> {
     let mut key = |media: &str| -> String {
         keys.entry(media.to_owned())
             .or_insert_with(|| {
+                if let Some(content) = contents.get(media) {
+                    return content.clone();
+                }
                 project.media(media).map_or_else(
                     || format!("missing:{media}"),
                     |found| content_key(Path::new(&found.path)),
@@ -278,6 +301,79 @@ impl Manifest {
     pub fn find(&self, key: &str) -> Option<&Saved> {
         self.chunks.iter().find(|saved| saved.key == key)
     }
+}
+
+/// Chunk folders an export of this process is working in.
+static IN_USE: parking_lot::Mutex<BTreeSet<PathBuf>> = parking_lot::Mutex::new(BTreeSet::new());
+/// How long an export waits for the one before it to leave its folder (a
+/// cancelled one winding down), before working in a folder of its own.
+const WAIT_FOR_FOLDER: Duration = Duration::from_secs(20);
+
+/// A chunk folder held by one export, let go when dropped.
+#[derive(Debug)]
+pub struct Folder {
+    dir: PathBuf,
+    /// The asked-for folder was busy: this one is the export's alone, kept for
+    /// nothing after it, and no record of it is left.
+    pub private: bool,
+}
+
+impl Folder {
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        if self.private {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        } else {
+            IN_USE.lock().remove(&self.dir);
+        }
+    }
+}
+
+/// Takes chunk folder `dir` for one export. An export tidies its folder as it
+/// starts and ends, so two in one delete each other's chunks ("No such file or
+/// directory" at each one's next write, Nov 23). One still busy after a short
+/// wait (an engine stuck on another job never lets go) leaves this export a
+/// folder of its own beside it: it reuses nothing, and it can't be held up.
+pub fn take(dir: &Path, cancel: &AtomicBool) -> Result<Folder, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let began = Instant::now();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err("cancelled".to_owned());
+        }
+        if IN_USE.lock().insert(dir.to_owned()) {
+            return Ok(Folder {
+                dir: dir.to_owned(),
+                private: false,
+            });
+        }
+        if began.elapsed() >= WAIT_FOR_FOLDER {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        "_beside-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    crate::log::warn(
+        "export",
+        format!(
+            "another export is still in {}: this one works beside it",
+            dir.display()
+        ),
+    );
+    Ok(Folder {
+        dir: dir.with_file_name(name),
+        private: true,
+    })
 }
 
 /// A chunk made by an earlier run (finished: written to `.partial` first).
@@ -792,6 +888,126 @@ mod tests {
                 frame_hash(&evaluate_seen(&after, frame + 63), &mut { key }),
             );
         }
+    }
+
+    /// A project of ten-second clips, one per entry of `media` (id, file).
+    fn cut_project(media: &[(&str, &str)]) -> Project {
+        use edit_core::{Clip, ClipColor, ClipContent, Media, MediaKind, Settings, Transform};
+        let mut project = Project::new("p".into(), "t".into(), Settings::default());
+        let track = project.tracks[0].id.clone();
+        for (at, (id, path)) in media.iter().enumerate() {
+            if project.media(id).is_none() {
+                project.media.push(Media {
+                    id: (*id).into(),
+                    name: "a.mp4".into(),
+                    path: (*path).into(),
+                    kind: MediaKind::Video,
+                    duration: 6000.0,
+                    width: 1920,
+                    height: 1080,
+                    fps: 30.0,
+                    has_audio: false,
+                    markers: Vec::new(),
+                    cloud: None,
+                    library: None,
+                    effect: None,
+                    effect_key: None,
+                    effect_from: None,
+                    stacked_alpha: false,
+                    cleans: None,
+                });
+            }
+            project.clips.push(Clip {
+                id: format!("c{at}"),
+                track: track.clone(),
+                start: at as i64 * 300,
+                duration: 300,
+                color: ClipColor::Blue,
+                name: None,
+                link: None,
+                fade_in: 0,
+                fade_out: 0,
+                keyframes: Default::default(),
+                person: None,
+                parent: None,
+                content: ClipContent::Video {
+                    media: (*id).into(),
+                    source_in: at as f64 * 10.0,
+                    speed: 1.0,
+                    transform: Transform::default(),
+                    opacity: 1.0,
+                    crop: Default::default(),
+                    frame: None,
+                    blend: Default::default(),
+                },
+            });
+        }
+        project
+    }
+
+    fn whole(project: &Project) -> Plan {
+        Plan {
+            start: 0,
+            end: project.duration(),
+            width: 1920,
+            height: 1080,
+            audio: false,
+            focus: None,
+        }
+    }
+
+    fn named(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(id, content)| ((*id).to_owned(), (*content).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_same_content_keeps_its_chunks_under_a_new_id_or_a_new_place() {
+        let first: Vec<(&str, &str)> = (0..40).map(|_| ("m1", "/local/render.mp4")).collect();
+        let again: Vec<(&str, &str)> = (0..40)
+            .map(|_| ("m9", "https://r2.example/edit/exports/render.mp4?sig=2"))
+            .collect();
+        let (one, two) = (cut_project(&first), cut_project(&again));
+        let before = split(&one, &whole(&one), "s", &named(&[("m1", "effect:subs:abc")]));
+        let after = split(&two, &whole(&two), "s", &named(&[("m9", "effect:subs:abc")]));
+        assert_eq!(before, after);
+        // Named differently it's another picture, whatever its file.
+        let changed = split(&one, &whole(&one), "s", &named(&[("m1", "effect:subs:def")]));
+        assert!(before.iter().all(|chunk| !changed.contains(chunk)));
+    }
+
+    #[test]
+    fn a_clip_changed_later_leaves_the_chunks_before_it() {
+        let mut media: Vec<(&str, &str)> = (0..60).map(|_| ("m1", "/a.mp4")).collect();
+        let contents = named(&[("m1", "cloud:a"), ("m2", "cloud:b")]);
+        let one = cut_project(&media);
+        let before = split(&one, &whole(&one), "s", &contents);
+        media[50] = ("m2", "/b.mp4");
+        let two = cut_project(&media);
+        let after = split(&two, &whole(&two), "s", &contents);
+        let changed_at = 50 * 300;
+        // A chunk ending right at the change is decided by the changed frame's hash.
+        let early: Vec<&Chunk> = before.iter().filter(|chunk| chunk.end < changed_at).collect();
+        assert!(!early.is_empty());
+        assert!(early.iter().all(|chunk| after.contains(chunk)));
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn one_export_at_a_time_works_in_a_folder() {
+        let dir = std::env::temp_dir().join(format!("edit-chunk-hold-{}", std::process::id()));
+        let cancel = AtomicBool::new(false);
+        let held = take(&dir, &cancel).unwrap();
+        assert!(!held.private);
+        // Cancelled while it waits, it says so at once.
+        let stopped = AtomicBool::new(true);
+        assert_eq!(take(&dir, &stopped).unwrap_err(), "cancelled");
+        drop(held);
+        let again = take(&dir, &cancel).unwrap();
+        assert_eq!(again.dir(), dir);
+        assert!(!again.private);
     }
 
     #[test]

@@ -25,7 +25,7 @@ import * as playing from "./playing.ts";
 import { ioMessage, nowMs, writeAtomic } from "./files.ts";
 import { subtitleVideo } from "./drive.ts";
 import { catchBugsAsync } from "./guard.ts";
-import type { ExportOptions, Plan, Project } from "./model.ts";
+import type { ExportOptions, Media, Plan, Project } from "./model.ts";
 import { native, withProject } from "./native/index.ts";
 import { canonical, fileName, homePath, isFile, join, parent } from "./paths.ts";
 import { duration } from "./project.ts";
@@ -714,10 +714,10 @@ export function chunkFolder(cache: string, project: string): string {
   return join(cache, "export-chunks", project.replace(/[^A-Za-z0-9_-]/g, "_"));
 }
 
-/** Every chunk folder of `project`'s exports: its own and each framed export's (`<id>.<w>x<h>-<fill>`, render.rs `chunk_name`). */
+/** Every chunk folder of `project`'s exports: its own, each framed export's (`<id>.<w>x<h>-<fill>`) and each part's (`….part-<from>-<to>`, render.rs `chunk_name`). */
 export function chunkFolders(cache: string, project: string): string[] {
   const own = chunkFolder(cache, project);
-  const framed = new RegExp(`^${own.slice(own.lastIndexOf("/") + 1)}_\\d+x\\d+-[A-Za-z]+$`);
+  const framed = new RegExp(`^${own.slice(own.lastIndexOf("/") + 1)}(_\\d+x\\d+-[A-Za-z]+(_part-\\d+-\\d+)?|_part-\\d+-\\d+)$`);
   let names: string[] = [];
   try {
     names = fs.readdirSync(join(cache, "export-chunks"));
@@ -725,6 +725,48 @@ export function chunkFolders(cache: string, project: string): string[] {
     // None yet.
   }
   return [own, ...names.filter((name) => framed.test(name)).map((name) => join(cache, "export-chunks", name))];
+}
+
+/** Whether `path`, a URL, reads the cloud object `object`: named in its `key`, or at the end of its path (a signed URL's). */
+function readsObject(path: string, object: string): boolean {
+  try {
+    const url = new URL(path);
+    const named = url.searchParams.get("key") ?? decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    return named === object || named.endsWith(`/${object}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a media of an edit about to be exported is, for the keys of its chunks and sound, or null when that can't be
+ * told (it's then keyed by its file, as it was). Nov 23, Boyfriends: a graphic drawn again, a render going up to the
+ * cloud or coming back to the cache, and a strip attached again each changed the path or media id its chunks were keyed
+ * by, with the same picture. A graphic is its code (`effect_key`, which holds what it draws over, its fonts, Edit's
+ * runtime and the frame): its render at that key is what's shown, wherever the file is. Footage is its cloud source,
+ * only while what's read is that very original: its object's URL, or a file here of its size. A proxy, a stand-in
+ * still or a file changed in place is never taken for it.
+ */
+export function contentOf(media: Media, sizeOf: (path: string) => number | null = (path) => fs.statSync(path, { throwIfNoEntry: false })?.size ?? null): string | null {
+  const picture = `${media.width}x${media.height}`;
+  if (typeof media.effect === "string") {
+    if (typeof media.effect_key !== "string") return null;
+    return `effect:${media.effect}:${media.effect_key}:${media.stacked_alpha === true ? "stacked" : "whole"}:${picture}`;
+  }
+  const cloud = media.cloud;
+  if (cloud === undefined || cloud === null || cloud.source === "" || cloud.original === "" || !(cloud.size > 0)) return null;
+  const isIt = media.path.includes("://") ? readsObject(media.path, cloud.original) : sizeOf(media.path) === cloud.size;
+  return isIt ? `cloud:${cloud.source}:${cloud.size}:${picture}` : null;
+}
+
+/** Each media of `project` that can be told by its content (`contentOf`), by id: what the engine keys its chunks by. */
+export function contentsOf(project: Project, sizeOf?: (path: string) => number | null): Record<string, string> {
+  const contents: Record<string, string> = {};
+  for (const media of project.media) {
+    const content = contentOf(media, sizeOf);
+    if (content !== null) contents[media.id] = content;
+  }
+  return contents;
 }
 
 /**
@@ -2088,7 +2130,7 @@ export class ExportRegistry implements seams.Exports {
               };
               bar.engineBegins(Date.now(), partialOf(output, exported.id, options.format));
               const job = native().ExportJob.start(
-                { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [] },
+                { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [], ...(originals === null ? {} : { contents: contentsOf(exported) }) },
                 (progress) => {
                   // Any change is movement: the engine trying its chunks again reports from lower down (Nov 2:
                   // Kroger's retry rendered 11 chunks yet "nothing new for 8 minutes", and was started over).

@@ -108,8 +108,8 @@ export function classifyCache(relative: string): Class {
     }
   }
   if (top === "export-chunks" && second !== undefined && parts.length >= 3) {
-    // `<id>_playback` is smooth playback's chunks of the same project (playback_stream.ts).
-    const id = second.replace(/_playback$/, "");
+    // `<id>_playback` is smooth playback's chunks of the same project (playback_stream.ts), `<id>_part-<from>-<to>` an export of a part of it (render.rs `chunk_name`).
+    const id = second.replace(/_playback$/, "").replace(/_part-\d+-\d+$/, "");
     // Its manifest and plan say where the last export's chunks are: nothing to free, and what a re-export reads.
     if (parts.length === 3 && /^(manifest|plan)-v\d+\.json$/.test(third ?? "")) return keep("other");
     return own("chunks", id);

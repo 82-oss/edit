@@ -138,6 +138,8 @@ pub struct ExportStart {
     pub sounds: Option<std::collections::HashMap<String, String>>,
     /// Stretches of cloud originals cut to this Mac, read instead of their URLs (`edit_engine::excerpts`).
     pub excerpts: Option<Vec<ExportExcerpt>>,
+    /// Media id → what it is, where the server knows it (exports.ts `contentsOf`): a chunk is reused by its picture.
+    pub contents: Option<std::collections::HashMap<String, String>>,
     /// Smooth playback's render: it doesn't take the foreground, so imports
     /// and background work run on beside it (`media::as_background`).
     pub background: Option<bool>,
@@ -205,6 +207,7 @@ impl ExportJob {
         for (object, list) in excerpts {
             edit_engine::excerpts::add(&object, list);
         }
+        let contents = job.contents.unwrap_or_default();
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut running = RUNNING.lock();
@@ -221,13 +224,14 @@ impl ExportJob {
             }
             let started = Instant::now();
             let export = || {
-                edit_engine::render::export_file(
+                edit_engine::render::export_file_of(
                     &project,
                     &options,
                     &plan,
                     &output,
                     &cache,
                     &sounds,
+                    &contents,
                     &stop,
                     |progress| crate::report(&on_progress, f64::from(progress)),
                 )
