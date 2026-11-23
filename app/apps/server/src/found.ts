@@ -401,7 +401,7 @@ function scriptsDir(app: App): string {
 }
 
 async function python(app: App, args: string[]): Promise<unknown> {
-  const child = Bun.spawn([join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "4" } });
+  const child = Bun.spawn([join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error((err.trim().split("\n").at(-1) ?? out.trim().split("\n").at(-1) ?? `the finder stopped (${code})`).slice(0, 300));
   const last = out.trim().split("\n").at(-1) ?? "";

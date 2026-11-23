@@ -281,7 +281,7 @@ def letters_of(frame_rgb, a, b, c, d, scale):
     The model repaints at about half the picture's size, so a solid box comes back as a soft patch the size of the box
     (Sphe, Nov 23: "a lot of things where we fall back to a blur", which were its cleans); round thin strokes the
     picture's own pixels stay. The letters are told by their own colour: a bold-coloured caption's fill is the commonest
-    bold hue in the box, a white one's is bright, colourless and edged in dark. Anything that merely stands out from
+    bold hue in the box (and any nearly as common), a white one's is bright, colourless and edged in dark. Anything that merely stands out from
     the picture is not a letter (the first try took a rug's weave and a cupboard's edges with them, Nov 23). With next
     to nothing found, a fade or a caption of another make, the whole box is kept."""
     import cv2
@@ -293,10 +293,13 @@ def letters_of(frame_rgb, a, b, c, d, scale):
     bold = (sat > 110) & (val > 120)
     core = None
     if bold.mean() >= LETTERS_LEAST:
-        # The fill's hue: the commonest among the bold pixels (OpenCV's hue runs 0-179 and wraps).
-        top = int(np.bincount(hue[bold], minlength=180).argmax())
-        near = np.minimum(np.abs(hue - top), 180 - np.abs(hue - top)) <= 10
-        fill = (bold & near).astype(np.uint8)
+        # The fills' hues: the commonest among the bold pixels and any other nearly as common (OpenCV's hue runs
+        # 0-179 and wraps). Two, where a caption gives each speaker a colour and one line follows another (Nov 23:
+        # with the commonest alone, an orange line's last frames under a yellow one were left as a ghost).
+        counts = np.bincount(hue[bold], minlength=180).astype(np.float32)
+        spread = sum(np.roll(counts, shift) for shift in range(-10, 11))
+        fills = spread >= 0.2 * spread.max()
+        fill = (bold & fills[hue]).astype(np.uint8)
         if fill.mean() >= LETTERS_LEAST:
             core = fill
     if core is None:
