@@ -1257,3 +1257,75 @@ describe("relay ElevenLabs accounts", () => {
     expect(calls).toEqual(["main-key", "voices-key", "voices-key"]);
   });
 });
+
+describe("relay music removal", () => {
+  /** A plain 44.1 kHz, mono, 16-bit WAV of `seconds`. */
+  const wav = (seconds: number, rate = 44100) => {
+    const bytes = Math.round(seconds * rate) * 2;
+    const file = new Uint8Array(44 + bytes);
+    const view = new DataView(file.buffer);
+    const tag = (at: number, text: string) => [...text].forEach((letter, index) => view.setUint8(at + index, letter.charCodeAt(0)));
+    tag(0, "RIFF"); view.setUint32(4, 36 + bytes, true); tag(8, "WAVE"); tag(12, "fmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    tag(36, "data"); view.setUint32(40, bytes, true);
+    return file;
+  };
+  const reservations: { client: string; seconds: number }[] = [];
+  let allowed = true;
+  const env = {
+    ELEVENLABS_MAIN_KEY: "main-key",
+    SPEECH_BURST: { limit: async () => ({ success: true }) },
+    BUDGET: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
+      reservations.push(await request.json() as { client: string; seconds: number });
+      return allowed ? Response.json({ ok: true }) : Response.json({ error: "used up" }, { status: 429 });
+    } }) },
+  } as unknown as Env;
+  const send = (file: Uint8Array, token = EDITOR, given = env) => relay.fetch(new Request("https://relay.test/v1/isolate", {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "audio/wav", "content-length": String(file.byteLength) }, body: file,
+  }), given);
+  afterEach(() => { vi.unstubAllGlobals(); reservations.length = 0; allowed = true; });
+
+  it("reserves the length read from the file, then sends it with the key kept here", async () => {
+    const calls: { url: string; key: string | null; audio: File }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, key: new Headers(init.headers).get("xi-api-key"), audio: (init.body as FormData).get("audio") as File });
+      return new Response("clean", { headers: { "content-type": "audio/mpeg" } });
+    });
+    const answer = await send(wav(2));
+    expect([answer.status, await answer.text(), answer.headers.get("x-edit-seconds")]).toEqual([200, "clean", "2"]);
+    expect(reservations.map((one) => one.seconds)).toEqual([2]);
+    expect(calls.map((one) => [one.url, one.key, one.audio.size])).toEqual([["https://api.elevenlabs.io/v1/audio-isolation", "main-key", 44 + 176400]]);
+  });
+
+  it("spends nothing on a file it can't measure, past the day's budget, or for someone who can't edit", async () => {
+    const paid = vi.fn(async () => new Response("clean"));
+    vi.stubGlobal("fetch", paid);
+    expect((await send(new TextEncoder().encode("not a wav file, whatever it says it is, and long enough to have a header"))).status).toBe(400);
+    expect((await send(wav(1, 48000))).status).toBe(400);
+    expect((await send(wav(601))).status).toBe(413);
+    expect((await send(wav(1), USE_ONLY)).status).toBe(403);
+    expect((await send(wav(1), EDITOR, { ...env, ELEVENLABS_MAIN_KEY: undefined } as unknown as Env)).status).toBe(503);
+    allowed = false;
+    expect((await send(wav(1))).status).toBe(429);
+    expect(paid).not.toHaveBeenCalled();
+  });
+
+  it("caps each connection and the team per day", async () => {
+    const values = new Map<string, number>();
+    type Storage = ConstructorParameters<typeof TranscriptionBudget>[0]["storage"];
+    const storage: Storage = {
+      get: async <T>(key: string) => values.get(key) as T | undefined,
+      put: async (key: string, value: number) => { values.set(key, value); },
+      transaction: <T>(callback: (store: Storage) => Promise<T>): Promise<T> => callback(storage),
+      setAlarm: async () => {}, deleteAll: async () => { values.clear(); },
+    };
+    const budget = new TranscriptionBudget({ storage }, {} as Env);
+    const reserve = (client: string, seconds: number) => budget.fetch(new Request("https://budget/isolate", { method: "POST", body: JSON.stringify({ client: client.repeat(64), seconds }) }));
+    for (let turn = 0; turn < 12; turn++) expect((await reserve("a", 600)).status).toBe(200);
+    expect((await reserve("a", 600)).status).toBe(429);
+    for (let turn = 0; turn < 12; turn++) expect((await reserve("b", 600)).status).toBe(200);
+    expect((await reserve("c", 600)).status).toBe(429);
+    expect((await reserve("c", 601)).status).toBe(400);
+  });
+});
