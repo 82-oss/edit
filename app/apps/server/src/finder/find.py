@@ -116,6 +116,9 @@ def finish(mid, verdicts, parent):
     cap = cv2.VideoCapture(f"{TAG}/src/{mid}.mp4"); fps = cap.get(cv2.CAP_PROP_FPS) or Z["fps"]; frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     last = max(0, frames - 1)
     out = [[max(0, int(m[0])), min(last, int(m[1])), int(m[2]), int(m[3]), int(m[4]), int(m[5]), "note" if m[6] == "note" else m[6]] for m in masks if m[1] >= 0 and m[0] <= last and m[4] > m[2] and m[5] > m[3]]
+    sys.path.insert(0, HERE)
+    import assemble
+    out = assemble.off_titles(out, Z["W"], Z["H"])
     found = {"version": 1, "width": Z["W"], "height": Z["H"], "fps": fps, "covered": load(f"{TAG}/shown.json", {}).get(mid, []), "masks": out}
     tmp = f"{TAG}/found/{mid}.json.tmp"; json.dump(found, open(tmp, "w")); os.replace(tmp, f"{TAG}/found/{mid}.json")
     kinds = {}

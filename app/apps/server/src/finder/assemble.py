@@ -34,6 +34,23 @@ def whole(tag,mid,box,frames,W,H,stamps=()):
     g=np.median(gs[gs.sum(1)>0],0)
     if g[0]>=3*w-1 or g[2]>=3*w-1: return box   # ran on without end: a plain wall or sky, not a plate
     return [max(0,int(x0-g[0]-3)),max(0,int(y0-g[1]-3)),min(W,int(x1+g[2]+3)),min(H,int(y1+g[3]+3))]
+def off_titles(masks,W,H):
+    """A channel's title across the top of the picture isn't a caption, though words that stay read like one line after
+    another. Where labels stand along the top for most of the file, a caption or note that starts in that band is that
+    title: a label (blurred, never sent to the model), cut to the band (Nov 23, the Trooper video: boxes of 1280 x 375 round
+    "Red Crime Interrogations & Stories" had the model repaint the deputy's head)."""
+    last=max((m[1] for m in masks),default=0)
+    if last<=0: return masks
+    tops=[m for m in masks if m[6]=='label' and m[3]<0.12*H and m[5]<0.35*H]
+    on=np.zeros(last+2,bool)
+    for m in tops: on[max(0,m[0]):min(last,m[1])+1]=True
+    if on.sum()<0.4*(last+1): return masks
+    band=int(np.percentile([m[5] for m in tops],90))
+    out=[]
+    for m in masks:
+        if m[6] in('subtitle','note') and m[3]<min(band,0.12*H): out.append([*m[:5],min(m[5],band),'label'])
+        else: out.append(m)
+    return out
 def off_stamps(box,stamps):
     """A label's box kept off the camera's own stamp beside it: where the two overlap by a sliver (the label's plate and
     its padding reaching into the stamp's last line), the box stops short of the stamp (Nov 23, Boyfriends 20:06 to
