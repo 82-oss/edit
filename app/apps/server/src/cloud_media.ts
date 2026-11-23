@@ -611,7 +611,17 @@ function raceAbort(pending: Promise<void>, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Downloads `key` to `local` unless it's there already, one download per file at a time. */
+/** A file here with something in it: an empty one is a copy that went wrong, never footage (Nov 23: one stopped a project's exports). */
+function hasBytes(path: string): boolean {
+  try {
+    const stat = fs.statSync(path);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Downloads `key` to `local` unless it's there already, one download per file at a time. An empty copy here is fetched again, and an empty object refused. */
 export async function fetchKey(key: string, local: string, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new Error("cancelled");
   for (;;) {
@@ -625,11 +635,16 @@ export async function fetchKey(key: string, local: string, signal?: AbortSignal)
       if (signal.aborted) throw new Error("cancelled");
     }
   }
-  if (isFile(local)) return;
+  if (hasBytes(local)) return;
+  fs.rmSync(local, { force: true });
   const job = cloud.download(key, local, undefined, signal);
   fetching.set(local, job);
   try {
     await job;
+    if (!hasBytes(local)) {
+      fs.rmSync(local, { force: true });
+      throw new Error(`${key} is empty in the cloud, so it has to be brought in again`);
+    }
     // Counted now, not at the cleaner's next walk (storage.ts's ledger).
     storage.ledger.note(local);
   } finally {
@@ -696,7 +711,7 @@ export function localOriginal(cache: string, key: string, use = false): string |
   if (entry === undefined || typeof entry.path !== "string") return null;
   try {
     const stat = fs.statSync(entry.path);
-    if (!(stat.isFile() && stat.size === entry.size && stat.mtimeMs === entry.mtime_ms)) return null;
+    if (!(stat.isFile() && stat.size > 0 && stat.size === entry.size && stat.mtimeMs === entry.mtime_ms)) return null;
   } catch {
     return null;
   }
@@ -3350,12 +3365,12 @@ async function prepareForExport(
       continue;
     }
     const own = where.proxy === where.original;
-    if (own && isFile(media.path)) {
+    if (own && hasBytes(media.path)) {
       ownFiles.push(media.path);
       continue;
     }
     // Its own preview, whole on this computer already (an effect's render, a map, one the window fetched): read from there.
-    if (own && isFile(localPath(cache, where.original))) {
+    if (own && hasBytes(localPath(cache, where.original))) {
       onDisk.set(mediaId, localPath(cache, where.original));
       continue;
     }

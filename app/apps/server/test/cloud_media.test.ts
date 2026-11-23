@@ -47,6 +47,31 @@ const SETTINGS = { width: 1920, height: 1080, fps: 30 };
 const VIDEO: Probe = { kind: "video", duration: 12, width: 1920, height: 1080, fps: 30, has_audio: true };
 const SOUND: Probe = { kind: "audio", duration: 3, width: 0, height: 0, fps: 0, has_audio: true };
 
+test("an empty copy here is never footage: it's fetched again, an empty object is refused, and an export won't read one", async () => {
+  const fixture = fixtureHome("empty-copy");
+  try {
+    const cache = fixture.app.store.cacheDir();
+    fs.mkdirSync(cache, { recursive: true });
+    const stale = join(cache, "stale.mp4");
+    fs.writeFileSync(stale, "");
+    mock.cloud.put("edit/originals/sha256/emptyhere/one.mp4", "the real video");
+    await cloudMedia.fetchKey("edit/originals/sha256/emptyhere/one.mp4", stale);
+    expect(fs.readFileSync(stale, "utf8")).toBe("the real video");
+
+    const nothing = join(cache, "nothing.mp4");
+    mock.cloud.put("edit/originals/sha256/emptythere/one.mp4", new Uint8Array());
+    await expect(cloudMedia.fetchKey("edit/originals/sha256/emptythere/one.mp4", nothing)).rejects.toThrow("empty in the cloud");
+    expect(fs.existsSync(nothing)).toBe(false);
+
+    const blank = join(cache, "blank.mp4");
+    fs.writeFileSync(blank, "");
+    cloudMedia.rememberLocalOriginal(cache, "edit/originals/sha256/blank/one.mp4", blank);
+    expect(cloudMedia.localOriginal(cache, "edit/originals/sha256/blank/one.mp4")).toBeNull();
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("overlapping commentary import batches share one excerpt download and cloud publication", async () => {
   const fixture = fixtureHome("youtube-shared-range");
   const previous = process.env.EDIT_YTDLP;
