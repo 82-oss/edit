@@ -22,6 +22,11 @@ export function fillsFrame(project: Project, clip: Clip): boolean {
   if (media === undefined || (media.kind !== "video" && media.kind !== "image")) return false;
   // A picture with see-through parts (an effect's subtitles or callouts over the footage: its picture over its alpha) hides nothing it isn't drawn on.
   if (media.stacked_alpha === true) return false;
+  // Nor does a graphic at all, drawn or not: while one is being drawn its place is held by a still that fills the frame,
+  // so the footage under it counted as hidden then and as shown once it was drawn. Every rule that asks this flipped
+  // with each render (Nov 23, Boyfriends: the tracked blurs under cutin-keys and desktop-case1 went from 128 to 181
+  // and back every twenty seconds, each change sending those graphics back to their stills, round and round).
+  if (media.effect != null) return false;
   const { width, height } = project.settings;
   const [mw, mh] = [media.width || width, media.height || height];
   const { x, y, scale } = framingAt(clip, 0);
