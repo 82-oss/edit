@@ -150,6 +150,61 @@ test.skipIf(ffmpeg === null)("a long recording's piece cut part-way carries on f
   expect(await media.append(reference, [dest], `${root}/appended.mp4`)).toBe(true);
 }, 120_000);
 
+test.skipIf(ffmpeg === null)("a recording's chapters stay out of its piece, and a stretch that kept them still joins, not made again", async () => {
+  const { source, ms, stretches } = short;
+  const chapters = `${root}/chapters.txt`;
+  fs.writeFileSync(chapters, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=4000\ntitle=one\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=4000\nEND=5000\ntitle=two\n");
+  const marked = `${root}/chaptered.mp4`;
+  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", source, "-i", chapters, "-map", "0", "-map_chapters", "1", "-c", "copy", marked]).exitCode).toBe(0);
+  const part = { path: marked, streams: await media.streams(marked) };
+  const work = `${root}/chaptered.stretches`;
+  const dest = `${root}/chaptered-piece.mp4`;
+  await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
+  expect(format(dest)).toBe(format(short.reference));
+  expect(Math.abs((await media.streams(dest)).durationMs - ms)).toBeLessThanOrEqual(50);
+
+  // What a build before this one left: the same first stretch with the chapters' text track.
+  const names = wholeIn(work);
+  const carried = `${root}/carried.mov`;
+  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", `${work}/${names[0]}`, "-i", chapters, "-map", "0", "-map_chapters", "1", "-c", "copy", carried]).exitCode).toBe(0);
+  expect(format(carried)).toContain("data");
+  fs.renameSync(carried, `${work}/${names[0]}`);
+  const before = new Map(names.map((name) => [name, fs.statSync(`${work}/${name}`).mtimeMs]));
+  fs.rmSync(dest);
+
+  const made = await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
+  expect(made.kept).toBe(stretches);
+  for (const [name, mtime] of before) expect(fs.statSync(`${work}/${name}`).mtimeMs).toBe(mtime);
+  expect(format(dest)).toBe(format(short.reference));
+  expect(worstMatch(dest, short.reference).worst).toBeGreaterThan(0.99);
+}, 120_000);
+
+test.skipIf(ffmpeg === null)("a stretch that can't be copied with the rest is made again, the others kept", async () => {
+  const { part, reference, stretches } = short;
+  const work = `${root}/odd.stretches`;
+  const dest = `${root}/odd.mp4`;
+  const cut = new AbortController();
+  const watch = setInterval(() => {
+    if (fs.existsSync(work) && wholeIn(work).length >= stretches - 1) cut.abort();
+  }, 20);
+  await media.joinStretched(part, dest, work, () => {}, cut.signal, STRETCH).catch(() => {});
+  clearInterval(watch);
+  fs.rmSync(dest, { force: true });
+  const names = wholeIn(work);
+  expect(names.length).toBeGreaterThanOrEqual(2);
+  // One stretch of the same length made another way: a different profile, so a different decoder setup.
+  const odd = `${work}/${names[1]}`;
+  const swapped = `${root}/odd-swap.mov`;
+  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", odd, "-c:v", "libx264", "-profile:v", "baseline", "-preset", "ultrafast", "-c:a", "copy", swapped]).exitCode).toBe(0);
+  fs.renameSync(swapped, odd);
+  const before = new Map(names.filter((name) => name !== names[1]).map((name) => [name, fs.statSync(`${work}/${name}`).mtimeMs]));
+
+  await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
+  for (const [name, mtime] of before) expect(fs.statSync(`${work}/${name}`).mtimeMs).toBe(mtime);
+  expect(format(dest)).toBe(format(reference));
+  expect(worstMatch(dest, reference).worst).toBeGreaterThan(0.99);
+}, 120_000);
+
 test.skipIf(ffmpeg === null)("an import stopped for an update stops its piece's stretch at once: no FFmpeg left writing, nothing half-made, carried on after", async () => {
   // As imports.ts runs it: the piece inside the import's fiber, its signal ended with the fiber
   // (`importSignal`), the fiber interrupted as `stop`/`stopAll` interrupt it before Edit restarts.

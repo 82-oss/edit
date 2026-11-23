@@ -302,7 +302,7 @@ async function joinHardware(part: JoinPart, dest: string, onPercent: (percent: n
     ? `[${read.audio}]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration=${seconds(total)},asetpts=PTS-STARTPTS[a]`
     : `anullsrc=r=48000:cl=stereo,atrim=duration=${seconds(total)}[a]`;
   await encode(
-    ["-hide_banner", "-y", ...read.args, "-filter_complex", `${picture};${sound}`, "-map", "[v]", "-map", "[a]", ...hardwareEncode(), "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", dest],
+    ["-hide_banner", "-y", ...read.args, "-filter_complex", `${picture};${sound}`, "-map", "[v]", "-map", "[a]", ...NO_CHAPTERS, ...hardwareEncode(), "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", dest],
     dest,
     total,
     onPercent,
@@ -346,6 +346,13 @@ export const STRETCHED_OVER_MS = 2 * STRETCH_MS;
 const LEAD_MS = 3_200;
 /** A stretch's sound, kept as it is until the piece is joined (`joinStretched`). */
 const STRETCH_SOUND = ["-c:a", "pcm_s16le"];
+/**
+ * A recording's chapters stay out of what's made from it. FFmpeg copies them by default, as a text track, into any
+ * stretch that starts before the last one ends, so those stretches never matched the rest (JJ's Mac, Nov 18-23: a
+ * 21-hour recording with 28 minutes of chapters, its import waiting "for the connection" for five days). Left out of
+ * `stretchKey`: it changes no picture or sound, so stretches already made are kept.
+ */
+const NO_CHAPTERS = ["-map_chapters", "-1"];
 
 /** The picture's encoder for a stretch: the video hardware, or libx264 as `joinSized` encodes. */
 function stretchVideo(kind: Encoder): { decode: string[]; encode: string[] } {
@@ -395,8 +402,18 @@ export async function joinStretched(
   const kinds: Encoder[] = hardwareEncoder() !== null && !fellBack ? ["the video hardware", "libx264"] : ["libx264"];
   for (const kind of kinds) {
     try {
-      const kept = await makeStretches(part, kind, work, (n) => whole(kind, n), count, stretchMs, onPercent, signal);
-      await joinStretches(Array.from({ length: count }, (_, n) => whole(kind, n)), dest, total, work, signal);
+      const files = Array.from({ length: count }, (_, n) => whole(kind, n));
+      let kept = await makeStretches(part, kind, work, (n) => whole(kind, n), count, stretchMs, onPercent, signal);
+      // One that can't be copied with the rest (kept from a build whose FFmpeg differed, say) is made again, or the
+      // import would fail the same way at every try, however long it waited.
+      const odd = await oddStretches(files);
+      if (odd.length > 0) {
+        diag.warn("writer", `${odd.length} of ${count} stretches of ${shown(part.path)} didn't match the rest: made again`);
+        for (const file of odd) fs.rmSync(file, { force: true });
+        kept = await makeStretches(part, kind, work, (n) => whole(kind, n), count, stretchMs, onPercent, signal);
+        if ((await oddStretches(files)).length > 0) throw new Error("the stretches came out in different formats");
+      }
+      await joinStretches(files, dest, total, work, signal);
       onPercent(100);
       return { encoder: kind, stretches: count, kept };
     } catch (error) {
@@ -446,7 +463,7 @@ async function makeStretches(part: JoinPart, kind: Encoder, work: string, whole:
     const before = paced.doneMs;
     try {
       await encode(
-        ["-hide_banner", "-y", ...read.args, "-filter_complex", `${picture};${sound}`, "-map", "[v]", "-map", "[a]", ...video, ...STRETCH_SOUND, "-progress", "pipe:1", "-nostats", partial],
+        ["-hide_banner", "-y", ...read.args, "-filter_complex", `${picture};${sound}`, "-map", "[v]", "-map", "[a]", ...NO_CHAPTERS, ...video, ...STRETCH_SOUND, "-progress", "pipe:1", "-nostats", partial],
         partial,
         lengthMs,
         (percent) => onPercent(Math.min(99, Math.floor(((kept * stretchMs + before + (percent * lengthMs) / 100) * 100) / total))),
@@ -471,15 +488,26 @@ async function setupOf(path: string): Promise<string | null> {
   }
 }
 
+/** The stretches that can't be copied with most of the others, or can't be read. The decoder's setup (SPS and PPS) counts: a copy keeps the first stretch's, so one made with another would play broken. */
+async function oddStretches(files: string[]): Promise<string[]> {
+  const formats = await Promise.all(
+    files.map(async (file) => {
+      const [format, setup] = await Promise.all([formatOf(file), setupOf(file)]);
+      return format === null || setup === null ? null : `${format}${setup}`;
+    }),
+  );
+  const tally = new Map<string, number>();
+  for (const format of formats) if (format !== null) tally.set(format, (tally.get(format) ?? 0) + 1);
+  const most = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  return files.filter((_, index) => formats[index] === null || formats[index] !== most);
+}
+
 /** Copies the stretches' pictures end to end into `dest` and encodes their sound to AAC in one go, as `join` encodes a piece's. */
 async function joinStretches(files: string[], dest: string, totalMs: number, work: string, signal?: AbortSignal): Promise<void> {
-  // The decoder's setup (SPS and PPS) too: a copy keeps the first stretch's, so one made with another would play broken.
-  const formats = await Promise.all(files.map(async (file) => `${await formatOf(file)}${await setupOf(file)}`));
-  if (formats.some((format) => format.startsWith("null") || format.endsWith("null") || format !== formats[0])) throw new Error("the stretches came out in different formats");
   const list = `${work}/join-${crypto.randomUUID().slice(0, 8)}.txt`;
   fs.writeFileSync(list, files.map((file) => `file '${file.replaceAll("'", "'\\''")}'\n`).join(""));
   try {
-    await run(...lowered(ffmpeg(), ["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", dest]), {
+    await run(...lowered(ffmpeg(), ["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v", "-map", "0:a", ...NO_CHAPTERS, "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", dest]), {
       timeoutMs: toolTime(totalMs),
       ...(signal ? { signal } : {}),
     });
@@ -561,7 +589,7 @@ async function joinSized(parts: JoinPart[], dest: string, onPercent: (percent: n
     joined += `[v${index}][a${index}]`;
   }
   filters.push(`${joined}concat=n=${parts.length}:v=1:a=1[v][a]`);
-  args.push("-filter_complex", filters.join(";"), "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-g", "30", "-color_range", "tv", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", dest);
+  args.push("-filter_complex", filters.join(";"), "-map", "[v]", "-map", "[a]", ...NO_CHAPTERS, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-g", "30", "-color_range", "tv", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", dest);
   await encode(args, dest, total, onPercent, signal);
 }
 
@@ -573,7 +601,9 @@ async function formatOf(path: string): Promise<string | null> {
       ["-v", "error", "-show_entries", "stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels:stream_tags=encoder", "-of", "csv=p=0", path],
       { timeoutMs: 60_000 },
     );
-    return text.trim() === "" ? null : text;
+    // Picture and sound: another track (a recording's chapters, kept as text) isn't copied, so it can't make two files differ.
+    const copied = text.split("\n").filter((line) => /(?:^|,)(?:video|audio)(?:,|$)/.test(line));
+    return copied.length === 0 ? null : `${copied.join("\n")}\n`;
   } catch {
     return null;
   }
@@ -632,7 +662,7 @@ export async function append(base: string, more: string[], dest: string, onPerce
   fs.writeFileSync(list, pieces.map((piece) => `file '${piece.path.replaceAll("'", "'\\''")}'\n`).join(""));
   let copied = true;
   try {
-    await run(ffmpeg(), ["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", dest], { timeoutMs: toolTime(total), ...(signal ? { signal } : {}) });
+    await run(ffmpeg(), ["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", list, ...NO_CHAPTERS, "-c", "copy", "-movflags", "+faststart", dest], { timeoutMs: toolTime(total), ...(signal ? { signal } : {}) });
   } catch {
     copied = false;
   } finally {

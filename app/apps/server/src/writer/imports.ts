@@ -777,6 +777,8 @@ function waitLine(kind: failure.Kind, error: unknown, at: number | null, now = D
   if (kind === "encoder") return "The hardware encoder is busy with an export: the import goes on once it's free.";
   if (kind === "signin") return "Sign in to Edit, and the import goes on by itself.";
   if (/^cut short by/u.test(typeof error === "string" ? error : "")) return `Edit was closed part-way through this import: it goes on by itself${when}.`;
+  const words = typeof error === "string" ? error : diag.messageOf(error);
+  if (/^The preview's piece of /u.test(words)) return `${words.replace(/; Edit tries again by itself$/u, "")}: Edit tries again by itself${when}.`;
   return `Waiting for the connection: Edit tries again by itself${when}.`;
 }
 
