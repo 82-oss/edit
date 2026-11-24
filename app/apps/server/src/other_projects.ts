@@ -192,8 +192,12 @@ function editChat(store: Store, id: string): Exchange[] {
 
 /**
  * A script's chat: the producer's messages, each with the answer that wasn't
- * a failure. A fix of the review's notes is left out: its answer carries the
- * reviewers' words (fixing.ts, "Apply the review's feedback.").
+ * a failure. Never the reviewers' words, which an answer that read the
+ * review's notes can carry: a fix of them ("Apply the review's feedback.",
+ * fixing.ts) and an answer whose tools pulled them (pull_feedback, done or
+ * not: "do you see any feedback?") are left out, request and all; an answer
+ * saved before answers kept their tools (no `workedMs`), which may have, is
+ * left out while its request stays.
  */
 function scriptChat(dir: string): Exchange[] {
   const out: Exchange[] = [];
@@ -202,7 +206,13 @@ function scriptChat(dir: string): Exchange[] {
     if (turn.role === "producer") {
       open = turn.text.trim() === "" || turn.text.trim() === REVIEW_FIX ? null : { at: turn.at, asked: turn.text, answer: null };
       if (open !== null) out.push(open);
-    } else if (open !== null && turn.failed !== true && turn.text.trim() !== "") open.answer = turn.text;
+      continue;
+    }
+    if (open === null || turn.failed === true || turn.text.trim() === "") continue;
+    if ((turn.trace ?? []).some((group) => group.calls.some((call) => call.tool === "pull_feedback"))) {
+      out.splice(out.indexOf(open), 1);
+      open = null;
+    } else if (turn.workedMs !== undefined) open.answer = turn.text;
   }
   return out;
 }
