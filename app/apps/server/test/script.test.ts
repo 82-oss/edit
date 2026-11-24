@@ -230,17 +230,24 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
         await cutExcerpt(source, 40, 76, out);
         expect(Math.abs((await durationOf(out)) - 36)).toBeLessThan(0.5);
       }
-      // A file whose index promises more than it holds: no cut of 60-90 s reads back, copied or encoded.
+      // A file whose index promises more than it holds: no cut of 60-90 s reads back, copied or encoded. A length that
+      // couldn't be read may be a probe out of time on a loaded Mac, so it isn't taken as wrong every time: it passes.
       const whole = `${dir}/whole.mp4`;
       expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", source, "-c", "copy", "-movflags", "+faststart", whole]).exitCode).toBe(0);
       const short = `${dir}/short.mp4`;
       fs.writeFileSync(short, fs.readFileSync(whole).subarray(0, Math.floor(fs.statSync(whole).size * 0.4)));
-      const error = await cutExcerpt(short, 60, 90, `${dir}/never.mp4`).then(() => null, (thrown: unknown) => thrown);
-      expect(error).toBeInstanceOf(failure.SameEveryTime);
-      // Broken, never waited out, and still so from the words a job keeps across a restart.
-      expect(failure.kindOf(error)).toBe("broken");
-      expect(failure.kindOf(diag.messageOf(error))).toBe("broken");
+      const unread = await cutExcerpt(short, 60, 90, `${dir}/never.mp4`).then(() => null, (thrown: unknown) => thrown);
+      expect(unread).not.toBeInstanceOf(failure.SameEveryTime);
+      expect(diag.messageOf(unread)).toContain("can't be read back");
+      expect(failure.kindOf(unread)).toBe("passing");
       expect(fs.existsSync(`${dir}/never.mp4`)).toBe(false);
+      // Sound whose cut is measured short every time (AAC in a .wav, Nov 1's 911 call) is broken, from its words too.
+      const call = `${dir}/call.wav`;
+      expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000:duration=30", "-ac", "2", "-c:a", "pcm_mulaw", call]).exitCode).toBe(0);
+      const wrong = await cutExcerpt(call, 0, 20, `${dir}/wrong.wav`).then(() => null, (thrown: unknown) => thrown);
+      expect(wrong).toBeInstanceOf(failure.SameEveryTime);
+      expect(failure.kindOf(wrong)).toBe("broken");
+      expect(failure.kindOf(diag.messageOf(wrong))).toBe("broken");
     } finally {
       cleanup();
     }

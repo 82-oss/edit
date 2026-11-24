@@ -2534,17 +2534,24 @@ export async function cut(source: string, start: number, to: number, out: string
   try {
     await cutOnce(source, start, to, out, copy);
   } catch (error) {
-    if (!copy || tools.isUrl(source) || !(error instanceof CutRefused)) throw error;
+    if (tools.isUrl(source) || !(error instanceof CutRefused)) throw error;
+    if (!copy) throw lasting(error);
     diag.warn("script", `cutting an excerpt: ${error.message.replace(/\.$/u, "")}; cut again with its picture encoded`);
     try {
       await cutOnce(source, start, to, out, false);
     } catch (again) {
-      if (again instanceof CutRefused && again.wrong !== null) {
-        throw new failure.SameEveryTime(`This footage can't be cut: its excerpt comes out the wrong length every time it's cut (${again.wrong}).`);
-      }
-      throw again;
+      throw lasting(again);
     }
   }
+}
+
+/**
+ * An encoded cut from a file here measured the wrong length: wrong every time (`failure.SameEveryTime`). Anything
+ * else (FFmpeg refusing it, an excerpt whose length couldn't be read, perhaps a probe out of time) stays as it was.
+ */
+function lasting(error: unknown): unknown {
+  if (!(error instanceof CutRefused) || error.wrong === null || error.wrong === UNREADABLE) return error;
+  return new failure.SameEveryTime(`This footage can't be cut: its excerpt comes out the wrong length every time it's cut (${error.wrong}).`);
 }
 
 /** A cut FFmpeg refused, or one that came out wrong (`wrong` says how). Its words are what `cloud_media.cutsBetterHere` reads. */
@@ -2650,6 +2657,9 @@ function addressPath(url: string): string {
   }
 }
 
+/** `excerptProblem`'s words for an excerpt whose length couldn't be read (never a length measured wrong). */
+const UNREADABLE = "it can't be read back";
+
 /**
  * Why a fresh excerpt isn't the stretch it was cut from, or null: it reads
  * back as long as was asked (or up to the footage's end). Nov 1: a 911 call's
@@ -2660,7 +2670,7 @@ function addressPath(url: string): string {
 export async function excerptProblem(source: string, start: number, to: number, out: string): Promise<string | null> {
   const asked = to - start;
   const got = await secondsOf(out);
-  if (got === null) return "it can't be read back";
+  if (got === null) return UNREADABLE;
   const leeway = Math.max(0.5, asked * 0.02);
   // Copied picture runs on past the end by its reorder delay: FFmpeg stops at the last frame decoded by then, and with
   // B-frames frames shown later come with it (Nov 18, JJ's Axon bodycam MartyBlank_202604201718: a 0.6 s delay, its
