@@ -14,6 +14,28 @@
     "name": "list_projects"
   },
   {
+    "description": "Another of the team's projects on this computer (an edit or a script), when the person points you at one (\"do it like the Kimberly script\", \"the same as we did on the Trooper edit\"): what they asked for in its chat, each with the answer it got, and the work itself. name: what the person called it; id: one from an earlier answer; neither: the most recent. Read only.",
+    "inputSchema": {
+      "properties": {
+        "id": {
+          "description": "Its id, from an earlier answer",
+          "type": "string"
+        },
+        "name": {
+          "description": "What the person called it, in their words",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "other_projects"
+  },
+  {
     "description": "Load one part of the house style (the SKILLS list in the instructions): how the team does that part of an edit. Load it before working on that part, once per conversation. edit-workflow is the whole edit in one go, and also starts watching the footage in the background.",
     "inputSchema": {
       "properties": {

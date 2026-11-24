@@ -11,6 +11,9 @@ import { writeAtomic } from "../files.ts";
 import { join } from "../paths.ts";
 import * as live from "./live.ts";
 
+/** What the chat shows for a build's own last read (scripting.ts): Edit's request, not the producer's, though it's on their side (other_projects.ts leaves it out). */
+export const FRESH_EYES = "Fresh eyes: the final read.";
+
 /** Turns kept, and how many recent ones go back to Claude. */
 const KEPT = 80;
 export const SENT = 20;

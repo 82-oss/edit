@@ -75,8 +75,8 @@ interface Kept {
 
 const strings = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : undefined);
 
-/** What the chat shows a fix asked for: the producer's side of the turn. */
-const ASKED = "Apply the review's feedback.";
+/** What the chat shows a fix asked for: the producer's side of the turn (other_projects.ts leaves such turns out). */
+export const ASKED = "Apply the review's feedback.";
 
 async function fixNotes(data: string, id: string, noteIds: string[], job: jobs.Job): Promise<jobs.Outcome> {
   const dir = store.scriptDir(data, id);

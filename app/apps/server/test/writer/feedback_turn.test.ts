@@ -191,7 +191,7 @@ test("a channel's script turn has the channel's lesson tools", async () => {
     const [token, , session] = turnTools.open(data, ID);
     expect(session.place).toEqual({ channel: "ch-test", lane: "script" });
     const listed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "remember", "read_skill", "other_channels", "use_style"]);
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "read_skill", "other_channels", "use_style"]);
     turnTools.close(token);
   } finally {
     cleanup();
