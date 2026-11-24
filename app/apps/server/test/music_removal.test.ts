@@ -5,7 +5,7 @@
 import { beforeEach, expect, test } from "bun:test";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
+import { applyBringBack, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
@@ -124,6 +124,27 @@ test("an empty or reversed span is refused before it's rounded to frames", () =>
   expect(spanFrames(30, 15.01, 15.02)).toEqual([450, 451]);
   expect(spanFrames(30, null, null)).toEqual([0, Number.MAX_SAFE_INTEGER]);
   expect(spanFrames(30, 10, null)).toEqual([300, Number.MAX_SAFE_INTEGER]);
+});
+
+test("a sound playing one side of its source keeps its music rather than both sides mixed", () => {
+  const project = edit();
+  (audio(project)[0] as Audio & { channel?: string }).channel = "left";
+  expect(soundsToClean(project, 0, Number.MAX_SAFE_INTEGER).size).toBe(0);
+  expect(oneSidedIn(project, 0, Number.MAX_SAFE_INTEGER)).toBe(1);
+});
+
+test("an overlay following the footage is cut with it, each part following its own", () => {
+  const project = edit();
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  const v2 = structuredClone(project.tracks.find((one) => one.id === picture.track)!);
+  v2.id = "v2";
+  project.tracks.push(v2);
+  project.clips.push(clip({ id: "box", type: "solid", track: "v2", start: 200, duration: 400, parent: "pic" } as never));
+  applyBringBack(project, 300, 330, 6, false);
+  const boxes = project.clips.filter((one) => one.track === "v2").sort((a, b) => a.start - b.start);
+  const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
+  expect(boxes.map((one) => [one.start, one.duration])).toEqual([[200, 100], [300, 30], [330, 270]]);
+  expect(boxes.map((one) => one.parent)).toEqual(pictures.map((one) => one.id));
 });
 
 test("a muted track is never paid for", () => {

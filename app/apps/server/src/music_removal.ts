@@ -68,12 +68,24 @@ export function soundsToClean(project: Project, from: number, to: number): Map<s
   // A muted track isn't heard, so it's never paid for.
   const muted = new Set(project.tracks.filter((track) => track.muted).map((track) => track.id));
   for (const clip of project.clips) {
-    if (clipEnd(clip) <= from || clip.start >= to || muted.has(clip.track) || !isFootageSound(project, clip) || isOriginalPiece(clip)) continue;
+    if (clipEnd(clip) <= from || clip.start >= to || muted.has(clip.track) || !isFootageSound(project, clip) || isOriginalPiece(clip) || oneSide(clip)) continue;
     const media = mediaOf(project, clip.media)!;
     const source = cleanedInfo(media)?.of ?? media.id;
     out.set(source, [...(out.get(source) ?? []), clip]);
   }
   return out;
+}
+
+/**
+ * A sound playing one side of its source: the cleaned file is one channel, so
+ * it would bring back the side left out. It stays on the original.
+ */
+const oneSide = (clip: AudioClip) => clip.channel === "left" || clip.channel === "right";
+
+/** Footage sounds in frames from–to left with their music because they play one side of the source. */
+export function oneSidedIn(project: Project, from: number, to: number): number {
+  const muted = new Set(project.tracks.filter((track) => track.muted).map((track) => track.id));
+  return project.clips.filter((clip) => clipEnd(clip) > from && clip.start < to && !muted.has(clip.track) && isFootageSound(project, clip) && oneSide(clip)).length;
 }
 
 /** The seconds of its source a sound plays within frames from–to: what's asked for is all that's sent. */
@@ -219,7 +231,8 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
   if (live === null) throw new Error("no such project");
   const [first, last] = spanFrames(fpsOf(live.project), from, to);
   const groups = soundsToClean(live.project, first, last);
-  if (groups.size === 0) throw new Error("there's no footage sound in that span");
+  const sided = oneSidedIn(live.project, first, last);
+  if (groups.size === 0) throw new Error(sided > 0 ? "the footage sound there plays one side of its source (left or right), which music removal can't keep apart" : "there's no footage sound in that span");
   let paidSeconds = 0;
   let moved = 0;
   for (const originalId of groups.keys()) {
@@ -235,6 +248,7 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
     seconds_sent: Math.round(paidSeconds * 10) / 10,
     cost_usd: Math.round((paidSeconds / 60) * 0.12 * 100) / 100,
     then: "Listen back. Where the team hears a word lost, use bring_back_sound at that moment.",
+    ...(sided > 0 ? { left_with_music: sided, why: "they play one side of their source (left or right): cleaning makes one channel, which would bring back the side left out" } : {}),
   };
 }
 
@@ -301,12 +315,26 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
   return [paidSeconds, changed];
 }
 
-/** The razor at `frame` through a clip and whatever's linked to it, as the timeline's split does. */
+/**
+ * The razor at `frame` through a clip, whatever's linked to it and whatever
+ * follows it (an overlay parented to it), as the timeline's split does: each
+ * part after the cut follows the part it's on.
+ */
 function splitLinked(project: Project, clip: Clip, frame: number): void {
-  if (frame <= clip.start || frame >= clipEnd(clip)) return;
+  const crosses = (one: Clip) => one.start < frame && clipEnd(one) > frame;
+  if (!crosses(clip)) return;
   const rate = fpsOf(project);
-  const group = clip.link === undefined ? [clip] : project.clips.filter((one) => one.link === clip.link && one.start < frame && clipEnd(one) > frame);
-  const link = clip.link === undefined ? undefined : freshId(project, "l");
+  const group: Clip[] = [];
+  const add = (one: Clip) => {
+    if (group.includes(one)) return;
+    group.push(one);
+    for (const other of project.clips) {
+      if (!crosses(other)) continue;
+      if ((one.link !== undefined && other.link === one.link) || other.parent === one.id) add(other);
+    }
+  };
+  add(clip);
+  const links = new Map<string, string>();
   const halves = new Map<string, string>();
   for (const one of group) {
     const offset = frame - one.start;
@@ -317,7 +345,10 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
     right.fade_in = 0;
     // A split's halves play straight on: no crossfade between them.
     if (right.type === "audio") delete right.crossfade;
-    if (link !== undefined) right.link = link;
+    if (one.link !== undefined) {
+      if (!links.has(one.link)) links.set(one.link, freshId(project, "l"));
+      right.link = links.get(one.link)!;
+    }
     if (right.type === "video" || right.type === "audio") right.source_in += (offset / rate) * right.speed;
     for (const keys of Object.values(right.keyframes ?? {})) for (const key of keys) key.frame -= offset;
     one.duration = offset;
