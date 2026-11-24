@@ -304,7 +304,9 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     const media = mediaOf(draft, newId);
     if (media === undefined) throw new Error("the cleaned sound went missing");
     // Its own marker replaced; any other (a word kept unmuted) stays.
-    const seams = before === undefined ? undefined : cleanedInfo(before)?.seams;
+    // Read here, not before the isolation: a bring-back meanwhile may have kept a seam's crossfade on it.
+    const current = before === undefined ? undefined : mediaOf(draft, before.id);
+    const seams = current === undefined ? undefined : cleanedInfo(current)?.seams;
     media.markers = [...(media.markers ?? []).filter((marker) => marker.name !== MARK), cleanedMarker({ of: originalId, stretches, ...(seams === undefined ? {} : { seams }) })];
     if (before !== undefined && newId !== before.id) {
       for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
@@ -373,9 +375,14 @@ const playback = (clip: Clip) => stableStringify(Object.fromEntries(Object.entri
 
 /** Whether `after` is the same take carrying on from `before`, nothing to tell them apart at the seam. */
 function sameTake(project: Project, before: Clip, after: Clip): boolean {
-  if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || playback(before) !== playback(after)) return false;
-  if ((before.type !== "video" && before.type !== "audio") || (after.type !== "video" && after.type !== "audio")) return false;
-  if (Math.abs(before.source_in + (before.duration / fpsOf(project)) * before.speed - after.source_in) >= 0.5 / fpsOf(project)) return false;
+  if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || before.type !== after.type || playback(before) !== playback(after)) return false;
+  // Footage plays on in its source; anything else (an overlay) has no source to follow.
+  if (
+    (before.type === "video" || before.type === "audio") &&
+    (after.type === "video" || after.type === "audio") &&
+    Math.abs(before.source_in + (before.duration / fpsOf(project)) * before.speed - after.source_in) >= 0.5 / fpsOf(project)
+  )
+    return false;
   if (after.type === "audio" && (after.crossfade ?? 0) !== 0) return false;
   // A split leaves both halves the same keys, the right one's shifted back.
   const shifted = Object.fromEntries(Object.entries(after.keyframes ?? {}).map(([param, keys]) => [param, keys.map((key) => ({ ...key, frame: key.frame + before.duration }))]));
@@ -400,7 +407,23 @@ function rejoinAt(project: Project, frame: number): void {
     }
     project.clips = project.clips.filter((clip) => !gone.has(clip.id));
     for (const clip of project.clips) if (clip.parent !== undefined && gone.has(clip.parent)) clip.parent = gone.get(clip.parent)!;
+    rejoinFollowers(project, frame, new Set(gone.values()));
   }
+}
+
+/** What follows rejoined footage (an overlay parented to it), cut at `frame` with it, joined again where nothing tells the parts apart. */
+function rejoinFollowers(project: Project, frame: number, parents: Set<string>): void {
+  const joined = new Set<string>();
+  for (const right of project.clips.filter((clip) => clip.start === frame && clip.parent !== undefined && parents.has(clip.parent))) {
+    const left = project.clips.find((clip) => clip !== right && clip.track === right.track && clipEnd(clip) === frame && clip.parent === right.parent);
+    if (left === undefined || left.link !== undefined || right.link !== undefined || !sameTake(project, left, right)) continue;
+    left.duration += right.duration;
+    left.fade_out = right.fade_out;
+    project.clips = project.clips.filter((clip) => clip !== right);
+    for (const clip of project.clips) if (clip.parent === right.id) clip.parent = left.id;
+    joined.add(left.id);
+  }
+  if (joined.size > 0) rejoinFollowers(project, frame, joined);
 }
 
 const audioAt = (project: Project, track: string, test: (clip: AudioClip) => boolean) =>

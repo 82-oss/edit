@@ -495,7 +495,7 @@ function termSpans(text: string[], term: string): [number, number][] {
  * A subtitle's text with its starred terms starred out: their set form
  * ("f***") in the written case, else each word's first letter and stars.
  */
-export function star(text: string, found: Suggestion[]): string {
+export function star(text: string, found: Suggestion[], spare: readonly { term: string; nth: number }[] = []): string {
   let letters = chars(text);
   const done: string[] = [];
   for (const suggestion of found) {
@@ -503,9 +503,15 @@ export function star(text: string, found: Suggestion[]): string {
     done.push(suggestion.term);
     const out: string[] = [];
     let at = 0;
-    for (const [from, to] of termSpans(letters, suggestion.term)) {
+    for (const [index, [from, to]] of termSpans(letters, suggestion.term).entries()) {
       out.push(...letters.slice(at, from));
       const written = letters.slice(from, to).join("");
+      // An occurrence kept unmuted (`spare`: which of the term's occurrences, counting from 0) is left as said.
+      if (spare.some((one) => one.term === suggestion.term && one.nth === index)) {
+        out.push(...chars(written));
+        at = to;
+        continue;
+      }
       if (suggestion.display !== null) {
         out.push(...chars(inCase(suggestion.display, written)));
       } else {
@@ -1057,13 +1063,18 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     const onTimeline = onTimelineOf(clip, fps);
     // A word kept unmuted (mute_house_words' keep) stays heard and unstarred here too.
     const notMuted = notMutedAt(media);
-    const found = suggestions(words, neglect, visibleFrom * 1000.0, visibleTo * 1000.0).filter((suggestion) => {
+    const every = suggestions(words, neglect, visibleFrom * 1000.0, visibleTo * 1000.0);
+    const found = every.filter((suggestion) => {
       if (!keptUnmuted(notMuted, suggestion)) return true;
       spared.push({ term: suggestion.term, at_ms: onTimeline(suggestion.at_ms), timeline_ms: [onTimeline(suggestion.start_ms), onTimeline(suggestion.end_ms)] });
       return false;
     });
     for (const cue of segment(words)) {
-      const mine = found.filter((suggestion) => cue.words[0] <= suggestion.word && suggestion.word < cue.words[1]);
+      const inCue = (suggestion: Suggestion) => cue.words[0] <= suggestion.word && suggestion.word < cue.words[1];
+      const mine = found.filter(inCue);
+      // A kept word stays written out though the same word is starred elsewhere in the line: spared by which of its kind it is.
+      const all = every.filter(inCue);
+      const keptHere = all.filter((suggestion) => !mine.includes(suggestion)).map((kept) => ({ term: kept.term, nth: all.filter((one) => one.term === kept.term && one.word < kept.word).length }));
       const voice = cue.speaker ?? "unknown";
       const key = `${media.id}/${voice}`;
       if (!voices.has(key)) {
@@ -1079,7 +1090,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
       const line: Line = {
         start_ms: onTimeline(cue.start_ms),
         end_ms: onTimeline(cue.end_ms),
-        text: star(cue.text, mine),
+        text: star(cue.text, mine, keptHere),
         speaker: key,
       };
       if (words[cue.words[0] - 1]?.stretched === true) line.doubtful = true;
@@ -1155,6 +1166,8 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
   let leftOff = 0;
   let covers = 0;
   if (!latestRun(projectId, run)) return SUPERSEDED;
+  // Words kept unmuted anywhere in the video stay readable wherever the starring below reaches, not only in this span.
+  const keptEverywhere = (await houseWords(app, project, 0, Number.MAX_SAFE_INTEGER, neglect, [], { cachedOnly: true })).kept;
   // Per voice: lines in footage with seats that sat under the face, and that didn't.
   const seatedLines = new Map<string, [under: number, bottom: number]>();
   const [after, [placed, skipped, outside, texts, leftOutByHand, heldByHand]] = await app.store.update(projectId, "agent", (edited) => {
@@ -1302,7 +1315,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
       placedCount += 1;
     }
     // Every other text on screen too (captions, callouts, charges), all of the video.
-    const starredTexts = starOnScreen(edited, 0, Number.POSITIVE_INFINITY, neglect, [], spared);
+    const starredTexts = starOnScreen(edited, 0, Number.POSITIVE_INFINITY, neglect, [], [...spared, ...keptEverywhere]);
     // One colour per person, ΔE 28 apart, the same rule as add_subtitles';
     // each person and their lines named by id (`project.people`).
     seams.people.oneColourPerPerson(edited);

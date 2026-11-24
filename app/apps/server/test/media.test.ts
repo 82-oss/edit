@@ -5,10 +5,12 @@ import * as fs from "node:fs";
 import * as encoder from "../src/encoder.ts";
 import { backgroundSlots, isImagePath, isLocalCopy, isMediaPath, makeThumbs, Processor, Semaphore } from "../src/media.ts";
 import type { MediaStatus } from "../src/media.ts";
+import type { Media } from "../src/model.ts";
 import type { CachePaths } from "../src/native/index.ts";
 import * as failure from "../src/failure.ts";
 import * as tools from "../src/tools.ts";
 import { timing } from "../src/transcribe.ts";
+import { cleanedMarker } from "../src/music_removed.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
 
@@ -208,6 +210,41 @@ test.skipIf(ffmpeg === null)("the transcription plan out of credit: the file wai
     cleanup();
   }
 });
+
+test.skipIf(ffmpeg === null)("sound with its music removed waits with its source for the plan's credit, and has its words once the source does", async () => {
+  // Its words are its source's (music_removed.ts): while the source waits, so does it, never marked failed for good.
+  const { dir, app, store, cleanup } = fixtureHome("media-cleaned-credit");
+  const every = failure.QUOTA_EVERY_MS.value;
+  try {
+    const source = `${dir}/tone.wav`;
+    const cleaned = `${dir}/tone (music removed).flac`;
+    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", source]).exitCode).toBe(0);
+    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-i", source, cleaned]).exitCode).toBe(0);
+    const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const mediaItem = (fields: Partial<Media>) => ({ width: 0, height: 0, fps: 0, ...fields }) as Media;
+    await store.update(id, "test", (project) => {
+      project.media.push(mediaItem({ id: "m1", name: "tone.wav", path: source, kind: "audio", duration: 1, has_audio: true }));
+      project.media.push(mediaItem({ id: "m2", name: "tone (music removed).flac", path: cleaned, kind: "audio", duration: 1, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 1]] })] }));
+    });
+    // Long enough that it's still waiting when the cleaned file next looks (every 2 s).
+    failure.QUOTA_EVERY_MS.value = 5000;
+    const asked = mock.calls("/v1/transcribe").length;
+    mock.on("POST", "/v1/transcribe", () => Response.json({ error: "ElevenLabs transcription failed (401): This request exceeds your quota of 0. You have 0 credits remaining. (quota_exceeded)" }, { status: 401 }), 1);
+    const waiting = settled(store, cleaned, (s) => s.transcript === "waiting" || s.transcript === "failed" || s.transcript === "ready");
+    app.media.transcribe(cleaned, true);
+    const said = await waiting;
+    expect(said.transcript).toBe("waiting");
+    expect(said.transcript_retry_at).toBeGreaterThan(Date.now());
+    // The source's time comes: it's heard once, and the cleaned file has those words.
+    const heard = await settled(store, cleaned, (s) => s.transcript === "ready" || s.transcript === "failed");
+    expect(heard.transcript).toBe("ready");
+    expect(fs.readFileSync(app.media.paths(cleaned).transcript, "utf8")).toBe(fs.readFileSync(app.media.paths(source).transcript, "utf8"));
+    expect(mock.calls("/v1/transcribe").length).toBe(asked + 2);
+  } finally {
+    failure.QUOTA_EVERY_MS.value = every;
+    cleanup();
+  }
+}, 60_000);
 
 test("a failed step says why and the rest go on", async () => {
   const { dir, app, store, cleanup } = fixtureHome("media-failure");

@@ -146,6 +146,10 @@ test("an overlay following the footage is cut with it, each part following its o
   const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
   expect(boxes.map((one) => [one.start, one.duration])).toEqual([[200, 100], [300, 30], [330, 270]]);
   expect(boxes.map((one) => one.parent)).toEqual(pictures.map((one) => one.id));
+  // Undone, the overlay is one clip again, following the one picture.
+  applyBringBack(project, 300, 330, 6, true);
+  const after = project.clips.filter((one) => one.track === "v2");
+  expect(after.map((one) => [one.start, one.duration, one.parent])).toEqual([[200, 400, "pic"]]);
 });
 
 test("a muted track is never paid for", () => {

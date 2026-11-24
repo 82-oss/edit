@@ -375,6 +375,10 @@ test("other_forms_are_muted_and_starred_as_said", () => {
   expect(found.map((s) => s.term)).toEqual(["punched", "hitting", "fucking", "shooting"]);
   expect([found[0]!.start_ms, found[0]!.end_ms]).toEqual([220.0, 625.0]);
   expect(star("He punched her and kept hitting, fucking", found)).toBe("He p****** her and kept h******, f******");
+  // One occurrence kept unmuted (mute_house_words' keep) stays written out; the other is still starred.
+  const twice = found.filter((s) => s.term === "fucking");
+  expect(star("fucking stop, fucking now", twice, [{ term: "fucking", nth: 0 }])).toBe("fucking stop, f****** now");
+  expect(star("fucking stop, fucking now", twice, [{ term: "fucking", nth: 1 }])).toBe("f****** stop, fucking now");
   // Outside a neglect case only the house words count.
   found = suggestions(words, false, 0.0, 10_000.0);
   expect(found.every((s) => s.term !== "punched")).toBe(true);
