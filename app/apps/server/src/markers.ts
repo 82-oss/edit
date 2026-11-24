@@ -5,6 +5,7 @@
 // placed on the marks by name (add_sound_effect / add_from_library `markers`).
 
 import type { Marker, Media, Project, TimelineMarker } from "./model.ts";
+import { soundSourceId } from "./music_removed.ts";
 import { clipContains, clipEnd, clipOf, fps as fpsOf } from "./project.ts";
 import { compareStrings, fixed, round, trim } from "./rust.ts";
 
@@ -167,7 +168,8 @@ function shownAt(project: Project, mediaId: string, time: number): number[] {
   for (const clip of project.clips) {
     if (clip.type !== "video" && clip.type !== "audio") continue;
     const speed = clip.speed ?? 1;
-    if (clip.media !== mediaId || !(speed > 0)) continue;
+    // A file's moments show where it plays, and its source's through it (a copy with its music taken out: music_removed.ts).
+    if ((clip.media !== mediaId && soundSourceId(project, clip.media) !== mediaId) || !(speed > 0)) continue;
     const frame = clip.start + Math.trunc(round(((time - (clip.source_in ?? 0)) / speed) * fps));
     if (clipContains(clip, frame)) frames.push(frame);
   }

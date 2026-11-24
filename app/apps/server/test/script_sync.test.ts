@@ -8,6 +8,8 @@ import { clipEnd, cutTime } from "../src/project.ts";
 import { layOut } from "../src/script.ts";
 import { applyToEdit, applyToScript, changesOf, editSide, linkOf, syncComments } from "../src/script_sync.ts";
 import { toParsed, type WriterScript } from "../src/writer_handoff.ts";
+import { applyBringBack } from "../src/music_removal.ts";
+import { cleanedMarker } from "../src/music_removed.ts";
 import { media, project as newProject } from "./helpers/model.ts";
 
 // The ripples are the addon's (edit_core::remove_time): these run against the real one when it's built.
@@ -48,6 +50,110 @@ describe.skipIf(real === null)("a script and its edit, kept in step", () => {
     expect(project.script!.blocks.map((block) => [block.kind, block.origin])).toEqual([["footage", "a"], ["narration", "n"], ["footage", "b"]]);
     expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
     expect(editSide(project, "n")).toEqual({ head: 0, tail: 0, text: "Then the call came in." });
+  });
+
+  test("a call recording with its music removed, a word brought back mid-way, still reads as the whole range", () => {
+    // A sound-only file (a police call), laid out as one: its range plays as sound under a black card.
+    const given = script();
+    const project = newProject("edit");
+    project.media.push(media({ id: "m1", name: "Call.mp3", path: "/call.mp3", kind: "audio", duration: 60, has_audio: true }));
+    project.script = { source: "writer:s1", blocks: toParsed(given as unknown as WriterScript).blocks.map((block) => (block.kind === "footage" ? { ...block, media: "m1" } : block)) };
+    layOut(project);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    project.media.push(media({ id: "m9", name: "Call (music removed 1).flac", path: "/call-clean.flac", kind: "audio", duration: 60, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 60]] })] }));
+    for (const clip of project.clips) if (clip.type === "audio" && clip.media === "m1") clip.media = "m9";
+    // 4–6 s of it plays the original again, in its own piece.
+    applyBringBack(project, 120, 180, 6, false);
+    expect(project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).length).toBe(3);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+  });
+
+  /** A sound-only recording laid out from `given`, its music removed, and 4–6 s of its first range brought back. */
+  function cleanedCall(given: Script): [Project, Script] {
+    const project = newProject("edit");
+    project.media.push(media({ id: "m1", name: "Call.mp3", path: "/call.mp3", kind: "audio", duration: 60, has_audio: true }));
+    project.script = { source: "writer:s1", blocks: toParsed(given as unknown as WriterScript).blocks.map((block) => (block.kind === "footage" ? { ...block, media: "m1" } : block)) };
+    layOut(project);
+    const link = linkOf("p", given);
+    link.clips = link.clips.map((kept) => ({ ...kept, edit: editSide(project, kept.id)! }));
+    given.edit = link;
+    project.media.push(media({ id: "m9", name: "Call (music removed 1).flac", path: "/call-clean.flac", kind: "audio", duration: 60, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 60]] })] }));
+    for (const clip of project.clips) if (clip.type === "audio" && clip.media === "m1") clip.media = "m9";
+    applyBringBack(project, 120, 180, 6, false);
+    return [project, given];
+  }
+
+  test("a range of a cleaned recording trimmed at its start past its first piece loses that time, all of it", () => {
+    const [project, given] = cleanedCall(script());
+    const now = structuredClone(given);
+    now.clips[0]!.startMs = 5_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    expect(editSide(project, "a")).toEqual({ head: 5, tail: 10, text: null });
+    const heard = project.clips.filter((clip) => clip.type === "audio" && clip.start < 150 + 1);
+    expect(heard.reduce((sum, clip) => sum + Math.min(clip.duration, 150 - clip.start), 0)).toBe(150);
+  });
+
+  test("a head trim through pieces at different speeds takes just the source asked for", () => {
+    const [project, given] = cleanedCall(script());
+    // The last piece (6–10 s) plays at double speed: the range is 0–10 s of the call over 240 frames.
+    const last = project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).sort((a, b) => a.start - b.start).at(-1)!;
+    if (last.type !== "audio") throw new Error("no sound");
+    last.speed = 2;
+    last.duration = 60;
+    const now = structuredClone(given);
+    now.clips[0]!.startMs = 7_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    // 6 s in the first two pieces, then 1 s of the fast one: 15 frames, not 30.
+    expect(editSide(project, "a")).toEqual({ head: 7, tail: 10, text: null });
+  });
+
+  test("a tail trim through pieces at different speeds takes just the source asked for", () => {
+    const [project, given] = cleanedCall(script());
+    // The first piece (0–4 s) plays at double speed: the range is 0–10 s of the call over 240 frames.
+    const first = project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).sort((a, b) => a.start - b.start)[0]!;
+    if (first.type !== "audio") throw new Error("no sound");
+    const shift = 60;
+    first.speed = 2;
+    first.duration = 60;
+    for (const clip of project.clips) if (clip !== first && clip.start >= 120) clip.start -= shift;
+    for (const clip of project.clips) if (clip.type !== "audio" && clip.start === 0 && clipEnd(clip) === 300) clip.duration -= shift;
+    const now = structuredClone(given);
+    now.clips[0]!.endMs = 3_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    // 6 s back through the two plain pieces, then 1 s of the fast one: 15 frames, not 30.
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 3, text: null });
+  });
+
+  test("a trim across a stretch cut out of a range keeps just what's asked, the cut-out time playing nothing", () => {
+    // Pieces at 0–4 s (1x) and 6–10 s (2x): 4–6 s of the call was cut out of the edit.
+    const [project, given] = cleanedCall(script());
+    const sounds = project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).sort((a, b) => a.start - b.start);
+    const [a, middle, b] = sounds as [Extract<typeof sounds[number], { type: "audio" }>, Extract<typeof sounds[number], { type: "audio" }>, Extract<typeof sounds[number], { type: "audio" }>];
+    project.clips = project.clips.filter((clip) => clip !== middle);
+    b.start = 120;
+    b.speed = 2;
+    b.duration = 60;
+    for (const clip of project.clips) if (clip.type !== "audio" && clip.start === 0 && clipEnd(clip) === 300) clip.duration = 180;
+    for (const clip of project.clips) if (clip.start >= 300) clip.start -= 120;
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    const now = structuredClone(given);
+    now.clips[0]!.endMs = 2_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    // 0–2 s of the first piece stays: 60 frames of its sound, the rest of the run gone.
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 2, text: null });
+    const kept = project.clips.filter((clip) => clip.type === "audio" && clip.start < 60);
+    expect(kept.map((clip) => [clip.start, clip.duration, clip.type === "audio" && clip.source_in])).toEqual([[0, 60, a.source_in]]);
+  });
+
+  test("two ranges of one recording back to back stay two, though one file plays through both", () => {
+    const given = script();
+    given.clips = [
+      { id: "a", startMs: 0, endMs: 10_000 },
+      { id: "b", startMs: 10_000, endMs: 20_000 },
+    ] as Script["clips"];
+    const [project] = cleanedCall(given);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    expect(editSide(project, "b")).toEqual({ head: 10, tail: 20, text: null });
   });
 
   test("a range trimmed in the script loses that time on every track; one lengthened gains it", () => {

@@ -325,6 +325,43 @@ test("without a Google sign-in of its own, Edit asks Google's API through the re
   }
 });
 
+test("footage's sound with its music removed is levelled as footage, never called music under the narration", async () => {
+  const { app, cleanup, native, dir } = fixtureHome("library-level-cleaned");
+  try {
+    const fs = await import("node:fs");
+    const footageLevels = await import("../src/footage_levels.ts");
+    const { cleanedMarker } = await import("../src/music_removed.ts");
+    native.loudnessSpans = async (path, spans) => spans.map(() => (path.endsWith("vo.mp3") ? { integrated: -25, loudest: -20, peak: -3 } : { integrated: -38, loudest: -30, peak: -12 }));
+    const live = app.store.create("p", { width: 1920, height: 1080, fps: 30 });
+    const project = structuredClone(live.project) as Project;
+    project.media = [
+      { id: "m1", name: "room", path: `${dir}/room.mp4`, kind: "video", duration: 60, width: 640, height: 480, fps: 30, has_audio: true },
+      { id: "m2", name: "vo", path: `${dir}/vo.mp3`, kind: "audio", duration: 60, width: 0, height: 0, fps: 0, has_audio: true },
+      // A minute long and audio: without its source it would read as a song.
+      { id: "m3", name: "room (music removed 1).flac", path: `${dir}/room-clean.flac`, kind: "audio", duration: 60, width: 0, height: 0, fps: 0, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 60]] })] },
+    ];
+    const transcript = app.media.paths(`${dir}/room.mp4`).transcript;
+    fs.mkdirSync(transcript.slice(0, transcript.lastIndexOf("/")), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({ model: "test", words: [{ text: "Hi", start: 2.5, end: 3 }, { text: "there", start: 8, end: 9.5 }] }));
+    const audio = (id: string, track: string, media: string, start: number, sourceIn: number, name?: string): AudioClip => ({
+      id, track, start, duration: 300, color: "green", fade_in: 0, fade_out: 0, type: "audio", media, source_in: sourceIn, speed: 1, volume_db: 0,
+      ...(name === undefined ? {} : { name }),
+    });
+    const [a1, a2] = project.tracks.filter((track) => track.kind === "audio").map((track) => track.id);
+    // The cleaned footage under the narration for its whole 10 s.
+    project.clips = [audio("c1", a1!, "m3", 0, 2), audio("c2", a2!, "m2", 0, 0, "Voice-over")];
+    (project.clips[1] as AudioClip).volume_db = 3;
+    await app.store.replace(project.id, null, project, "test");
+    footageLevels.issues(app, app.store.get(project.id)!.project);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const found = footageLevels.issues(app, app.store.get(project.id)!.project).issues as { kind: string; first?: string }[];
+    expect(found.map((one) => one.kind)).toEqual(["footage_quiet"]);
+    expect(found[0]!.first).toBe("c1");
+  } finally {
+    cleanup();
+  }
+});
+
 test("level_footage brings the footage's speech to the voice-overs, and the audit says when it's far off", async () => {
   const { app, cleanup, native, dir } = fixtureHome("library-level-footage");
   try {

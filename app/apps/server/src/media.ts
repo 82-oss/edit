@@ -19,6 +19,7 @@ import * as framing from "./framing.ts";
 import { isBug, message as crashMessage } from "./guard.ts";
 import type { Media, MediaKind, Probe } from "./model.ts";
 import { native, type CachePaths } from "./native/index.ts";
+import { cleanedInfo } from "./music_removed.ts";
 import { extension, join, parent, startsWith, withExtension, canonical } from "./paths.ts";
 import * as playing from "./playing.ts";
 import type { Store } from "./store.ts";
@@ -154,6 +155,62 @@ export class Processor {
       transcript: join(dir, "transcript.json"),
       light: join(dir, "preview-light.mp4"),
     };
+  }
+
+  /** The source file a music-removed sound was cleaned from (music_removed.ts), or null for any other file. */
+  private cleanedFrom(source: string): string | null {
+    for (const id of this.store.usingMedia(source)) {
+      const project = this.store.get(id)?.project;
+      const media = project?.media.find((item) => item.path === source);
+      const of = media === undefined ? undefined : cleanedInfo(media)?.of;
+      const original = of === undefined ? undefined : project?.media.find((item) => item.id === of);
+      if (original !== undefined) return original.path;
+    }
+    return null;
+  }
+
+  /** A music-removed sound's words: its source's, once the source has them. */
+  private followWords(source: string, original: string, keyterms: readonly string[]): void {
+    this.stopWaiting(source);
+    this.set(source, (status) => {
+      status.transcript = "working";
+      delete status.transcript_error;
+      delete status.transcript_retry_at;
+    });
+    const finish = (change: (status: MediaStatus) => void) => this.set(source, change);
+    void (async () => {
+      try {
+        this.transcribe(original, true, keyterms);
+        for (const started = Date.now(); !isFile(this.paths(original).transcript); ) {
+          const known = this.status(original);
+          // Its source waits for the plan's credit: so does it, asked again at the same time.
+          if (known.transcript === "waiting") {
+            const at = known.transcript_retry_at ?? Date.now() + 60_000;
+            finish((status) => {
+              status.transcript = "waiting";
+              status.transcript_retry_at = at;
+              if (known.transcript_error !== undefined) status.transcript_error = known.transcript_error;
+            });
+            this.waitThenHear(source, at, () => this.transcribe(source, true, keyterms));
+            return;
+          }
+          if (known.transcript === "failed" || Date.now() - started > 15 * 60_000) throw new Error(known.transcript_error ?? "its source has no words yet");
+          await Bun.sleep(2000);
+        }
+        const target = this.paths(source).transcript;
+        const folder = parent(target);
+        if (folder !== null) await fs.promises.mkdir(folder, { recursive: true });
+        await fs.promises.copyFile(this.paths(original).transcript, target);
+        finish((status) => {
+          status.transcript = "ready";
+        });
+      } catch (error) {
+        finish((status) => {
+          status.transcript = "failed";
+          status.transcript_error = diag.messageOf(error);
+        });
+      }
+    })();
   }
 
   /** Forgets what's known of a media key's files (cache_cleanup removed them): read from disk again when asked. */
@@ -531,6 +588,12 @@ export class Processor {
       delete current.transcript_retry_at;
     }
     if (!hasAudio || current.transcript === "working" || (current.transcript === "ready" && !again)) return shown(current);
+    // Sound with its music removed has its source's words on the same clock: taken from there, never paid for twice.
+    const wordsFrom = again ? null : this.cleanedFrom(source);
+    if (wordsFrom !== null) {
+      this.followWords(source, wordsFrom, keyterms);
+      return shown(this.entry(source));
+    }
     // Waiting on the plan's credit: asked again at its time (`waitThenHear`), not into the same refusal now.
     if (current.transcript === "waiting" && (current.transcript_retry_at ?? 0) > Date.now()) return shown(current);
     this.stopWaiting(source);

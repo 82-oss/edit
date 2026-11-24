@@ -23,12 +23,13 @@ import * as kinds from "./kinds.ts";
 import { enforceOneLine } from "./one_line.ts";
 import { enforceCleanStrips } from "./clean_strips.ts";
 import { enforcePointers } from "./pointers.ts";
+import { enforceCleanedSound } from "./music_removed.ts";
 import { enforceSoundRoom, type Words } from "./sound_room.ts";
 import { copyFile, ioMessage, nextFileId, nowMs, writeAtomic } from "./files.ts";
 import type { Clip, DriveFile, Media, Project, ProjectSummary, Settings, Style } from "./model.ts";
 import { native, type Prepared } from "./native/index.ts";
 import { canonical, extension, fileStem, join } from "./paths.ts";
-import { duration, mediaOf, newProject } from "./project.ts";
+import { duration, footageMedia, newProject } from "./project.ts";
 import * as removalHeld from "./removal_held.ts";
 import { asSerdeRead, jsonForSerde } from "./rust.ts";
 import { stableStringify } from "./stable.ts";
@@ -172,6 +173,12 @@ export class Store {
       enforceCleanStrips(before, project);
     } catch (error) {
       diag.warn("store", `${project.id}: laying the cleaned strips: ${diag.messageOf(error)}`);
+    }
+    // A sound trimmed past what's had its music removed plays its original, never silence (music_removed.ts).
+    try {
+      enforceCleanedSound(project);
+    } catch (error) {
+      diag.warn("store", `${project.id}: checking the music-removed sounds: ${diag.messageOf(error)}`);
     }
     const read = this.words;
     if (read === null) return;
@@ -1061,7 +1068,8 @@ function isSubtitleClip(clip: Clip): boolean {
 
 function isFootageClip(project: Project, clip: Clip): boolean {
   if (clip.type !== "video" && clip.type !== "audio") return false;
-  return mediaOf(project, clip.media)?.kind === "video";
+  // Sound with its music taken out is still its footage's (music_removed.ts).
+  return footageMedia(project, clip)?.kind === "video";
 }
 
 /** What `kinds` needs to know of a project: its style, whether it's a subtitled video, or only footage yet. */

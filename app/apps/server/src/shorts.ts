@@ -23,7 +23,7 @@ import { registerTool, text } from "./mcp/registry.ts";
 import type { Clip, Keyframe, Project, TextStyle } from "./model.ts";
 import { native } from "./native/index.ts";
 import { join } from "./paths.ts";
-import { addTrack, clipEnd, duration as durationOf, fps as fpsOf, freshId, mediaOf, trackOf } from "./project.ts";
+import { addTrack, clipEnd, duration as durationOf, footageMedia, fps as fpsOf, freshId, mediaOf, trackOf } from "./project.ts";
 import { f32 } from "./rust.ts";
 import * as seams from "./seams.ts";
 import * as faces from "./faces.ts";
@@ -160,7 +160,7 @@ export function issues(project: Project): Record<string, unknown>[] {
   if (!clips.some((clip) => (clip.name ?? "").startsWith("Subtitle"))) {
     out.push({ kind: "short_unsubtitled", fix: "add_subtitles over the whole Short (the house subtitles)" });
   }
-  const music = clips.filter((clip) => clip.type === "audio" && mediaOf(project, clip.media)?.kind === "audio" && !(clip.name ?? "").startsWith("Voice"));
+  const music = clips.filter((clip) => clip.type === "audio" && footageMedia(project, clip)?.kind === "audio" && !(clip.name ?? "").startsWith("Voice"));
   if (music.length === 0) out.push({ kind: "short_no_music", fix: "import_music one of the Shorts songs and lay it under the whole Short, low" });
   else if (Math.max(...music.map(clipEnd)) < durationOf(project) - fps) {
     out.push({ kind: "short_music_stops", fix: "the music ends before the Short does: run it to the end and fade it out over the last second" });

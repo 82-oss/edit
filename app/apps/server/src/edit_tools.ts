@@ -8,6 +8,7 @@
 // with care.
 
 import * as fs from "node:fs";
+import { cleanedInfo } from "./music_removed.ts";
 import type { Measured } from "./graphics.ts";
 
 import type { App } from "./app.ts";
@@ -66,6 +67,7 @@ import {
   clipOf,
   cutTime,
   duration as durationOf,
+  footageMedia,
   fps as fpsOf,
   freeTrack,
   freeTrackFrom,
@@ -1764,7 +1766,8 @@ export function soundEffectsLong(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio") continue;
+    // Footage's own sound, its music taken out or not, is no sound effect.
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video") continue;
     const name = `${clip.name ?? ""} ${media.name}`;
     if (!sfx.MOMENT.test(name) || /music|drone|ambien|bed\b|loop/iu.test(name)) continue;
     const seconds = (clip.duration / fps) * clip.speed;
@@ -1794,7 +1797,7 @@ export function soundEffectsLateHit(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio" || !/shutter|camera|click|impact|\bhit\b|boom|thud|slam|stinger/iu.test(`${clip.name ?? ""} ${media.name}`) || /whoosh|swoosh|riser|build/iu.test(media.name)) continue;
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video" || !/shutter|camera|click|impact|\bhit\b|boom|thud|slam|stinger/iu.test(`${clip.name ?? ""} ${media.name}`) || /whoosh|swoosh|riser|build/iu.test(media.name)) continue;
     const hit = (media.markers ?? []).find((one) => one.name === sfx.HIT)?.time;
     if (hit === undefined || hit - clip.source_in <= LATE_HIT) continue;
     const late = Math.round(((hit - clip.source_in) / clip.speed) * fps);
@@ -1857,7 +1860,7 @@ export function risersOffCut(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio" || !RISER.test(`${clip.name ?? ""} ${media.name}`) || media.duration >= 45) continue;
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video" || !RISER.test(`${clip.name ?? ""} ${media.name}`) || media.duration >= 45) continue;
     if ((clip.duration / fps) * clip.speed > 6) continue;
     const hit = (media.markers ?? []).find((one) => one.name === sfx.HIT)?.time;
     const playedTo = clip.source_in + (clip.duration / fps) * clip.speed;
@@ -2117,6 +2120,12 @@ export function cachedTranscripts(app: App, project: Project, footageOnly: boole
     const transcript = readTranscript(app.media.paths(media.path).transcript);
     // Rough words where nothing kept was heard yet (kept_hearing.ts) still read: the agent cuts on them.
     if (transcript !== null) out.set(media.id, transcript);
+  }
+  // Sound with its music taken out plays its footage's words (music_removed.ts): looked up by the clip's own media, they're the source's.
+  for (const media of project.media) {
+    const of = cleanedInfo(media)?.of;
+    const words = of === undefined ? undefined : out.get(of);
+    if (words !== undefined) out.set(media.id, words);
   }
   return out;
 }

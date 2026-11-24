@@ -34,6 +34,7 @@
 // anyone; resetting the edit makes it follow the script again.
 
 import * as fs from "node:fs";
+import { soundSourceId } from "./music_removed.ts";
 
 import type { Clip as ScriptClip, EditLink, Script, SyncedClip } from "@edit/types/writer";
 
@@ -98,14 +99,16 @@ function fileSpan(project: Project, block: ScriptBlock, clip: Played): [number, 
 function run(project: Project, block: ScriptBlock): Played[] {
   if (block.kind !== "footage") return [];
   const others = new Set((project.script?.blocks ?? []).flatMap((other) => (other !== block && other.clip ? [other.clip] : [])));
+  // Another block's sound: the sound linked to its card (two ranges of one recording can sit back to back).
+  const otherLinks = new Set([...others].flatMap((id) => clipOf(project, id)?.link ?? []));
   const card = block.clip ? clipOf(project, block.clip) : undefined;
   const first = card?.type === "video" ? card : card?.link ? project.clips.find((clip): clip is Played => clip.type === "audio" && clip.link === card.link) : undefined;
   if (first !== undefined && (first.type === "video" || first.type === "audio")) {
-    const same = project.clips.filter((clip): clip is Played => clip.type === first.type && clip.track === first.track && clip.media === first.media && clip.start >= clipEnd(first)).sort((a, b) => a.start - b.start);
+    const same = project.clips.filter((clip): clip is Played => clip.type === first.type && clip.track === first.track && soundSourceId(project, clip.media) === soundSourceId(project, first.media) && clip.start >= clipEnd(first)).sort((a, b) => a.start - b.start);
     const pieces: Played[] = [first];
     for (const clip of same) {
       const last = pieces[pieces.length - 1]!;
-      if (others.has(clip.id) || clip.start - clipEnd(last) > 1 || clip.source_in < last.source_in) break;
+      if (others.has(clip.id) || (clip.link !== undefined && otherLinks.has(clip.link)) || clip.start - clipEnd(last) > 1 || clip.source_in < last.source_in) break;
       pieces.push(clip);
     }
     return pieces;
@@ -113,12 +116,44 @@ function run(project: Project, block: ScriptBlock): Played[] {
   if (!block.media) return [];
   const kind = mediaOf(project, block.media)?.kind === "audio" ? "audio" : "video";
   return project.clips
-    .filter((clip): clip is Played => clip.type === kind && clip.media === block.media && !others.has(clip.id))
+    // Sound with its music taken out (or a word brought back) is still the block's file (music_removed.ts).
+    .filter((clip): clip is Played => clip.type === kind && soundSourceId(project, clip.media) === block.media && !others.has(clip.id))
     .filter((clip) => {
       const [from, to] = fileSpan(project, block, clip);
       return to > block.start - 0.5 && from < block.end + 0.5;
     })
     .sort((a, b) => a.start - b.start);
+}
+
+/** Where a piece is in its file (seconds), start and end. */
+const inFile = (piece: Played, fps: number): [number, number] => [piece.source_in, piece.source_in + (piece.duration / fps) * piece.speed];
+
+/**
+ * Timeline frames at a run's start that play its file before `upTo` (seconds
+ * into the file): each piece at its own speed, and a gap between pieces (cut
+ * out of the edit) plays nothing, so takes no frames.
+ */
+function framesBefore(pieces: readonly Played[], upTo: number, fps: number): number {
+  let frames = 0;
+  for (const piece of pieces) {
+    const [from, to] = inFile(piece, fps);
+    if (upTo <= from) return frames;
+    if (upTo < to) return frames + Math.round(((upTo - from) / piece.speed) * fps);
+    frames += piece.duration;
+  }
+  return frames;
+}
+
+/** Timeline frames at a run's end that play its file after `from` (seconds into the file), as framesBefore. */
+function framesAfter(pieces: readonly Played[], from: number, fps: number): number {
+  let frames = 0;
+  for (const piece of [...pieces].reverse()) {
+    const [start, end] = inFile(piece, fps);
+    if (from >= end) return frames;
+    if (from > start) return frames + Math.round(((end - from) / piece.speed) * fps);
+    frames += piece.duration;
+  }
+  return frames;
 }
 
 /** The edit's side of one script clip: a range's outer ends (seconds of its first and last recording), or a cut-in's words; null when it has none. */
@@ -221,14 +256,16 @@ export function applyToEdit(project: Project, given: WriterScript, change: Chang
       const left = (mediaOf(project, tail.media)?.duration ?? Number.POSITIVE_INFINITY) - (tail.source_in + (tail.duration / fps) * tail.speed);
       const by = frames(Math.min(moveTail, moveTail > 0 ? left : Number.POSITIVE_INFINITY) / tail.speed);
       if (moveTail > 0) insertTime(project, end, by, new Set(linked(project, tail)), new Set());
-      else cutTime(project, Math.max(end - by, tailRun[0]!.start), end);
+      // What plays after the new end in the file, back through the range's pieces.
+      else cutTime(project, Math.max(end - framesAfter(tailRun, inFile(tail, fps)[1] + moveTail, fps), tailRun[0]!.start), end);
     }
-    const head = run(project, first)[0];
+    const headRun = run(project, first);
+    const head = headRun[0];
     const moveHead = (clip.startMs - kept.startMs) / 1000;
     if (head !== undefined && moveHead !== 0) {
-      const by = frames(Math.max(moveHead, -head.source_in) / head.speed);
-      if (moveHead < 0) insertTime(project, head.start, by, new Set(), new Set(linked(project, head)));
-      else cutTime(project, head.start, Math.min(head.start + by, clipEnd(head)));
+      if (moveHead < 0) insertTime(project, head.start, frames(Math.max(moveHead, -head.source_in) / head.speed), new Set(), new Set(linked(project, head)));
+      // What plays before the new start in the file, through the range's pieces (music removal cuts a recording into several).
+      else cutTime(project, head.start, Math.min(head.start + framesBefore(headRun, head.source_in + moveHead, fps), clipEnd(headRun.at(-1)!)));
     }
     // The script's times, as the edit's script shows them.
     const now = blocksOf(project, kept.id);

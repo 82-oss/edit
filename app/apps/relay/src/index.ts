@@ -13,6 +13,7 @@ import { removerJobs, removerOn, type RemoverEnv } from "./remover";
 export { RemoverPods } from "./remover";
 import { google, mayUseDrive } from "./google";
 import { holdsAnyChannel } from "./authz";
+import { ISOLATE_DAILY_SECONDS_PER_CLIENT, ISOLATE_DAILY_SECONDS_TOTAL, ISOLATE_MAX_BYTES, ISOLATE_MAX_SECONDS, ISOLATE_MIN_SECONDS, wavSeconds } from "./isolate";
 
 export { DriveToR2 } from "./jobs";
 
@@ -136,6 +137,7 @@ export default {
     if (url.pathname.startsWith("/v1/media/")) return media(request, url, env, r2Config(env), typeof caches === "undefined" ? null : (caches as unknown as { default: EdgeCache }).default);
     if (url.pathname === "/v1/voices") return voices(request, env);
     if (url.pathname === "/v1/speech") return speech(request, env);
+    if (url.pathname === "/v1/isolate") return isolate(request, env);
     if (url.pathname.startsWith("/v1/3dtiles/")) return withCors(await tiles(request, url, env));
     if (url.pathname === "/v1/geocode") return geocode(request, url, env);
     if (url.pathname === "/v1/outline") return outline(request, url, env);
@@ -490,6 +492,33 @@ async function speech(request: Request, env: Env): Promise<Response> {
   return new Response(upstream.body, { status: 200, headers });
 }
 
+/** Footage's voices with the music taken out. Billed by the minute: the length is read from the WAV and reserved first (isolate.ts). */
+async function isolate(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return json(405, { error: "POST a WAV to /v1/isolate" });
+  const found = await allow(request, env, "use", "speech");
+  if (found instanceof Response) return found;
+  if (!mayVoice(found)) return json(403, { error: "Music removal comes with editing: ask an admin for an Edit style at accounts.spheceo.com." });
+  const key = mainKey(env);
+  if (!key) return json(503, { error: "Music removal is not configured on the relay yet." });
+  const size = Number(request.headers.get("content-length"));
+  if (!Number.isSafeInteger(size) || size <= 0) return json(411, { error: "Send the file's length." });
+  if (size > ISOLATE_MAX_BYTES) return json(413, { error: `Send at most ${ISOLATE_MAX_SECONDS / 60} minutes at a time.` });
+  if (!(await env.SPEECH_BURST.limit({ key: `isolate:${burstKey(request, found)}` })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
+  const audio = new Uint8Array(await request.arrayBuffer());
+  const seconds = wavSeconds(audio);
+  if (seconds === null) return json(400, { error: "Send a 44.1 kHz, mono, 16-bit WAV." });
+  if (seconds < ISOLATE_MIN_SECONDS) return json(400, { error: `Send at least ${ISOLATE_MIN_SECONDS} seconds at a time.` });
+  const client = await budgetKey(request, found);
+  const budget = env.BUDGET.get(env.BUDGET.idFromName(new Date().toISOString().slice(0, 10)));
+  const reserved = await budget.fetch(new Request("https://budget/isolate", { method: "POST", body: JSON.stringify({ client, seconds }) }));
+  if (!reserved.ok) return reserved;
+  const form = new FormData();
+  form.append("audio", new File([audio], "audio.wav", { type: "audio/wav" }));
+  const upstream = await fetch("https://api.elevenlabs.io/v1/audio-isolation", { method: "POST", headers: { "xi-api-key": key }, body: form });
+  if (!upstream.ok) return elevenError(upstream);
+  return new Response(upstream.body, { status: 200, headers: { "content-type": upstream.headers.get("content-type") ?? "audio/mpeg", "x-edit-seconds": String(seconds) } });
+}
+
 /** Map pages run in a browser on another origin. */
 function withCors(response: Response) {
   const headers = new Headers(response.headers);
@@ -561,6 +590,7 @@ export class TranscriptionBudget {
     if (new URL(request.url).pathname === "/lookups") return this.lookup(request);
     if (new URL(request.url).pathname === "/owner") return this.owner(request);
     if (new URL(request.url).pathname === "/speech") return this.speech(request);
+    if (new URL(request.url).pathname === "/isolate") return this.isolate(request);
     if (new URL(request.url).pathname === "/usage") {
       const { client } = await request.json() as { client: string };
       return json(200, { connection: await this.state.storage.get<number>(`ip:${client}`) ?? 0, total: await this.state.storage.get<number>("all") ?? 0, again: await this.state.storage.get<number>("again") ?? 0 });
@@ -672,6 +702,24 @@ export class TranscriptionBudget {
       if (allUsed + chars > total) return json(429, { error: "Edit's shared voice budget for today is used up; it resets at midnight UTC." });
       await storage.put(ipKey, ipUsed + chars);
       await storage.put("speech", allUsed + chars);
+      return json(200, { ok: true });
+    });
+    await this.state.storage.setAlarm(Date.now() + 2 * 86400_000);
+    return answer;
+  }
+
+  /** Seconds of music removal, within today's caps (reserved before the call). */
+  async isolate(request: Request): Promise<Response> {
+    const { client, seconds } = await request.json() as { client: string; seconds: number };
+    if (!/^[a-f0-9]{64}$/.test(client) || !Number.isFinite(seconds) || seconds <= 0 || seconds > ISOLATE_MAX_SECONDS) return json(400, { error: "Invalid music removal reservation." });
+    const answer = await this.state.storage.transaction(async storage => {
+      const ipKey = `isolate:${client}`;
+      const ipUsed = await storage.get<number>(ipKey) ?? 0;
+      const allUsed = await storage.get<number>("isolate") ?? 0;
+      if (ipUsed + seconds > ISOLATE_DAILY_SECONDS_PER_CLIENT) return json(429, { error: `Today's music removal for this connection is used up (${ISOLATE_DAILY_SECONDS_PER_CLIENT / 3600} hours); it resets at midnight UTC.` });
+      if (allUsed + seconds > ISOLATE_DAILY_SECONDS_TOTAL) return json(429, { error: `The team's music removal for today is used up (${ISOLATE_DAILY_SECONDS_TOTAL / 3600} hours); it resets at midnight UTC.` });
+      await storage.put(ipKey, ipUsed + seconds);
+      await storage.put("isolate", allUsed + seconds);
       return json(200, { ok: true });
     });
     await this.state.storage.setAlarm(Date.now() + 2 * 86400_000);

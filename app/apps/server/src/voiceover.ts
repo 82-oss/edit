@@ -16,7 +16,7 @@ import { isBug } from "./guard.ts";
 import { importPaths } from "./import.ts";
 import type { Clip, Media, Project, ScriptBlock } from "./model.ts";
 import { native } from "./native/index.ts";
-import { addTrack, clipEnd, clipMedia, clipOf, cutTime, fps as fpsOf, freshId, insertTime, isSoundEffect, marksCut, mediaOf, trackOf } from "./project.ts";
+import { addTrack, clipEnd, clipMedia, clipOf, cutTime, footageMedia, fps as fpsOf, freshId, insertTime, isSoundEffect, marksCut, mediaOf, trackOf } from "./project.ts";
 import { join } from "./paths.ts";
 import { debugStrings, f32Saved, isAlphanumeric, isWhitespace, jsonForSerde, round, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
@@ -316,7 +316,7 @@ export function narrationRecovery(project: Project): NarrationRecovery[] {
       !project.clips.some((clip) => clip.link === card.link && trackOf(project, clip.track)?.locked) &&
       !project.clips.some((clip) => clip.id !== card.id && clip.link !== card.link &&
         (trackOf(project, clip.track)?.kind === "video" || (clip.type === "audio" &&
-          (isVoiceover(project, clip) || (mediaOf(project, clip.media)?.kind === "audio" && !isSoundEffect(mediaOf(project, clip.media)!))))) &&
+          (isVoiceover(project, clip) || (footageMedia(project, clip)?.kind === "audio" && !isSoundEffect(mediaOf(project, clip.media)!))))) &&
         clip.start < clipEnd(card) && clipEnd(clip) > card.start);
     // One add_cut_in placed is meant to be voiced, whatever plays across it (a music bed lengthened over the new time).
     const added = !block.voiceover && card?.type === "solid" && (block.notes ?? []).includes("Added cut-in");

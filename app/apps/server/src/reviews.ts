@@ -53,7 +53,7 @@ import { registerTool, text, type ToolCall } from "./mcp/registry.ts";
 import type { Clip, ExportOptions, Project, ScriptJob } from "./model.ts";
 import { join } from "./paths.ts";
 import { defaultExportPath } from "./server_seam.ts";
-import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
+import { clipEnd, fps as fpsOf, trackOf, footageMedia } from "./project.ts";
 import { lengthsOf, oddPieces, reviewCopyProblem } from "./review_check.ts";
 import { cachedTranscripts } from "./edit_tools.ts";
 import { Semaphore } from "./semaphore.ts";
@@ -1432,7 +1432,8 @@ async function describe(app: App, project: Project, exported: string, copy: stri
     const transcript = heard.get(clip.media);
     if (transcript === undefined) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    const narrator = media?.kind === "audio";
+    // Sound with its music taken out is footage, not a narrator's recording (music_removed.ts).
+    const narrator = media?.kind === "audio" && footageMedia(project, clip)?.kind !== "video";
     const to = clip.source_in + (clip.duration / fps) * clip.speed;
     for (const word of transcript.words) {
       if (word.start < clip.source_in || word.end > to) continue;

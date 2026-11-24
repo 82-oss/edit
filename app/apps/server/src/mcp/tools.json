@@ -2456,6 +2456,60 @@
     "name": "mute_house_words"
   },
   {
+    "description": "Takes the music out from under the footage's voices, when the team asks or a source has music under its dialogue (paid: $0.12 per minute cleaned, ElevenLabs). Only what the edit plays and isn't cleaned yet is sent. Cuts, timing, subtitles, words and mutes stay as they are; the original sound is kept. Give start and end to clean one span, or neither for the whole edit. Run it again after footage is trimmed longer or added.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "description": "Where the span ends, seconds on the timeline (default: the end).",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "start": {
+          "description": "Where the span starts, seconds on the timeline (default: the start).",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "remove_music"
+  },
+  {
+    "description": "Brings the original sound back for a moment where music removal lost a word (\"at 2:33 it ate the word\"), crossfading to it and back. Edges that land inside a word move out to include the whole word. To change it (\"make that a bit longer\"), call it again with the new start and end: it replaces the piece there. undo returns that span to the cleaned sound. Free. The music is heard again inside the span, so keep it as short as the word needs.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "description": "Where the original sound ends, seconds on the timeline.",
+          "type": "number"
+        },
+        "fade": {
+          "description": "Length of each crossfade in seconds (default 0.2).",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "start": {
+          "description": "Where the original sound starts, seconds on the timeline.",
+          "type": "number"
+        },
+        "undo": {
+          "description": "Return this span to the cleaned sound.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "name": "bring_back_sound"
+  },
+  {
     "description": "Sets a subtitled video's segments (replacing them all): what each stretch is, so repack_subtitles subtitles only the footage. Gaps between the ones given are footage. Re-run repack_subtitles after.",
     "inputSchema": {
       "properties": {

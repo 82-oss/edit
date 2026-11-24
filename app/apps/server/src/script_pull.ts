@@ -10,6 +10,7 @@
 // cloud as the import cut the first, and its clip plays from that.
 
 import type { App } from "./app.ts";
+import { soundSourceId } from "./music_removed.ts";
 import * as diag from "./diag.ts";
 import { importMade } from "./import.ts";
 import type { Project, ScriptBlock } from "./model.ts";
@@ -210,7 +211,7 @@ export async function pull(app: App, id: string, apply: boolean): Promise<PullRe
       const clip = project.clips.find((one) => one.id === block.clip);
       for (const one of project.clips) {
         if (one.type !== "video" && one.type !== "audio") continue;
-        if (one.media !== old || !(one.id === block.clip || (clip?.link !== undefined && clip.link !== null && one.link === clip.link))) continue;
+        if (soundSourceId(project, one.media) !== old || !(one.id === block.clip || (clip?.link !== undefined && clip.link !== null && one.link === clip.link))) continue;
         one.source_in += offset - found.from;
         one.media = found.media;
       }

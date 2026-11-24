@@ -30,7 +30,7 @@ import { mediaKey } from "./media.ts";
 import { Semaphore } from "./semaphore.ts";
 import type { Project, Segment } from "./model.ts";
 import { join, parent } from "./paths.ts";
-import { clipEnd, clipMedia, duration as durationOf, fps as fpsOf, mediaOf, soundUses } from "./project.ts";
+import { clipEnd, duration as durationOf, footageOf, fps as fpsOf, mediaOf, soundUses } from "./project.ts";
 import { fixed, round, serdeParse, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import type { TimedWord, Window, WatchOptions } from "./seams.ts";
@@ -89,7 +89,7 @@ const WATCH_SYSTEM = "You watch and listen to a few minutes of police footage (a
  */
 export function setsSegments(project: Project): boolean {
   const footage = (clip: Project["clips"][number]) => {
-    const id = clipMedia(clip);
+    const id = footageOf(project, clip);
     return id !== null && mediaOf(project, id)?.kind === "video";
   };
   return isSubtitled(project) || ((project.script === undefined || project.script === null) && project.clips.every(footage));
@@ -1166,7 +1166,8 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
   const watchedSegments = JSON.stringify(project.segments ?? []);
   // Every file's transcript at once: one after another, an edit of ten files
   // waited on the transcriber ten times over.
-  const wanted = [...new Set(sound.map(clipMedia).filter((id): id is string => id !== null))].sort(compareKeys);
+  // Sound with its music taken out is watched as its footage (music_removed.ts).
+  const wanted = [...new Set(sound.map((clip) => footageOf(project, clip)).filter((id): id is string => id !== null))].sort(compareKeys);
   const medias = wanted.map((id) => mediaOf(project, id)).filter((media) => media !== undefined);
   const fetched = await limited(medias, 4, (media) => transcriptOf(app, media, project, options.background !== true));
   const transcripts = new Map<string, Transcript>();
@@ -1187,7 +1188,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
   const used = new Map<string, Use[]>();
   for (const clip of sound) {
     if (clip.type !== "audio") continue;
-    const media = mediaOf(project, clip.media);
+    const media = mediaOf(project, footageOf(project, clip) ?? clip.media);
     if (media === undefined) continue;
     const transcript = transcripts.get(media.id);
     if (transcript === undefined) continue;
@@ -1652,6 +1653,8 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
     segments = voicedSegments(segments, heard, duration, fps);
   }
   let rev: number;
+  // Whether the segments asked for went onto the timeline: a watch whose write was turned down leaves no receipt.
+  let segmentsWritten = !setSegments;
   if (setSegments) {
     const written = segments.map((segment) => {
       const out: Segment = { start: segment.start, end: segment.end, kind: segment.kind };
@@ -1666,6 +1669,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
       return true;
     });
     rev = saved.rev;
+    segmentsWritten = wrote;
     if (!wrote) diag.warn("watch", `${projectId}: the timeline changed while watching: its segments weren't written (watch again)`);
   } else {
     const now = app.store.get(projectId);
@@ -1702,7 +1706,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
     words_moved: moved,
     doubtful,
     people,
-    segments_set: setSegments,
+    segments_set: setSegments && segmentsWritten,
     segments: segments.map((segment) => ({
       start: round((segment.start / fps) * 100.0) / 100.0,
       end: round((segment.end / fps) * 100.0) / 100.0,
@@ -1712,7 +1716,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
   };
   // Done only when everything held: a failed cast or second look is asked again next run.
   const unsettled = secondLooks.some((entry) => (entry as { decided?: unknown }).decided === null);
-  if (failed.length === 0 && castFailed === null && !unsettled) {
+  if (failed.length === 0 && castFailed === null && !unsettled && segmentsWritten) {
     const current = app.store.get(projectId);
     if (current !== null && sameText(watchedUses(current.project), watchedUses(project))) {
       // Use the corrected words from disk, not the pre-watch snapshots.
@@ -1788,7 +1792,7 @@ export function serdeText(value: Serde): string {
 /** What a watch looked at: the timeline's footage sound and the files it plays. */
 export function watchedUses(project: Project): Serde {
   const uses = seams.subtitles.footageSound(project, 0, durationOf(project)).map((clip): Serde => {
-    const id = clipMedia(clip);
+    const id = footageOf(project, clip);
     const media = id === null ? undefined : mediaOf(project, id);
     const audio = clip.type === "audio" || clip.type === "video";
     return {

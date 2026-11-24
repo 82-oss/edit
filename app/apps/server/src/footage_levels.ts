@@ -18,7 +18,7 @@ import { isBug } from "./guard.ts";
 import * as library from "./library.ts";
 import type { AudioClip, Project } from "./model.ts";
 import { native } from "./native/index.ts";
-import { clipEnd, fps as fpsOf, isSoundEffect, mediaOf, trackOf } from "./project.ts";
+import { clipEnd, footageMedia, fps as fpsOf, isSoundEffect, mediaOf, trackOf } from "./project.ts";
 import { f32 } from "./rust.ts";
 import * as seams from "./seams.ts";
 
@@ -77,10 +77,12 @@ function footage(app: App, project: Project): Footage[] {
   const out: Footage[] = [];
   for (const clip of project.clips) {
     if (clip.type !== "audio" || trackOf(project, clip.track)?.muted === true) continue;
+    // What plays is measured (the cleaned file, its music taken out); whether it's footage, and its words, are the source's.
     const media = mediaOf(project, clip.media);
-    if (media === undefined || media.kind !== "video" || !media.has_audio) continue;
-    if (!words.has(media.path)) words.set(media.path, wordsOf(app, media.path));
-    const said = words.get(media.path) ?? null;
+    const source = footageMedia(project, clip);
+    if (media === undefined || source?.kind !== "video" || !media.has_audio) continue;
+    if (!words.has(source.path)) words.set(source.path, wordsOf(app, source.path));
+    const said = words.get(source.path) ?? null;
     const from = clip.source_in;
     const to = from + (clip.duration / fps) * clip.speed;
     let speech: Stretch | null;
@@ -239,8 +241,8 @@ export function issues(app: App, project: Project): { issues: Record<string, unk
   for (const clip of project.clips) {
     if (clip.type !== "audio" || trackOf(project, clip.track)?.muted === true || seams.voiceover.isVoiceover(project, clip)) continue;
     const media = mediaOf(project, clip.media);
-    // Music: the library's (whose folder isSoundEffect also counts) or any sound a song long.
-    if (media === undefined || media.kind !== "audio") continue;
+    // Music: the library's (whose folder isSoundEffect also counts) or any sound a song long. Never footage's own sound.
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video") continue;
     if (!(media.path.includes("/library/music/") || media.duration >= 45)) continue;
     for (const over of said) {
       const [from, to] = [Math.max(clip.start, over.start), Math.min(clipEnd(clip), clipEnd(over))];
@@ -268,7 +270,7 @@ export function issues(app: App, project: Project): { issues: Record<string, unk
   for (const clip of project.clips) {
     if (clip.type !== "audio" || trackOf(project, clip.track)?.muted === true || seams.voiceover.isVoiceover(project, clip) || clip.volume_db <= -40) continue;
     const media = mediaOf(project, clip.media);
-    if (media === undefined || media.kind !== "audio" || media.path.includes("/library/music/") || media.duration >= 45) continue;
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video" || media.path.includes("/library/music/") || media.duration >= 45) continue;
     if (!seams.sfx.MOMENT.test(`${clip.name ?? ""} ${media.name}`) && !/typ(ing|ewriter)/iu.test(`${clip.name ?? ""} ${media.name}`)) continue;
     const stretch = { path: media.path, from: clip.source_in, seconds: Math.min((clip.duration / fps) * clip.speed, Math.max(media.duration - clip.source_in, 0.1)) };
     if (!known(stretch) || level === null) continue;
