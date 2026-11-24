@@ -73,33 +73,52 @@ export const stylesIn = (lessons: readonly Pick<Skill, "name" | "text">[]): Styl
 /**
  * The channel's default style's name, or null: the one `style-default` names,
  * else its only style when nothing else of its scripts is taught (a channel
- * taught by a reference alone is written in it).
+ * taught by a reference alone is written in it). `beside`: its scripts are
+ * taught otherwise too, in words the lessons don't hold (the Script lane's
+ * style on the channel's page, or its group's).
  */
-export function defaultIn(lessons: readonly Pick<Skill, "name" | "text">[]): string | null {
+export function defaultIn(lessons: readonly Pick<Skill, "name" | "text">[], beside = false): string | null {
   const styles = stylesIn(lessons);
   const named = lessons.find((one) => one.name === DEFAULT)?.text.trim() ?? "";
   if (named !== "" && styles.some((one) => one.name === named)) return named;
   const others = lessons.filter((one) => !isStyle(one.name));
-  return styles.length === 1 && others.length === 0 ? styles[0]!.name : null;
+  return styles.length === 1 && others.length === 0 && !beside ? styles[0]!.name : null;
 }
 
 /** The style a script is written in: the one it names (by name, or as said), else the channel's default; null for none. */
-export function chosen(lessons: readonly Pick<Skill, "name" | "text">[], picked: string | null | undefined): Style | null {
+export function chosen(lessons: readonly Pick<Skill, "name" | "text">[], picked: string | null | undefined, beside = false): Style | null {
   const styles = stylesIn(lessons);
   const asked = typeof picked === "string" && picked.trim() !== "" ? (isStyle(picked) ? picked : nameFor(picked)) : null;
   const found = asked === null ? undefined : styles.find((one) => one.name === asked);
   if (found !== undefined) return found;
-  const fallback = defaultIn(lessons);
+  const fallback = defaultIn(lessons, beside);
   return styles.find((one) => one.name === fallback) ?? null;
 }
 
 const plain = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/gu, " ").trim();
 
-/** The style a note asks for by its title or name ("…in the Dr Insanity style"), or null: the longest one named wins. */
+/** Words just before a style's name that turn it away ("not Documentary", "instead of the old one"). */
+const TURNED_AWAY = /\b(not|no|never|without|instead of|rather than|except|than|don t use|dont use|drop|stop using|away from|not the)( the| a| our| that| this| its)?\s*$/u;
+
+/**
+ * The style a note asks for by its title or name ("…in the Dr Insanity style"), or null: a style named only to be
+ * turned away ("Classic, not Documentary") isn't asked for, and two asked for at once is none (the saved one stays).
+ */
 export function namedIn(lessons: readonly Pick<Skill, "name" | "text">[], note: string): Style | null {
   const said = ` ${plain(note)} `;
-  const hits = stylesIn(lessons).filter((one) => [plain(one.title), plain(one.name.slice(PREFIX.length))].some((words) => words.length >= 3 && said.includes(` ${words} `)));
-  return hits.sort((a, b) => b.title.length - a.title.length)[0] ?? null;
+  const asked = (words: string): boolean => {
+    if (words.length < 3) return false;
+    let from = 0;
+    for (let at = said.indexOf(` ${words} `, from); at >= 0; at = said.indexOf(` ${words} `, from)) {
+      if (!TURNED_AWAY.test(said.slice(Math.max(0, at - 24), at + 1).trimEnd())) return true;
+      from = at + 1;
+    }
+    return false;
+  };
+  const hits = stylesIn(lessons).filter((one) => [plain(one.title), plain(one.name.slice(PREFIX.length))].some(asked));
+  // One style's name inside another's ("Dry" in "Dry Wit") is that one, not two.
+  const distinct = hits.filter((one) => !hits.some((other) => other !== one && plain(other.title).includes(plain(one.title))));
+  return distinct.length === 1 ? distinct[0]! : null;
 }
 
 /** What a script's writer is told of its style, and of the others the channel has. */

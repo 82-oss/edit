@@ -127,3 +127,27 @@ test("a video is heard and marked once: the next style from it reads it back", a
     cleanup();
   }
 });
+
+test("a message that only mentions a style goes on as it would have, before anything is read or a teacher is needed", async () => {
+  const { home, cleanup } = fixtureHome("style-intent");
+  try {
+    let read = 0;
+    let asked = "";
+    learn.hooks.details = async () => {
+      read++;
+      return DETAILS;
+    };
+    learn.hooks.intent = async (words) => {
+      asked = words;
+      return [false, 0.01];
+    };
+    const script = { id: "s1", title: "Case", channel: "ch-test" } as never;
+    const job = { id: "j", signal: new AbortController().signal, stage: () => {} };
+    const outcome = await learn.learnNow(home, `${home}/s1`, script, { request: "Cite this article and keep the existing style https://example.com/news", focus: { selected: [], picked: null, playheadMs: null } }, job);
+    expect(outcome).toBe("not a style");
+    expect(asked).toContain("keep the existing style");
+    expect(read).toBe(0);
+  } finally {
+    cleanup();
+  }
+});

@@ -62,6 +62,31 @@ test("a build note names a style by its title or its name", () => {
   expect(styles.namedIn(both, "tighten the intro")).toBeNull();
   // A word inside another isn't the name.
   expect(styles.namedIn(both, "neoclassical")).toBeNull();
+  // Named only to be turned away, it isn't asked for; two asked for at once is none.
+  expect(styles.namedIn(both, "Use Classic, not Dr Insanity")?.name).toBe("style-classic");
+  expect(styles.namedIn(both, "rather than the Dr Insanity style, keep it classic")?.name).toBe("style-classic");
+  expect(styles.namedIn(both, "mix Dr Insanity and Classic")).toBeNull();
+  const nested = [lesson("style-dry", styles.compose("Dry", "Flat.", [])), lesson("style-dry-wit", styles.compose("Dry Wit", "Flat, with jokes.", []))];
+  expect(styles.namedIn(nested, "in the dry wit style")?.name).toBe("style-dry-wit");
+});
+
+test("a channel whose scripts are taught in words on its page has no default style by itself", () => {
+  const only = [lesson("style-dr-insanity", insanity)];
+  expect(styles.defaultIn(only)).toBe("style-dr-insanity");
+  expect(styles.defaultIn(only, true)).toBeNull();
+  expect(styles.defaultIn([...only, lesson("style-default", "style-dr-insanity")], true)).toBe("style-dr-insanity");
+  channels.useChannelsForTests([{ ...CHANNEL, lanes: { ...CHANNEL.lanes, script: "short, plain sentences" } }]);
+  v2cloud.useSkillsForTests([lesson("style-dr-insanity", insanity, "A script style")]);
+  expect(lanes.section("tedcases", "script", "none", false, null)).not.toContain("THIS SCRIPT'S STYLE");
+  expect(lanes.section("tedcases", "script", "none", false, "style-dr-insanity")).toContain("THIS SCRIPT'S STYLE: Dr Insanity.");
+});
+
+test("a style kept for one channel of a group is that channel's: its default is kept there, and a style kept for the group never takes its examples", () => {
+  channels.useChannelsForTests([{ ...CHANNEL, group: "gr-ted" } as typeof CHANNEL], [{ key: "gr-ted", lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, channels: ["tedcases"] } as never]);
+  v2cloud.useSkillsForTests([{ ...lesson("style-dr-insanity", insanity, "A script style"), latest: 3 }]);
+  expect(lanes.styleScope("tedcases", "style-dr-insanity")).toBe("channel");
+  expect(lanes.styleAt("tedcases", "style-dr-insanity", "channel")?.latest).toBe(3);
+  expect(lanes.styleAt("tedcases", "style-dr-insanity")).toBeUndefined();
 });
 
 test("a script's writer reads its own style whole and only the others' names, beside the channel's lessons", () => {

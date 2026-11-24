@@ -667,7 +667,7 @@ export function routes(router: Router<App>): void {
         // One that asks to learn a style from the videos, Docs or script it brings goes there before its links are read as footage (style_learn.ts); a pasted script may be long.
         const asked = readFor(dataOf(context.app), id(context));
         if (asked.channel && styleLearn.mayAsk(request)) {
-          if ([...request].length > 100_000) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
+          if ([...request].length > styleLearn.MOST_PASTED) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
           return startJob(context.app, id(context), { kind: "style", request, focus, ...(given.files ? { files: given.files.map(String) } : {}) });
         }
         if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
@@ -874,7 +874,8 @@ function mark(context: RouteContext<App>, how: "test" | "show" | "hide" | "promo
   });
 }
 
-const firstBuild = (build: unknown): { note: string } | null => (typeof build === "string" ? { note: build.trim().slice(0, 4_000) } : null);
+/** A first message is a note of up to 4,000 characters, or a style's references with a script pasted in, of up to 100,000 (style_learn.ts). */
+const firstBuild = (build: unknown): { note: string } | null => (typeof build === "string" ? { note: build.trim().slice(0, styleLearn.mayAsk(build) ? styleLearn.MOST_PASTED : 4_000) } : null);
 
 // A script made with a first build is built once its import is ready, as the Build button would.
 imports.hooks.build = (app, id, note) => {
@@ -897,9 +898,12 @@ export function startJob(app: App, scriptId: string, work: jobs.Work): BuildStat
   const script = readFor(dataOf(app), scriptId);
   idle(scriptId);
   // Writing waits for footage still on its way: kept as the build to start by itself once it's here or its quick tries are over (missing.ts `holding`).
-  const holding = work.kind === "build" ? missing.holding(script) : [];
-  if (work.kind === "build" && holding.length > 0) {
-    store.update(store.scriptDir(dataOf(app), scriptId), (fresh) => (fresh.firstBuild = { note: work.note }), true);
+  // A first build that learns a style first waits too, kept whole: its build starts the learning again once the footage is in.
+  const writes = work.kind === "build" || (work.kind === "style" && work.build === true);
+  const holding = writes ? missing.holding(script) : [];
+  if (writes && holding.length > 0) {
+    const note = work.kind === "build" ? work.note : work.kind === "style" ? work.request : "";
+    store.update(store.scriptDir(dataOf(app), scriptId), (fresh) => (fresh.firstBuild = { note }), true);
     throw new Error(`Writing waits: ${missing.line({ ...script, missing: holding })}. It starts by itself in a few minutes, with or without it.`);
   }
   return beginJob(app, scriptId, script.title, work);

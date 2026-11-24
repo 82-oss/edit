@@ -123,8 +123,8 @@ export function laneText(place: Place, teach: Teach = "tools", picked: string | 
   else if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
   if (place.lane === "script") {
     const all = styles.stylesIn(taught);
-    const used = styles.chosen(taught, picked);
-    const said = styles.prompt(used, all, used !== null && used.name === styles.defaultIn(taught));
+    const used = chosenStyle(place, picked);
+    const said = styles.prompt(used, all, used !== null && used.name === defaultStyle(place));
     if (said !== "") lines.push(said);
   }
   if (!v2cloud.teachingKnown()) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE COULDN'T BE READ from Edit's cloud just now: do what's asked plainly, tell the person once that its style didn't load and to ask again in a moment, and keep nothing this time.`);
@@ -171,12 +171,37 @@ export async function keepLesson(place: Place, name: string, text: string, reaso
   return remember({ skill: name, text, reason, ...(given !== undefined ? { for: given } : {}) }, place);
 }
 
+/** Whether the channel's scripts are taught in words beside its lessons: its Script lane's style on its page, or its group's. */
+function laneWords(place: Place): boolean {
+  const channel = channels.knownChannels().find((one) => one.key === place.channel) ?? null;
+  return (channel?.lanes[place.lane]?.trim() ?? "") !== "" || (channels.groupOf(place.channel)?.lanes[place.lane]?.trim() ?? "") !== "";
+}
+
+/** The channel's default script style's name, or null (script_styles.ts `defaultIn`). */
+export const defaultStyle = (place: Place): string | null => styles.defaultIn(lessonsOf(place), laneWords(place));
+
+/** The style a script that names `picked` is written in, or null (script_styles.ts `chosen`). */
+export const chosenStyle = (place: Place, picked: string | null | undefined): styles.Style | null => styles.chosen(lessonsOf(place), picked, laneWords(place));
+
+/** The style of that name kept where a style kept now would go (`given`, as keepStyle takes it), or undefined: never one kept elsewhere (a channel's own, for its group). */
+export function styleAt(channel: string, name: string, given?: unknown): v2cloud.Skill | undefined {
+  const key = v2cloud.ownKey("skill", channels.keptIn(channel, "script", given).place, name);
+  return lessonsOf({ channel, lane: "script" }).find((one) => one.name === name && one.key === key);
+}
+
+/** Where a style the channel has is kept: "channel" when it's this channel's own in a group, else undefined (its group's, or an ungrouped channel's). */
+export function styleScope(channel: string, name: string): "channel" | undefined {
+  const place: Place = { channel, lane: "script" };
+  const found = lessonsOf(place).find((one) => one.name === name);
+  return found !== undefined && channels.groupOf(channel) !== null && ownLesson(found, place) ? "channel" : undefined;
+}
+
 /**
  * A script style kept whole (writer/style_learn.ts): a teacher's, in the channel's Script lane (its group's unless
  * `given` says this channel's). Never checked against the lessons: a style is meant to differ from them, and wins only
  * for the scripts written in it (script_styles.ts).
  */
-export async function keepStyle(channel: string, name: string, text: string, reason: string, note: string, given?: unknown): Promise<string> {
+export async function keepStyle(channel: string, name: string, text: string, reason: string, note: string, given?: unknown, read: { latest: number | null } | null = null): Promise<string> {
   needCloud();
   await refresh();
   teacherOnly("Keeping a script style");
@@ -187,7 +212,10 @@ export async function keepStyle(channel: string, name: string, text: string, rea
   const kept = channels.keptIn(channel, "script", given);
   const key = v2cloud.ownKey("skill", kept.place, name);
   const before = lessonsOf(place).find((one) => one.name === name && one.key === key);
-  const saved = await v2cloud.saveSkill(name, text, reason, note, { key, ...(before?.latest !== undefined ? { latest: before.latest } : {}) });
+  // Saved over the version its learner read (`read`), never a newer one another teacher kept meanwhile: that one is said, and learned again.
+  if (read !== null && read.latest === null && before !== undefined) throw new Error(`Someone else kept a ${name.slice(styles.PREFIX.length)} style while this was learned: ask again to add to theirs.`);
+  const latest = read !== null ? read.latest : (before?.latest ?? null);
+  const saved = await v2cloud.saveSkill(name, text, reason, note, { key, ...(latest !== null ? { latest } : {}) });
   v2cloud.forgetSkills();
   return `Kept the style ${name} (version ${saved.n}) in ${nameOf(channel)}'s script style${kept.words === "" ? "" : `, ${kept.words}`}.`;
 }

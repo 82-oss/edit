@@ -187,7 +187,7 @@ async function useStyle(session: Session, place: lanes.Place, args: Args): Promi
   const dir = store.scriptDir(session.data, session.id);
   if (/^(default|none|the default)$/iu.test(asked)) {
     store.update(dir, (now) => void delete now.style, true);
-    const fallback = styles.chosen(lessons, null);
+    const fallback = lanes.chosenStyle(place, null);
     return fallback === null ? "This script is written in no style of its own now: the channel's lessons alone. The channel has no default style." : `This script is written in the channel's default style now, ${fallback.title}:\n\n${styles.prompt(fallback, all, true)}`;
   }
   const wanted = styles.nameFor(asked);
@@ -196,11 +196,12 @@ async function useStyle(session: Session, place: lanes.Place, args: Args): Promi
   store.update(dir, (now) => void (now.style = found.name), true);
   let made = "";
   if (args.default === true) {
-    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat");
+    // Kept where the style is: a channel's own style is that channel's default, never its group's.
+    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat", lanes.styleScope(place.channel, found.name));
     await lanes.refresh();
     made = " It's the channel's default now: scripts that name no style are written in it.";
   }
-  const isDefault = styles.defaultIn(lanes.lessonsOf(place)) === found.name;
+  const isDefault = lanes.defaultStyle(place) === found.name;
   return `This script is written in ${found.title} from now on.${made} Say so in your reply.\n\n${styles.prompt(found, all, isDefault)}`;
 }
 
