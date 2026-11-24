@@ -279,3 +279,30 @@ test("a new script's note that points at another project gives the build that pr
     cleanup();
   }
 });
+
+test("a note's projects come those sharing the most of its words first, and a long chat never crowds the script out of the build's reference", async () => {
+  // Thirteen newer projects share a common word; the older one the note names shares two.
+  const common: otherProjects.Other[] = Array.from({ length: 13 }, (_, index) => ({ kind: "script", id: `s${index}`, title: `Case ${index} Interrogation`, channel: null, updatedAt: 100 + index }));
+  const named: otherProjects.Other = { kind: "script", id: "kim", title: "Kimberly Kessler Interrogation", channel: null, updatedAt: 1 };
+  const shortlist = otherProjects.mentionedIn([...common, named], "Build it like the Kimberly interrogation script.");
+  expect(shortlist[0]!.id).toBe("kim");
+  expect(shortlist).toHaveLength(12);
+
+  const { home, store, cleanup } = fixtureHome("other-room");
+  const pick = otherProjects.hooks.pick;
+  try {
+    putScript(home, script(TROOPER, "Trooper Stops Wrong Car", 1));
+    // Sixty long messages: past the reference's whole room on their own.
+    const chat: ChatTurn[] = Array.from({ length: 60 }, (_, index) => ({ role: "producer" as const, text: `Request ${index}: ${"keep it tight ".repeat(150)}`, at: index }));
+    putScript(home, script(KIMBERLY, "Kimberly Kessler Interrogation", 2), chat);
+    otherProjects.hooks.pick = async () => [KIMBERLY];
+    const [given] = await otherProjects.pointedAt(store, "Build it like the Kimberly script.", TROOPER);
+    expect(given!.text).toContain("earlier messages left out");
+    expect(given!.text).toContain("Request 59");
+    expect(given!.text).toContain('"She said she was home."');
+    expect(given!.text.length).toBeLessThan(31_000);
+  } finally {
+    otherProjects.hooks.pick = pick;
+    cleanup();
+  }
+});

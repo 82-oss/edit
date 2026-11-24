@@ -52,8 +52,13 @@ export const INPUT_SCHEMA = {
 /** The most of each part one answer carries. */
 const ASKED_MOST = 3_000;
 const ANSWER_MOST = 600;
-const CHAT_MOST = 40_000;
-const WORK_MOST = 60_000;
+/** The room one reading has: for its chat, and for the script itself (each keeps to its own, so a long chat never crowds the script out). */
+export interface Room {
+  chat: number;
+  work: number;
+}
+/** The tool's answer's room. */
+const ANSWER_ROOM: Room = { chat: 40_000, work: 60_000 };
 /** Projects listed when nothing is named, or when a name matches several. */
 const LISTED = 12;
 
@@ -220,13 +225,13 @@ function scriptChat(dir: string): Exchange[] {
 }
 
 /** The chat as the answer gives it, newest kept when it's long. */
-function chatText(exchanges: Exchange[], agent: string): string {
+function chatText(exchanges: Exchange[], agent: string, most: number): string {
   if (exchanges.length === 0) return "Nothing was asked in its chat.";
   const parts: string[] = [];
   let size = 0;
   for (const one of [...exchanges].reverse()) {
     const text = `[${day(one.at)}] The person: ${cut(one.asked, ASKED_MOST)}${one.answer === null ? "" : `\n  ${agent}: ${cut(one.answer, ANSWER_MOST)}`}`;
-    if (size + text.length > CHAT_MOST && parts.length > 0) {
+    if (size + text.length > most && parts.length > 0) {
       parts.push(`(${exchanges.length - parts.length} earlier messages left out)`);
       break;
     }
@@ -237,7 +242,7 @@ function chatText(exchanges: Exchange[], agent: string): string {
 }
 
 /** The script as it stands: a footage script's timeline, or a commentary's plan. */
-function scriptText(script: Script): string {
+function scriptText(script: Script, most: number): string {
   if (script.commentary !== undefined) {
     const draft = script.commentary.draft;
     if (!draft) return "Nothing is written in it yet.";
@@ -248,17 +253,18 @@ function scriptText(script: Script): string {
   // each clip's first and last words; and still too long, its times alone, so every cut-in, clip and note still comes.
   const format = formatOfScript(script);
   const whole = current(script, format, "all");
-  if (whole.length <= WORK_MOST) return whole;
+  if (whole.length <= most) return whole;
   const ends = `(Each clip shows its first and last words: the script with every word is too long to read here.)\n${current(script, format, "ends")}`;
-  if (ends.length <= WORK_MOST) return ends;
+  if (ends.length <= most) return ends;
   return `(Each clip shows its times alone: the script with its clips' words is too long to read here.)\n${current(script, format, "none")}`;
 }
 
 /** Everything the answer says of one project. */
-export function read(store: Store, one: Other, asker: Asker): string {
+export function read(store: Store, one: Other, asker: Asker, room: Room = ANSWER_ROOM): string {
   const head = `${one.kind === "edit" ? "EDIT" : "SCRIPT"} "${one.title}" (id ${one.id}${channelText(one.channel)}, last changed ${day(one.updatedAt)}). Read only: take from it what the person pointed you at, and do it here.`;
   if (one.kind === "edit") {
-    const chat = chatText(editChat(store, one.id), "The agent");
+    // An edit's reading is its chat: the room is all its.
+    const chat = chatText(editChat(store, one.id), "The agent", room.chat + room.work);
     const clips = asker === "edit" ? `\n\nIts edit itself: get_edit_context with project_id "${one.id}" (read only; narrow it with section or start/end).` : "";
     return `${head}\n\n${chat}${clips}`;
   }
@@ -266,18 +272,31 @@ export function read(store: Store, one: Other, asker: Asker): string {
   const dir = writerStore.scriptDir(data, one.id);
   const script = writerStore.read(dir);
   can.requireScript(script);
-  return `${head}\n\n${chatText(scriptChat(dir), "The agent")}\n\n${cut(scriptText(script), WORK_MOST)}`;
+  return `${head}\n\n${chatText(scriptChat(dir), "The agent", room.chat)}\n\n${cut(scriptText(script, room.work), room.work)}`;
 }
 
-/** The most of one project a build is given beside its evidence, and how many projects one note may point at. */
-const NOTE_MOST = 30_000;
+/** The room one project has beside a build's evidence, split so its script always comes, and how many projects one note may point at. */
+const NOTE_ROOM: Room = { chat: 12_000, work: 18_000 };
 const NOTE_PROJECTS = 2;
 
-/** The projects whose titles share a word with a note (four letters or more, filler aside): the ones it may point at. */
+/**
+ * The projects whose titles share a word with a note (four letters or more,
+ * filler aside): the ones it may point at, those sharing the most of its
+ * words first, then the newest, so a common word ("Interrogation") never
+ * crowds out the one it names.
+ */
 export function mentionedIn(given: Other[], note: string): Other[] {
-  const said = new Set(words(note).filter((word) => word.length >= 4 && !FILLER.has(word)));
-  if (said.size === 0) return [];
-  return given.filter((one) => words(one.title).some((word) => word.length >= 4 && [...said].some((asked) => word === asked || word.startsWith(asked) || asked.startsWith(word)))).slice(0, LISTED);
+  const said = [...new Set(words(note).filter((word) => word.length >= 4 && !FILLER.has(word)))];
+  if (said.length === 0) return [];
+  return given
+    .map((one) => {
+      const title = words(one.title).filter((word) => word.length >= 4);
+      return { one, shared: said.filter((asked) => title.some((word) => word === asked || word.startsWith(asked) || asked.startsWith(word))).length };
+    })
+    .filter((each) => each.shared > 0)
+    .sort((a, b) => b.shared - a.shared || b.one.updatedAt - a.one.updatedAt)
+    .slice(0, LISTED)
+    .map((each) => each.one);
 }
 
 const PICK_SYSTEM =
@@ -310,7 +329,7 @@ export async function pointedAt(store: Store, note: string, self: string, signal
   );
   if (candidates.length === 0) return [];
   const ids = (await hooks.pick(note, candidates, signal)).slice(0, NOTE_PROJECTS);
-  return candidates.filter((one) => ids.includes(one.id)).map((one) => ({ one, text: cut(read(store, one, "script"), NOTE_MOST) }));
+  return candidates.filter((one) => ids.includes(one.id)).map((one) => ({ one, text: read(store, one, "script", NOTE_ROOM) }));
 }
 
 /**
