@@ -172,15 +172,19 @@ function editChat(store: Store, id: string): Exchange[] {
   }
   if (!Array.isArray(entries)) return [];
   const out: Exchange[] = [];
+  // The person's message being answered; null after one of Edit's, whose answer is no answer to theirs.
+  let open: Exchange | null = null;
   for (const item of entries as Record<string, unknown>[]) {
     if (typeof item !== "object" || item === null || typeof item.text !== "string") continue;
     const at = typeof item.at === "number" ? item.at : 0;
     if (item.kind === "user") {
+      open = null;
       if (item.by === "edit" || item.text.startsWith("(Edit, automatically)") || item.text.trim() === "") continue;
-      out.push({ at, asked: item.text, answer: null });
-    } else if (item.kind === "assistant" && out.length > 0 && item.text.trim() !== "") {
+      open = { at, asked: item.text, answer: null };
+      out.push(open);
+    } else if (item.kind === "assistant" && open !== null && item.text.trim() !== "") {
       // Its last words before the next message: the answer.
-      out[out.length - 1]!.answer = item.text;
+      open.answer = item.text;
     }
   }
   return out;
@@ -189,10 +193,12 @@ function editChat(store: Store, id: string): Exchange[] {
 /** A script's chat: the producer's messages, each with the answer that wasn't a failure. */
 function scriptChat(dir: string): Exchange[] {
   const out: Exchange[] = [];
+  let open: Exchange | null = null;
   for (const turn of writerChat.read(dir) as ChatTurn[]) {
     if (turn.role === "producer") {
-      if (turn.text.trim() !== "") out.push({ at: turn.at, asked: turn.text, answer: null });
-    } else if (out.length > 0 && turn.failed !== true && turn.text.trim() !== "") out[out.length - 1]!.answer = turn.text;
+      open = turn.text.trim() === "" ? null : { at: turn.at, asked: turn.text, answer: null };
+      if (open !== null) out.push(open);
+    } else if (open !== null && turn.failed !== true && turn.text.trim() !== "") open.answer = turn.text;
   }
   return out;
 }
@@ -222,7 +228,11 @@ function scriptText(script: Script): string {
     return `THE SCRIPT, as a plan\n${JSON.stringify(planWithIds(draft), null, 2)}`;
   }
   if (script.clips.length === 0) return "Nothing is laid out in it yet.";
-  return current(script, formatOfScript(script));
+  // Every word of each clip, which moments were kept being as much the style as the narration; too long for that, each clip's first and last words.
+  const format = formatOfScript(script);
+  const whole = current(script, format, true);
+  if (whole.length <= WORK_MOST) return whole;
+  return `(Each clip shows its first and last words: the script with every word is too long to read here.)\n${current(script, format)}`;
 }
 
 /** The review notes fixed on a script, read from what this computer has (read only). */

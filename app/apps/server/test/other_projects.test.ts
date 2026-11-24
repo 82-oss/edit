@@ -22,13 +22,14 @@ const TROOPER = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
 const FOIA = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
 
 function script(id: string, title: string, updatedAt: number): Script {
-  const said = ["Where", "were", "you", "that", "night?", "Home."];
+  // Longer than a clip's first and last words: its middle is read too.
+  const said = "Where were you on the night of March the third when the store on Main Street was robbed? Home.".split(" ");
   return {
-    id, title, sourceKind: "file", sourceUrl: "", originalPath: "", status: "ready", stage: "", progress: 100, error: null, durationMs: 6_000, revision: 1, createdAt: 0, updatedAt, overview: [], proxyPath: null,
+    id, title, sourceKind: "file", sourceUrl: "", originalPath: "", status: "ready", stage: "", progress: 100, error: null, durationMs: 20_000, revision: 1, createdAt: 0, updatedAt, overview: [], proxyPath: null,
     words: said.map((text, index) => ({ id: `w${index}`, text, startMs: index * 1_000, endMs: index * 1_000 + 500 })),
     clips: [
       { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "She said she was home." },
-      { id: "c1", startMs: 0, endMs: 5_900 },
+      { id: "c1", startMs: 0, endMs: 19_900 },
     ],
   };
 }
@@ -74,6 +75,8 @@ test("the edit's agent reads another edit's chat, the person's words only, and i
           { id: "3", kind: "assistant", text: "Done: a map before each of the 4 locations, and the face zooms are gone.", at: 0, updated: 0 },
           { id: "4", kind: "user", text: "(Edit, automatically) Edit restarted while you were working.", at: 0, updated: 0 },
           { id: "5", kind: "user", by: "edit", text: "The footage finished importing.", at: 0, updated: 0 },
+          // Edit's message's answer is no answer to the person's.
+          { id: "6", kind: "assistant", text: "Placed the new footage after the intro.", at: 0, updated: 0 },
         ],
       }),
     );
@@ -87,6 +90,7 @@ test("the edit's agent reads another edit's chat, the person's words only, and i
     expect(said).toContain("The agent: Done: a map before each of the 4 locations");
     expect(said).not.toContain("restarted");
     expect(said).not.toContain("finished importing");
+    expect(said).not.toContain("Placed the new footage");
     expect(said).toContain(`get_edit_context with project_id "${other}"`);
     // Its own project is never offered; nothing named lists the rest.
     expect((await call({ name: "today's case" })).content[0]!.text).toContain("No project here is called anything like");
@@ -124,7 +128,20 @@ test("the script's agent reads another script: the producer's asks, the answers 
     expect(said).toContain('"She said she was home."');
     // The script's agent can't read an edit's clips: it isn't told to.
     expect(said).not.toContain("get_edit_context");
+    // Every word of a clip, its middle too.
+    expect(said).toContain("the third when the store");
+    // Having read another project, the turn doesn't take the review's notes as well.
+    const notes = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "pull_feedback", arguments: {} } }, app)) as { result: { content: { text: string }[]; isError?: boolean } };
+    expect(notes.result.isError).toBe(true);
+    expect(notes.result.content[0]!.text).toContain("This turn read another project");
     turnTools.close(token);
+    // Nor the other way round: notes first, then no other project.
+    const [second] = turnTools.open(writerStore.dataDir(home), TROOPER);
+    await turnTools.answerTo(second, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "pull_feedback", arguments: {} } }, app);
+    const after = (await turnTools.answerTo(second, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "other_projects", arguments: { name: "kimberly" } } }, app)) as { result: { content: { text: string }[]; isError?: boolean } };
+    expect(after.result.isError).toBe(true);
+    expect(after.result.content[0]!.text).toContain("works on this script alone");
+    turnTools.close(second);
   } finally {
     cleanup();
   }

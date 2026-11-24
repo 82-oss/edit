@@ -167,8 +167,13 @@ function inside(words: Word[], clip: Clip): [number | null, number | null] {
 
 const shown = (script: Script, index: number): string => script.corrections?.[script.words[index]!.id] ?? script.words[index]!.text;
 
-/** The script as it stands, item by item, with what the edge review flags. */
-export function current(script: Script, format: Format): string {
+/**
+ * The script as it stands, item by item, with what the edge review flags.
+ * A clip shows its first and last words (the revision has the transcript
+ * whole); `whole`: every word of it, for another project's agent reading it
+ * with nothing else (other_projects.ts).
+ */
+export function current(script: Script, format: Format, whole = false): string {
   const clips = script.clips;
   const roles = purposes(clips, format, openingOf(clips, format));
   const issues = tidy.boundaryIssues(clips, script.words, script.corrections ?? {});
@@ -197,7 +202,11 @@ export function current(script: Script, format: Format): string {
       recording = parts[at]!.reuse !== undefined ? " reused case's footage" : ` recording ${at + 1}`;
     }
     let said = " (no words)";
-    if (first !== null && last !== null) {
+    if (first !== null && last !== null && whole) {
+      const all: string[] = [];
+      for (let i = first; i <= last; i++) all.push(shown(script, i));
+      said = ` w${first}–w${last} "${all.join(" ")}"`;
+    } else if (first !== null && last !== null) {
       const head: string[] = [];
       for (let i = first; i <= Math.min(last, first + 7); i++) head.push(shown(script, i));
       const tail: string[] = [];

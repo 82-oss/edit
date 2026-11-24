@@ -43,6 +43,13 @@ export interface Session {
   pulled: Map<string, reviews.Note>;
   /** A channel's script: its Script lane, which the lane's tools (remember, read_skill, other_channels) keep and read. */
   place: lanes.Place | null;
+  /**
+   * Which of two this turn has read, as a turn has only one: the review's
+   * notes (written by whoever holds the review link) or another project
+   * (other_projects). A turn with both could be steered by a note into
+   * handing another script to the reviewer, in a reply or in this script.
+   */
+  read: "notes" | "other" | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -56,7 +63,7 @@ export function open(data: string, id: string, given: string[] | null = null): [
   } catch {
     // Unreadable now: the turn reads it again and says so.
   }
-  const session: Session = { data, id, given, pulled: new Map(), place: channel === null ? null : { channel, lane: "script" } };
+  const session: Session = { data, id, given, pulled: new Map(), place: channel === null ? null : { channel, lane: "script" }, read: null };
   sessions.set(token, session);
   return [token, toolsAddress(`/mcp/writer-turn/${token}`), session];
 }
@@ -146,10 +153,13 @@ function toolsOf(session: Session): unknown[] {
 async function call(session: Session, name: string, args: Args, app?: App): Promise<Content[]> {
   switch (name) {
     case "other_projects":
-      if (session.given !== null) throw new Error("A turn fixing the review's notes works on this script alone: other_projects isn't here.");
+      if (session.given !== null || session.read === "notes") throw new Error("A turn fixing the review's notes works on this script alone: other_projects isn't here. Say so, and ask the producer to point you at the other project in a message of its own.");
       if (app === undefined) throw new Error("other_projects isn't available here.");
+      session.read = "other";
       return said(otherProjects.answer(app.store, args, session.id, "script"));
     case "pull_feedback":
+      if (session.read === "other") throw new Error("This turn read another project, so it doesn't take the review's notes as well (they come from whoever holds the review link). Say so, and ask the producer to ask for the feedback in a message of its own.");
+      session.read = "notes";
       return said(args.done === true ? await doneFeedback(session) : await pullFeedback(session));
     case "search_web": {
       const query = str(args.query);
