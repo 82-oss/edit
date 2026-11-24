@@ -12,7 +12,7 @@ import * as accounts from "../src/accounts.ts";
 import { dispatch, TOOLS } from "../src/mcp/index.ts";
 import * as otherProjects from "../src/other_projects.ts";
 import * as reviewGuard from "../src/review_guard.ts";
-import { withNoteProjects } from "../src/writer/scripting.ts";
+import { researchLine, withNoteProjects } from "../src/writer/scripting.ts";
 import * as writerStore from "../src/writer/store.ts";
 import * as turnTools from "../src/writer/turn_tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -268,6 +268,10 @@ test("a new script's note that points at another project gives the build that pr
     expect(reference.outlet).toContain("never take its facts");
     expect(reference.summary).toContain("Open on her lie, and keep every cut-in under 40 words.");
     expect(reference.summary).toContain('"She said she was home."');
+    // The build's report names it as the producer's reference, never as a news report (the Nov 24 trial).
+    expect(researchLine({ ...given, problem: "nothing found." })).toBe('Research: nothing found.\n\nYour reference: the script "Kimberly Kessler Interrogation".');
+    const withNews = { ...given, articles: [{ title: "Woman lied", outlet: "KTLA", published: null, url: "https://ktla.test/a", summary: "", facts: [] }, ...given.articles] };
+    expect(researchLine(withNews)).toBe('Research: 1 report (KTLA).\n\nYour reference: the script "Kimberly Kessler Interrogation".');
     // The model answering none: nothing given.
     otherProjects.hooks.pick = async () => [];
     expect(await withNoteProjects(app, "Interview Kimberly's neighbour first.", found, TROOPER, "Trooper")).toEqual(found);
