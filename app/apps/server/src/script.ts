@@ -2526,7 +2526,10 @@ export async function cut(source: string, start: number, to: number, out: string
   // From the cloud's address: cut for as long as the excerpt's file grows. From a file here: within a fixed time.
   const remote = tools.isUrl(source);
   try {
-    const picture = (await picturePasses(source, out)) ? ["-c:v", "copy"] : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
+    // Encoded, a picture of odd width or height gets a pixel's edge: 4:2:0 H.264 takes even sizes only.
+    const picture = (await picturePasses(source, out))
+      ? ["-c:v", "copy"]
+      : ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
     const command = [
       tools.ffmpeg(),
       "-v",
