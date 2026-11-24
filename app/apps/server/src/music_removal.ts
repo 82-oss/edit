@@ -579,17 +579,36 @@ export function applyBringBack(project: Project, asked: number, until: number, f
 }
 
 /**
- * `frame` moved out of any fade the cut there would go through, the span made
- * wider (earlier for its start, later for its end): each part's fade only
- * starts at its own edge, so a cut through one changes how it fades. Only
- * what's cut counts: the sounds `cuts` picks crossing the frame, and what's
- * linked to them or follows them (cutWith). Each move is outward to a clip's
- * edge, so it ends.
+ * Whether a clip's look is shaped over its whole length, so no cut through it
+ * leaves it as it was: an adjustment whose shake builds, hits or swells over
+ * the clip, or whips through its middle (eval.rs shake_offset reads the clip's
+ * own time and length). A steady wiggle only reads the timeline's time.
+ */
+function shapedOverItsLength(clip: Clip): boolean {
+  if (clip.type !== "adjustment" || clip.shake === undefined || clip.shake.preset === "none") return false;
+  const { preset } = clip.shake;
+  const envelope = clip.shake.envelope ?? (preset === "impact" ? "hit" : "steady");
+  const motion = clip.shake.motion ?? (preset === "vertical" || preset === "horizontal" ? "drop" : "wiggle");
+  return envelope !== "steady" || motion === "drop";
+}
+
+/**
+ * `frame` moved out of anything a cut there would change, the span made wider
+ * (earlier for its start, later for its end): a fade (each part's fade only
+ * starts at its own edge) or a clip shaped over its length (shapedOverItsLength:
+ * past the whole clip). Only what's cut counts: the sounds `cuts` picks crossing
+ * the frame, and what's linked to them or follows them (cutWith). Each move is
+ * outward to a clip's edge, so it ends.
  */
 export function outOfFades(project: Project, frame: number, side: "start" | "end", cuts: (clip: Clip) => boolean): number {
   let at = frame;
   for (;;) {
     const cut = project.clips.filter(cuts).flatMap((clip) => cutWith(project, clip, at));
+    const shaped = cut.find(shapedOverItsLength);
+    if (shaped !== undefined) {
+      at = side === "start" ? shaped.start : clipEnd(shaped);
+      continue;
+    }
     const clip = cut.find((one) => (one.start < at && at < one.start + one.fade_in) || (clipEnd(one) - one.fade_out < at && at < clipEnd(one)));
     if (clip === undefined) return at;
     const inFadeIn = clip.start < at && at < clip.start + clip.fade_in;

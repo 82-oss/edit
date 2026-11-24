@@ -265,6 +265,22 @@ test("a part cut off a clip is named after it, so it shakes as the clip did", ()
   expect(pictures.map((one) => one.id)).toEqual(["pic", "pic~1", "pic~2", "pic~3", "pic~4"]);
 });
 
+test("an impact shake following the footage is never cut: the span takes all of it", () => {
+  const project = edit();
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  const v2 = structuredClone(project.tracks.find((one) => one.id === picture.track)!);
+  v2.id = "v2";
+  project.tracks.push(v2);
+  project.clips.push(clip({ id: "hit", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake: { preset: "impact" }, opacity: 1 } as never));
+  expect(applyBringBack(project, 300, 310, 6, false)).toMatchObject({ pieces: 1, from: 290, to: 320 });
+  expect(project.clips.filter((one) => one.type === "adjustment").map((one) => [one.start, one.duration])).toEqual([[290, 30]]);
+  // A steady handheld wiggle reads only the timeline's time: cut where asked.
+  const steady = edit();
+  steady.tracks.push(v2);
+  steady.clips.push(clip({ id: "wig", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake: { preset: "handheld" }, opacity: 1 } as never));
+  expect(applyBringBack(steady, 300, 310, 6, false)).toMatchObject({ from: 300, to: 310 });
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;
