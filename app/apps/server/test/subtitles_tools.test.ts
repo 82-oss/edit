@@ -286,6 +286,11 @@ test("mute_house_words keep leaves a word unmuted and unstarred there, and later
     expect((project.clips.find((clip) => clip.id === "a") as AudioClip).mutes).toEqual([]);
     expect(project.media[0]!.markers).toEqual([{ time: 1.35, name: "not muted", note: "fucking" }]);
     expect((await call(app, "mute_house_words", { project_id: id, end: 10, keep: [5] })).text).toContain("no house word is muted near 5.00s");
+    // A repack leaves it too: heard, and written out in its subtitle.
+    expect((await call(app, "repack_subtitles", { project_id: id })).isError).toBe(false);
+    const repacked = store.get(id)!.project;
+    expect((repacked.clips.find((clip) => clip.id === "a") as AudioClip).mutes ?? []).toEqual([]);
+    expect(repacked.clips.some((clip) => clip.type === "text" && clip.text.includes("fucking"))).toBe(true);
   } finally {
     cleanup();
   }

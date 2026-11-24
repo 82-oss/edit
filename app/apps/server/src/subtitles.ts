@@ -227,6 +227,12 @@ const VOICEOVER_ONSET_SHARE = 0.4;
 /** The media marker that keeps a house word unmuted where it's said (`mute_house_words` keep). */
 export const NOT_MUTED = "not muted";
 
+/** Where a file's words were kept unmuted (ms into it). */
+const notMutedAt = (media: Media): number[] => (media.markers ?? []).filter((marker) => marker.name === NOT_MUTED).map((marker) => marker.time * 1000.0);
+/** Whether a suggested mute is one of those kept words. */
+const keptUnmuted = (notMuted: readonly number[], suggestion: { start_ms: number; end_ms: number }): boolean =>
+  notMuted.some((at) => at >= suggestion.start_ms - 250.0 && at <= suggestion.end_ms + 250.0);
+
 /** A muted word is silenced from a little before it starts (ms). */
 const MUTE_LEAD_MS = 30.0;
 /** And a little after it ends (Repack's default padding, ms). */
@@ -1029,6 +1035,8 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
   const mutes: ClipMutes = new Map();
   const muted: unknown[] = [];
   const heard: { clip: Clip & { type: "audio" }; media: Media; transcript: Transcript; words: TimedWord[]; visibleFrom: number; visibleTo: number }[] = [];
+  // Words kept unmuted (mute_house_words' keep): left heard, and left readable on screen.
+  const spared: Kept[] = [];
   for (const clip of sound) {
     if (clip.type !== "audio") continue;
     const played = mediaOf(project, clip.media);
@@ -1047,7 +1055,13 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
   await Promise.all(heard.map(({ words, transcript }) => fixTurns(words, (voice) => get(transcript.speakers, voice) ?? voice, project.name, join(app.store.cacheDir(), "turns"), post)));
   for (const { clip, media, transcript, words, visibleFrom, visibleTo } of heard) {
     const onTimeline = onTimelineOf(clip, fps);
-    const found = suggestions(words, neglect, visibleFrom * 1000.0, visibleTo * 1000.0);
+    // A word kept unmuted (mute_house_words' keep) stays heard and unstarred here too.
+    const notMuted = notMutedAt(media);
+    const found = suggestions(words, neglect, visibleFrom * 1000.0, visibleTo * 1000.0).filter((suggestion) => {
+      if (!keptUnmuted(notMuted, suggestion)) return true;
+      spared.push({ term: suggestion.term, at_ms: onTimeline(suggestion.at_ms), timeline_ms: [onTimeline(suggestion.start_ms), onTimeline(suggestion.end_ms)] });
+      return false;
+    });
     for (const cue of segment(words)) {
       const mine = found.filter((suggestion) => cue.words[0] <= suggestion.word && suggestion.word < cue.words[1]);
       const voice = cue.speaker ?? "unknown";
@@ -1288,7 +1302,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
       placedCount += 1;
     }
     // Every other text on screen too (captions, callouts, charges), all of the video.
-    const starredTexts = starOnScreen(edited, 0, Number.POSITIVE_INFINITY, neglect);
+    const starredTexts = starOnScreen(edited, 0, Number.POSITIVE_INFINITY, neglect, [], spared);
     // One colour per person, ΔE 28 apart, the same rule as add_subtitles';
     // each person and their lines named by id (`project.people`).
     seams.people.oneColourPerPerson(edited);
@@ -1598,9 +1612,9 @@ export async function houseWords(
     const onTimeline = onTimelineOf(clip, fps);
     let entry = out.mutes.get(clip.id);
     if (entry === undefined) out.mutes.set(clip.id, (entry = [visibleFrom, visibleTo, []]));
-    const notMuted = (media.markers ?? []).filter((marker) => marker.name === NOT_MUTED).map((marker) => marker.time * 1000.0);
+    const notMuted = notMutedAt(media);
     for (const suggestion of suggestions(words, neglect, visibleFrom * 1000.0, visibleTo * 1000.0, extra)) {
-      if (notMuted.some((at) => at >= suggestion.start_ms - 250.0 && at <= suggestion.end_ms + 250.0)) {
+      if (keptUnmuted(notMuted, suggestion)) {
         out.kept.push({
           term: suggestion.term,
           at_ms: onTimeline(suggestion.at_ms),
