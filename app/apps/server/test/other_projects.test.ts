@@ -124,6 +124,10 @@ test("the script's agent reads another script: the producer's asks, the answers 
       { role: "producer", text: "Check the notes and tighten the intro.", at: 0 },
       { role: "editor", text: "Claude stopped.", at: 0, failed: true, workedMs: 4_000, trace: [{ at: 0, calls: [{ id: "t2", tool: "pull_feedback", label: "", state: "error" }] }] },
       { role: "editor", text: "Tightened the intro, as the reviewer asked.", at: 0, workedMs: 20_000 },
+      // An empty answer that pulled them, then the next answer.
+      { role: "producer", text: "Look at the comments and fix the outro.", at: 0 },
+      { role: "editor", text: "", at: 0, workedMs: 3_000, trace: [{ at: 0, calls: [{ id: "t3", tool: "pull_feedback", label: "", state: "done" }] }] },
+      { role: "editor", text: "Fixed the outro the way the comment said.", at: 0, workedMs: 15_000 },
       // An answer from before answers kept their tools: it may have read them; its request stays.
       { role: "producer", text: "Name every officer in full.", at: 0 },
       { role: "editor", text: "Named them, as the reviewer's note said.", at: 0 },
@@ -154,6 +158,8 @@ test("the script's agent reads another script: the producer's asks, the answers 
     expect(said).not.toContain("paste the other script in");
     expect(said).not.toContain("Check the notes and tighten the intro.");
     expect(said).not.toContain("as the reviewer asked");
+    expect(said).not.toContain("Look at the comments and fix the outro.");
+    expect(said).not.toContain("the way the comment said");
     expect(said).toContain("The person: Name every officer in full.");
     expect(said).not.toContain("as the reviewer's note said");
     // The answer before it is still the producer's.
