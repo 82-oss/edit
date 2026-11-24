@@ -5,7 +5,7 @@
 import { beforeEach, expect, test } from "bun:test";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean } from "../src/music_removal.ts";
+import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
@@ -116,6 +116,14 @@ test("a span with no cleaned sound says so", () => {
   const project = edit();
   expect(() => applyBringBack(project, 2000, 2010, 6, false)).toThrow("no cleaned sound");
   expect(() => applyBringBack(project, 30, 30, 6, false)).toThrow("end must be after start");
+});
+
+test("an empty or reversed span is refused before it's rounded to frames", () => {
+  expect(() => spanFrames(30, 15.01, 15.01)).toThrow("end must be after start");
+  expect(() => spanFrames(30, 20.02, 10.01)).toThrow("end must be after start");
+  expect(spanFrames(30, 15.01, 15.02)).toEqual([450, 451]);
+  expect(spanFrames(30, null, null)).toEqual([0, Number.MAX_SAFE_INTEGER]);
+  expect(spanFrames(30, 10, null)).toEqual([300, Number.MAX_SAFE_INTEGER]);
 });
 
 test("a muted track is never paid for", () => {

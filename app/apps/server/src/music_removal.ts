@@ -207,14 +207,17 @@ export async function buildFile(base: string | null, pieces: { file: string; fro
   });
 }
 
+/** Seconds from–to (either open) as the frames that cover them; an empty or reversed span is refused before it's rounded. */
+export function spanFrames(rate: number, from: number | null, to: number | null): [number, number] {
+  if (from !== null && to !== null && !(to > from)) throw new Error("end must be after start");
+  return [from === null ? 0 : Math.floor(from * rate), to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate)];
+}
+
 /** Cleans the sounds in a span of the edit (all of it by default). Only what isn't cleaned yet is paid for. */
 export async function removeMusic(app: App, id: string, from: number | null, to: number | null, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const live = app.store.get(id);
   if (live === null) throw new Error("no such project");
-  const rate = fpsOf(live.project);
-  const first = from === null ? 0 : Math.floor(from * rate);
-  const last = to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate);
-  if (!(last > first)) throw new Error("end must be after start");
+  const [first, last] = spanFrames(fpsOf(live.project), from, to);
   const groups = soundsToClean(live.project, first, last);
   if (groups.size === 0) throw new Error("there's no footage sound in that span");
   let paidSeconds = 0;
