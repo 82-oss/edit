@@ -305,6 +305,22 @@ test("an impact shake following the footage is never cut: the span takes all of 
   }
 });
 
+test("a seam's own crossfade comes back on undo after the timeline has moved", () => {
+  const project = edit();
+  const first = audio(project)[0]!;
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  first.duration = 300;
+  picture.duration = 300;
+  project.clips.push(clip({ id: "pic2", type: "video", track: picture.track, media: "m1", start: 300, duration: 300, source_in: 20, speed: 1, link: "l2" }));
+  project.clips.push(clip({ id: "snd2", type: "audio", track: first.track, media: "m2", start: 300, duration: 300, source_in: 20, speed: 1, volume_db: -20, link: "l2", crossfade: 12 } as never));
+  applyBringBack(project, 300, 330, 6, false);
+  // Everything moves 30 frames later (time inserted before it).
+  for (const one of project.clips) one.start += 30;
+  applyBringBack(project, 330, 360, 6, true);
+  expect(audio(project).map((one) => [one.start, one.duration, one.crossfade ?? 0])).toEqual([[30, 300, 0], [330, 300, 12]]);
+  expect(cleanedInfo(project.media.find((one) => one.id === "m2")!)!.seams).toBeUndefined();
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;

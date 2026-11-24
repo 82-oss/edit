@@ -17,7 +17,7 @@ export interface Cleaned {
   of: string;
   /** What's cleaned, in order, none overlapping. */
   stretches: Stretch[];
-  /** The crossfade each seam had before a brought-back piece set its own (by `track@frame`), put back on undo. */
+  /** The crossfade each seam had before a brought-back piece set its own (by the id of the clip starting it), put back on undo. */
   seams?: Record<string, number>;
 }
 

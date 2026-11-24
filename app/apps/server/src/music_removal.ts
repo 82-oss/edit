@@ -486,7 +486,8 @@ function originalOfPiece(project: Project, clip: AudioClip): Media | undefined {
   return isOriginalPiece(clip) ? cleanedOf(project, clip.media) : undefined;
 }
 
-const seamKey = (track: string, frame: number) => `${track}@${frame}`;
+/** A seam is the clip that starts it: its id stays as the timeline moves (a frame wouldn't). */
+const seamKey = (clip: Clip) => clip.id;
 
 /** The seams a brought-back piece set, and what they had before, kept on the cleaned file (Cleaned.seams). */
 function seamsOf(media: Media): Record<string, number> {
@@ -522,7 +523,7 @@ export function applyBringBack(project: Project, asked: number, until: number, f
     // Each seam gets back the crossfade it had before the piece (none, where the piece's own split made it).
     const kept = seamsOf(cleaned);
     const restore = (one: AudioClip) => {
-      const key = seamKey(one.track, one.start);
+      const key = seamKey(one);
       if ((kept[key] ?? 0) === 0) delete one.crossfade;
       else one.crossfade = kept[key];
       delete kept[key];
@@ -564,7 +565,7 @@ export function applyBringBack(project: Project, asked: number, until: number, f
     // What a seam had before is kept, so undo puts it back (a cut's own crossfade, a level change's).
     const kept = seamsOf(cleanedMedia);
     const set = (one: AudioClip, value: number) => {
-      const key = seamKey(one.track, one.start);
+      const key = seamKey(one);
       if (!(key in kept)) kept[key] = one.crossfade ?? 0;
       one.crossfade = value;
     };
