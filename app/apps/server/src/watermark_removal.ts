@@ -570,30 +570,25 @@ async function work(app: App, job: Job): Promise<void> {
     // Its mark not found in the cell at all: kept as none there.
     const found = removed !== null && removed.left < NOT_FOUND ? removed : null;
     if (removed !== null && found === null) diag.info("watermark", `${job.project}: ${label}: its mark wasn't found there (${Math.round(removed.left * 100)}% left), nothing laid`);
-    // Finished after the person's Stop: kept and laid when clean; an unclean one is let go wherever the Stop finds it
-    // (nothing is done again after a Stop, and its row, which `reject` would need, is gone).
-    const unclean = found !== null && found.left > LEFT_MAX;
-    if (stopped() && unclean) return;
+    // The automatic look: too much of the mark still found is no clean piece, never kept or laid (a Stop meanwhile
+    // can't leave it on the shelf for another run to lay); done once more unless the person stopped it.
+    if (found !== null && found.left > LEFT_MAX) {
+      if (stopped()) return;
+      piece.left = Math.round(found.left * 1000) / 1000;
+      piece.filled = Math.round(found.filled * 1000) / 1000;
+      await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
+      return;
+    }
     const done = await shelfOf(app).keep(job.source, found === null ? null : out, { from: job.from, to: job.to, box: found?.region ?? null }, job.model.hash);
     if (found === null || done.box === null) {
       piece.state = "none";
       return;
     }
-    const letGo = () => shelfOf(app).forget(job.source, done, job.model.hash);
-    if (stopped() && unclean) return await letGo();
     piece.left = Math.round(found.left * 1000) / 1000;
     piece.filled = Math.round(found.filled * 1000) / 1000;
     const file = await shelfOf(app).bring(job.source, done);
-    if (stopped() && unclean) return await letGo();
     await place(app, job.project, job.media, job.from, done.box, file);
     piece.state = "done";
-    if (stopped() && unclean) {
-      await letGo();
-      await unlay(app, job.project, job.media.id, job.from);
-      return;
-    }
-    // The automatic look: too much of the mark still found is no clean piece.
-    if (unclean) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
     diag.info("watermark", `${job.project}: ${label} in ${piece.seconds} s (${Math.round(found.filled * 100)}% rebuilt from its neighbours, ${Math.round(found.left * 100)}% of the mark left)`);
   } catch (error) {
     if (stopped()) return;

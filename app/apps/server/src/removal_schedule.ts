@@ -557,6 +557,7 @@ export function stop(app: App, id: string, kinds: readonly removal.Kind[] = remo
   else asks.stopParts(app.store.home, id, [...kinds]);
   if (kinds.includes("watermarks")) watermarkRemoval.stop(id);
   if (kinds.includes("subtitles") || kinds.includes("text")) {
+    textRemoval.stopped(id);
     textBlur.stop(id);
     textInpaint.stop(id);
   }

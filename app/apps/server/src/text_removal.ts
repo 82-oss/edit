@@ -635,6 +635,9 @@ export function inpaintPlan(project: Project, plans: blur.BlurPlan[]): inpaint.I
 
 /** Brings `id`'s tracked blurs, and where this machine has the model its cleaned stretches, up to what's marked now (removal_schedule.ts calls it as soon as edits rest). */
 export async function ensure(app: App, id: string): Promise<void> {
+  // A Stop of their text while this plans: nothing from the plan (it was made before it).
+  const stopsBefore = textStops.get(id) ?? 0;
+  const current = () => (textStops.get(id) ?? 0) === stopsBefore;
   // The relay's word on RunPod, fresh (a minute old at most) before planning what the model cleans.
   await inpaint.cloudOn();
   const live = app.store.get(id);
@@ -644,9 +647,18 @@ export async function ensure(app: App, id: string): Promise<void> {
   if (taken && found.available()) found.ensure(app, id, await findWants(live.project));
   const plans = taken ? await blurPlan(app, live.project) : [];
   const cleaned = inpaintPlan(live.project, plans);
+  if (!current()) return;
   if (taken && found.available()) await dropStale(app, id, plans, cleaned);
+  if (!current()) return;
   await blur.ensure(app, id, plans);
+  if (!current()) return;
   await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
+}
+
+/** Each project's Stops of their text so far (removal_schedule `stop`): a plan begun before a later one lays nothing. */
+const textStops = new Map<string, number>();
+export function stopped(id: string): void {
+  textStops.set(id, (textStops.get(id) ?? 0) + 1);
 }
 
 /**
@@ -702,7 +714,9 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
 export function takesItsPlace(plans: Pick<blur.BlurPlan, "media" | "spans">[], strip: Media, stopped: boolean): boolean {
   if (!stopped) return true;
   const { media, from, to } = strip.cleans!;
-  return plans.some((plan) => plan.media.id === media && plan.spans.some(([a, b]) => a < to && b > from));
+  // All of its seconds (a strip is cut to whole frames, a few hundredths off its stretch's).
+  const asked = merged(plans.filter((plan) => plan.media.id === media).flatMap((plan) => plan.spans));
+  return sections.minus([[from + 0.2, to - 0.2]], asked).length === 0;
 }
 
 // A file read by the finder: the project's plan again, with its boxes (one look at a time a project).

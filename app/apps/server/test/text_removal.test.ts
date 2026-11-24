@@ -815,7 +815,10 @@ test("after the person's Stop a cleaned strip stays unless what's asked since ru
   expect(tr.takesItsPlace([], strip, true)).toBe(false);
   expect(tr.takesItsPlace([{ media, spans: [[40, 50]] }], strip, true)).toBe(false);
   expect(tr.takesItsPlace([{ media: { id: "n" } as Media, spans: [[10, 30]] }], strip, true)).toBe(false);
-  expect(tr.takesItsPlace([{ media, spans: [[25, 35]] }], strip, true)).toBe(true);
+  // Asked over only part of it: the rest would lose its clean, so it stays; asked over all of it, the new run takes it.
+  expect(tr.takesItsPlace([{ media, spans: [[25, 35]] }], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media, spans: [[10, 20]] }, { media, spans: [[20, 30.05]] }], strip, true)).toBe(true);
+  expect(tr.takesItsPlace([{ media, spans: [[5, 35]] }], strip, true)).toBe(true);
 });
 
 test("ours go over their subtitles only where removal takes theirs out: taught to by itself, or asked for those seconds; not when stopped or taught to wait", async () => {
@@ -902,6 +905,25 @@ test("one part stopped alone, the rest goes on; asked again, it runs on what's n
     await wm.settled();
     expect(calls).toEqual(["learn null", "remove 0-8"]);
     expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("a plan begun before a Stop of their text lays nothing after it", async () => {
+  const { app, dir, cleanup } = fixtureHome("removal-stop-text-plan");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const reads: number[] = [];
+  blurReads(reads);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    const planning = tr.ensure(app, id);
+    removalSchedule.stop(app, id, ["text"]);
+    await planning;
+    await blur.settled();
+    expect(blurs(id)).toEqual([]);
   } finally {
     cleanup();
   }
