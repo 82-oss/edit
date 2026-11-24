@@ -13,13 +13,15 @@ rows (`editMedia`), and on R2 every key the body names (originals, excerpts,
 proxies), each footage's original and proxy, the analysis beside them that
 costs money to redo (`edit/analysis/…`: transcripts, faces, seats, the
 watcher's answers), a pieced proxy's folder (`edit/pieces/…`: its layout and
-pieces) and the project's research (`edit/research/projects/<id>/`).
+pieces), the project's research (`edit/research/projects/<id>/`) and the
+finder's boxes of its footage (`edit/cleaned/found/…`).
 R2 objects already in dev with the same size are skipped, so copying again
 is quick. Prod is only read; nothing in it changes.
 
 Settings come from Infisical (Platform, `/edit-relay`, prod and dev) into
 memory, as push-secrets.ts does: no value in an argument, a file or a log.
 """
+import hashlib
 import json
 import re
 import subprocess
@@ -31,6 +33,8 @@ from botocore.exceptions import ClientError
 import httpx
 
 PROJECT = "979fe56c-c4d0-4809-b64f-5ebc75eeaf05"
+# found.ts `VERSION`: the finder's boxes' file version.
+FOUND_VERSION = 1
 HOLDER = "copy-to-dev"
 
 
@@ -117,6 +121,12 @@ def main():
             prefixes.append(key[: -len("proxy.mp4")])
     for prefix in prefixes:
         keys.update(listed(src_s3, src_bucket, prefix))
+    # The finder's boxes of each footage file (found.ts `cloudKeyOf`), where it read them: without them every copied
+    # project's footage is read again on RunPod (Nov 24, the M1 Air's run on Hitman's copy: 36 reads queued).
+    for source in sources:
+        key = f"edit/cleaned/found/{hashlib.sha256(source.encode()).hexdigest()[:32]}.v{FOUND_VERSION}.json"
+        if size_of(src_s3, src_bucket, key) is not None:
+            keys.add(key)
     keys = sorted(key for key in keys if key.startswith("edit/") and ".." not in key)
     print(f"{card['name']} ({project_id}): {len(sources)} sources, {len(rows)} registered, {len(keys)} R2 objects")
 

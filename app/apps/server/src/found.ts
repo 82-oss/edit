@@ -161,13 +161,13 @@ export function foundOf(app: App, source: string): Found | null {
     const read = JSON.parse(fs.readFileSync(fileOf(app, source), "utf8")) as Found;
     if (read.version !== VERSION || !Array.isArray(read.masks)) return null;
     kept.set(source, read);
+    void shareKept(app, source, read);
     return read;
   } catch {
     return null;
   }
 }
 
-/** Stretches of still footage cleaned at once: a CPU core each, at background priority, and no GPU; half the cores at most, so the machine stays responsive. */
 /**
  * Stretches cleaned from the room's picture at once: each holds about 0.8 GB with its FFmpegs at its peak (an M1 Air,
  * Nov 24: 0.5 GB the engine, 0.3 GB FFmpeg), so one on an 8 GB Mac, more with room for the rest of Edit and the
@@ -672,6 +672,15 @@ async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null>
   } catch {
     return null;
   }
+}
+
+/**
+ * A file's boxes read here before they were shared (the finder ran on this machine only, until Nov 24) go up the first
+ * time they're loaded, so a Mac opening the same edit doesn't pay RunPod to read the same footage again.
+ */
+async function shareKept(app: App, source: string, found: Found): Promise<void> {
+  if (standIn !== null || !cloud.enabled() || (await fetchCloudFound(source)) !== null) return;
+  await saveCloudFound(source, found, readLocalParentSidecar(app, source));
 }
 
 async function saveCloudFound(source: string, found: Found, parentState: ParentState | null): Promise<void> {

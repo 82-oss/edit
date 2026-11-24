@@ -296,6 +296,24 @@ test("Mac/non-Linux client gets the finder via RunPod, judges with sheetsB64, wr
   expect(found.foundOf(app2, "drive:abc")).toEqual(saved);
 });
 
+test("boxes read here before they were shared go up the first time they're loaded, once", async () => {
+  const app = makeApp(path.join(tmpDir, "old"));
+  const { createHash } = await import("node:crypto");
+  const key = `edit/cleaned/found/${createHash("sha256").update("drive:old").digest("hex").slice(0, 32)}.v1.json`;
+  const old = { version: 1, fps: 30, width: 1280, height: 720, covered: [[0, 60]], masks: [[30, 90, 400, 900, 1500, 980, "subtitle"]] };
+  const file = path.join(app.store.cacheDir(), "cleaned", "found", "drive-old.v1.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(old));
+  expect(found.foundOf(app, "drive:old")).not.toBeNull();
+  for (let at = 0; at < 100 && !r2Store.has(key); at++) await Bun.sleep(10);
+  expect(JSON.parse(r2Store.get(key)!)).toEqual({ found: old });
+  // Loaded again (kept in memory): nothing more goes up.
+  r2Store.delete(key);
+  found.foundOf(app, "drive:old");
+  await Bun.sleep(50);
+  expect(r2Store.has(key)).toBe(false);
+});
+
 test("multiple files scan in parallel on RunPod, and a slowed copy sends its parent's state to RunPod", async () => {
   const app = makeApp(path.join(tmpDir, "mac-par"));
   // Hold parent by input key (arrival-order independent) until both A and B are submitted concurrently!
