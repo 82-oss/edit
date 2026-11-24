@@ -11,6 +11,7 @@ import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { setsSegments } from "../src/watch.ts";
 import { isSubtitled } from "../src/store.ts";
+import { textNotSaid } from "../src/edit_review.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
 beforeEach(stubNative);
@@ -381,6 +382,10 @@ test("cleaned sound is watched, heard and segmented as its footage", () => {
   const v = project.tracks.find((one) => one.kind === "video")!.id;
   project.clips.push(clip({ id: "line", type: "text", track: v, start: 0, duration: 30, name: "Subtitle · Officer", text: "Stop.", style: { font: "Geist", weight: 700, size: 96, color: [1, 1, 1, 1], tracking: 0, line_height: 1.15 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, animation: { preset: "none", duration: 12, stagger: 1.5 }, opacity: 1 } as never));
   expect(isSubtitled(project)).toBe(true);
+  // The review hears it under that subtitle: never "delete it, nothing plays under it".
+  const said = { model: "scribe_v2", language: "eng", words: [{ text: "Stop.", start: 10.1, end: 10.4, speaker: "speaker_0" }] };
+  const flagged = textNotSaid(project, new Map([["m1", said], ["m2", said]]) as never) as { kind: string }[];
+  expect(flagged.filter((one) => one.kind === "subtitle_unheard")).toEqual([]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {
