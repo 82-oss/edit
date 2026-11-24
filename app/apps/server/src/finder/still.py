@@ -27,6 +27,8 @@ OFF_PLATE = 0.08
 REACH = 60
 # Frames each hidden pixel is voted on from: a pad or a hand passing through for a moment is outvoted by the room.
 SAMPLES = 5
+# Seconds either side of a stretch its own picture is read from.
+AROUND = 45
 PAD = 14
 SIBLING_SAMPLES = 800
 
@@ -260,18 +262,28 @@ def letters(frame, boxes, y0, scale):
     return out, cover
 
 
-def stretch_plate(job, masks, total, W, H, y0, y1, fps):
-    """The commonest picture of this stretch alone, captions left out: what's on the table now (a card put down halfway
-    through the video isn't on the whole video's plate). (picture, the pixels it saw)."""
-    step = max(1, total // 96)
-    where = place_of(caps_of(json.load(open(job["found"]))))
+def stretch_plate(job, total, W, H, y0, y1, fps, small, found):
+    """The commonest picture of this stretch and the minute round it, captions left out, from the same shot: what's on the
+    table now (a card put down halfway through the video isn't on the whole video's plate, and a stretch with captions back
+    to back never shows it on its own). (picture, the pixels it saw)."""
+    caps = caps_of(found)
+    where = place_of(caps)
+    every = found.get("fps") or fps
+    start = max(0.0, float(job["from"]) - AROUND)
+    end = float(job["from"]) + total / fps + AROUND
+    rate = min(fps, 160 / max(1.0, end - start))
     shot = Shot(np.zeros(1), y1 - y0, W)
-    for at, frame in enumerate(read_frames(job["ffmpeg"], job["input"], job.get("input_args", []), W, H, f"fps={fps / step:.6f},", ("-ss", f"{float(job['from']):.3f}"))):
-        index = at * step
-        if index >= total:
+    for at, frame in enumerate(read_frames(job["ffmpeg"], job["input"], job.get("input_args", []), W, H, f"fps={rate:.6f},", ("-ss", f"{start:.3f}"))):
+        t = start + at / rate
+        if t > end:
             break
-        near = [one for i in range(max(0, index - 6), min(total, index + 7)) for one in masks[i]]
-        skip = solid(near, y0, y1 - y0, W)
+        if not same_shot(cv2.resize(frame, SMALL, interpolation=cv2.INTER_AREA).astype(np.int16), small):
+            continue
+        here = int(round(t * every))
+        skip = np.zeros((y1 - y0, W), bool)
+        for m in caps:
+            if m[0] - 6 <= here <= m[1] + 6:
+                skip[max(0, m[3] - y0 - PAD):max(0, m[5] - y0 + PAD), max(0, m[2] - PAD):m[4] + PAD] = True
         if where is not None and captioned(frame, where):
             skip[max(0, where[1] - y0 - PAD):max(0, where[3] - y0 + PAD), max(0, where[0] - PAD):where[2] + PAD] = True
         shot.add(frame[y0:y1], skip)
@@ -309,7 +321,7 @@ def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, s
     # An average has no grain and shows as a smooth patch on carpet: a real frame's pixels wherever they agree with it.
     sharp = real[c:d, a:b]
     agrees = np.abs(sharp.astype(np.int16) - patch.astype(np.int16)).sum(axis=2) < 60
-    patch[want & agrees] = sharp[want & agrees]
+    patch[want & ~known & agrees] = sharp[want & ~known & agrees]
     for many in range(1, SAMPLES + 1):
         # One or two frames are a poor vote: this stretch's own picture is better, where it saw the spot.
         here = want & (count == many) & (~known if many < 3 else True)
@@ -435,7 +447,7 @@ def clean(job):
         certain = np.zeros((rows, W), bool)
         certain[top - y0:bottom - y0] = sure[top - span[0]:bottom - span[0]] >= 205
 
-        nearby, seen = stretch_plate(job, masks, total, W, H, y0, y1, fps)
+        nearby, seen = stretch_plate(job, total, W, H, y0, y1, fps, small, found)
         window, marks, own = [], [], []
         off, checked, written, next_frame, boxed, empty = 0, 0, 0, 0, 0, 0
         none = np.zeros((rows, W), bool)
