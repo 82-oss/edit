@@ -117,9 +117,6 @@ export function referencesIn(text: string): { references: Reference[]; words: st
 
 /** An ask that says the script follows ("the script below", "here's one"): what comes after it is the paste, however short. */
 const MARKED = /\b(below|following|here'?s|here is|this script)\b/iu;
-/** How much of one long paragraph is read as its ask: under any message's most, with room for its links. */
-const ASK_FROM_PARAGRAPH = 6_000;
-
 /** The shortest script a marked paste is taken for. */
 const MARKED_LEAST = 300;
 
@@ -148,9 +145,11 @@ export function split(text: string): [string, string] {
   // One long paragraph, ask and script in one: its start is said as the ask, with every link in it (references and the producer's words are never lost).
   if (taken.length === 0 || withoutLinks(pasted).length < PASTED) {
     const linked = [...new Set(whole.match(URL_IN_TEXT) ?? [])];
-    // As much of it as any message may be (the ask is read for what it asks), the whole of it the paste.
-    const head = whole.length <= ASK_FROM_PARAGRAPH ? whole : `${whole.slice(0, ASK_FROM_PARAGRAPH)}…`;
-    return [`${head}${linked.length > 0 ? `\n(its links: ${linked.join(" ")})` : ""}`, whole];
+    // As much of it as any message may be (the ask is read for what it asks): all of it when it fits, else its start and its end, where an ask is said; the whole of it the paste.
+    const links = linked.length > 0 ? `\n(its links: ${linked.join(" ")})` : "";
+    const room = Math.max(1_000, MOST_ASKED - links.length - 10);
+    const asked = whole.length <= room ? whole : `${whole.slice(0, Math.floor(room * 0.6))} … ${whole.slice(whole.length - Math.floor(room * 0.4))}`;
+    return [`${asked}${links}`, whole];
   }
   return [taken.map((at) => units[at]!.trim()).join("\n"), pasted];
 }

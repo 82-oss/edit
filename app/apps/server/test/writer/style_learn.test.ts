@@ -56,6 +56,14 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   const late = `${pasted} So that's the narration: learn the writing style from it for this channel.`;
   expect(learn.split(late)[0]).toContain("learn the writing style from it");
   expect(learn.mayAsk(late)).toBe(true);
+  // Past 6,000 characters, within any message's most: all of it is read.
+  const later = `${"The detective leans in. ".repeat(270)}So learn the writing style from that.`;
+  expect(later.indexOf("learn the writing style")).toBeGreaterThan(6_000);
+  expect(learn.split(later)[0]).toBe(later);
+  // Past that, its start and its end are, where an ask is said.
+  const longest = `${"The detective leans in. ".repeat(1_000)}So learn the writing style from that.`;
+  expect(learn.split(longest)[0]).toContain("learn the writing style from that");
+  expect([...learn.split(longest)[0]].length).toBeLessThanOrEqual(learn.MOST_ASKED);
   // A pasted script's own citations stay in it, never references of their own.
   const cited = Array.from({ length: 30 }, (_, at) => `Line ${at}: the detective leans in (https://news.example/${at}).`).join("\n");
   const withCites = learn.referencesIn(`Learn the style from this script:\n\n${cited}`);
