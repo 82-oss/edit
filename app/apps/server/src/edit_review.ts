@@ -8,6 +8,7 @@ import type { Clip, Project } from "./model.ts";
 import { clipEnd, duration as durationOf, fps as fpsOf, reusedSpans, trackOf } from "./project.ts";
 import { byteLength, charCount, chars, isAlphanumeric, round, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
+import { soundSourceId } from "./music_removed.ts";
 import { compareKeys } from "./stable.ts";
 import type { Transcript } from "./transcribe.ts";
 
@@ -346,7 +347,7 @@ export function cutMidWord(project: Project, transcripts: Map<string, Transcript
       clip.type === "audio" &&
       clip.volume_db > -40 &&
       trackOf(project, clip.track)?.muted !== true &&
-      project.media.find((media) => media.id === clip.media)?.kind === "video",
+      project.media.find((media) => media.id === soundSourceId(project, clip.media))?.kind === "video",
   );
   for (const clip of sounds) {
     if (clip.type !== "audio") continue;
@@ -359,7 +360,7 @@ export function cutMidWord(project: Project, transcripts: Map<string, Transcript
         (other) =>
           other !== clip &&
           other.type === "audio" &&
-          other.media === clip.media &&
+          soundSourceId(project, other.media) === soundSourceId(project, clip.media) &&
           Math.abs((frame === clip.start ? clipEnd(other) : other.start) - frame) <= 1 &&
           Math.abs((frame === clip.start ? other.source_in + (other.duration / fps) * other.speed : other.source_in) - at) <= 0.1,
       );

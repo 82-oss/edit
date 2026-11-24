@@ -171,6 +171,7 @@ export class Processor {
 
   /** A music-removed sound's words: its source's, once the source has them. */
   private followWords(source: string, original: string, keyterms: readonly string[]): void {
+    this.stopWaiting(source);
     this.set(source, (status) => {
       status.transcript = "working";
       delete status.transcript_error;
@@ -181,8 +182,19 @@ export class Processor {
       try {
         this.transcribe(original, true, keyterms);
         for (const started = Date.now(); !isFile(this.paths(original).transcript); ) {
-          const stage = this.status(original).transcript;
-          if (stage === "failed" || stage === "waiting" || Date.now() - started > 15 * 60_000) throw new Error(this.status(original).transcript_error ?? "its source has no words yet");
+          const known = this.status(original);
+          // Its source waits for the plan's credit: so does it, asked again at the same time.
+          if (known.transcript === "waiting") {
+            const at = known.transcript_retry_at ?? Date.now() + 60_000;
+            finish((status) => {
+              status.transcript = "waiting";
+              status.transcript_retry_at = at;
+              if (known.transcript_error !== undefined) status.transcript_error = known.transcript_error;
+            });
+            this.waitThenHear(source, at, () => this.transcribe(source, true, keyterms));
+            return;
+          }
+          if (known.transcript === "failed" || Date.now() - started > 15 * 60_000) throw new Error(known.transcript_error ?? "its source has no words yet");
           await Bun.sleep(2000);
         }
         const target = this.paths(source).transcript;

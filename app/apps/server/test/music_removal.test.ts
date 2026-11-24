@@ -7,6 +7,7 @@ import { beforeEach, expect, test } from "bun:test";
 import type { Clip, Project } from "../src/model.ts";
 import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, type Stretch } from "../src/music_removed.ts";
+import { footageSound } from "../src/subtitles.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
 beforeEach(stubNative);
@@ -154,6 +155,32 @@ test("undo never joins two pieces with different levels", () => {
   applyBringBack(project, 300, 330, 6, false);
   applyBringBack(project, 300, 330, 6, true);
   expect(audio(project).map((one) => [one.start, one.duration, one.volume_db])).toEqual([[0, 300, 0], [300, 300, -20]]);
+});
+
+test("a gap too short to pay for still counts as not cleaned, so that frame plays the original", () => {
+  expect(missing([[1, 8]], [[0, 5], [5.01, 9]])).toEqual([]);
+  expect(covers([[0, 5], [5.01, 9]], 1, 8)).toBe(false);
+  expect(covers([[0, 5], [5.0005, 9]], 1, 8)).toBe(true);
+});
+
+test("two sounds of one take on separate tracks both move, though splitting one splits the other", () => {
+  const project = edit();
+  const first = audio(project)[0]!;
+  first.media = "m1";
+  const track = structuredClone(project.tracks.find((one) => one.id === first.track)!);
+  track.id = "a2";
+  project.tracks.push(track);
+  project.clips.push(clip({ id: "snd2", type: "audio", track: "a2", media: "m1", start: 0, duration: 1800, source_in: 10, speed: 1, volume_db: 0, channel: "right", link: "l1" } as never));
+  expect(moveToCleaned(project, ["snd", "snd2"], "m1", "m2", [[19, 31]], 300, 600)).toBe(2);
+  for (const id of [first.track, "a2"]) {
+    const pieces = audio(project).filter((one) => one.track === id);
+    expect(pieces.map((one) => [one.start, one.media])).toEqual([[0, "m1"], [300, "m2"], [600, "m1"]]);
+  }
+});
+
+test("cleaned sound is still the footage's sound, so its lines are still subtitled", () => {
+  const project = edit();
+  expect(footageSound(project, 0, 1800).map((one) => one.id)).toEqual(["snd"]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {

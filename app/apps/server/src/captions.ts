@@ -59,6 +59,7 @@ import {
 import { chars, f32, fixed, isAlphanumeric, jsonForSerde, round, serdeParse, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import type { Face, Found, Line as TimedLine, Suggestion } from "./seams.ts";
+import { soundSourceId } from "./music_removed.ts";
 import { compareKeys } from "./stable.ts";
 import type { Transcript, Word } from "./transcribe.ts";
 import * as tools from "./tools.ts";
@@ -1380,7 +1381,7 @@ export async function captionSpeakers(app: App, projectId: string, from: number,
     return sound.some(
       (audio) =>
         audio.type === "audio" &&
-        audio.media === clip.media &&
+        soundSourceId(project, audio.media) === clip.media &&
         audio.start <= at + 1 &&
         clipEnd(audio) > at &&
         Math.abs(audio.source_in + ((at - audio.start) / fps) * audio.speed - said) < 0.5,

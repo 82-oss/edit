@@ -50,6 +50,7 @@ import { isSubtitled, SUBTITLE_NAME } from "./store.ts";
 import { join } from "./paths.ts";
 import { fixTurns } from "./turns.ts";
 import * as changes from "./changes.ts";
+import { soundSource } from "./music_removed.ts";
 import { spills as post } from "./ai_claude.ts";
 import type { Transcript, Word } from "./transcribe.ts";
 
@@ -1447,9 +1448,12 @@ export function footageSound(project: Project, from: number, to: number): Clip[]
     const track = trackOf(project, clip.track);
     if (track === undefined || track.kind !== "audio" || track.muted) return false;
     if (!(clip.start < to && clipEnd(clip) > from) || clip.type !== "audio") return false;
-    if (reused.has(clip.media)) return false;
-    const media = mediaOf(project, clip.media);
-    return media !== undefined && media.kind === "video" && media.has_audio;
+    const played = mediaOf(project, clip.media);
+    if (played === undefined) return false;
+    // Sound with its music removed is still the footage's (music_removed.ts): judged by its source.
+    const media = soundSource(project, played);
+    if (reused.has(clip.media) || reused.has(media.id)) return false;
+    return media.kind === "video" && media.has_audio;
   });
 }
 

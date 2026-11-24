@@ -44,6 +44,18 @@ export function cleanedOf(project: Project, original: string): Media | undefined
   return project.media.find((media) => cleanedInfo(media)?.of === original);
 }
 
+/** The media a sound really plays: a cleaned file's original, or the media itself. */
+export function soundSource(project: Project, media: Media): Media {
+  const of = cleanedInfo(media)?.of;
+  return (of === undefined ? undefined : project.media.find((one) => one.id === of)) ?? media;
+}
+
+/** The id of the media a sound really plays (soundSource). */
+export function soundSourceId(project: Project, id: string): string {
+  const media = project.media.find((one) => one.id === id);
+  return media === undefined ? id : soundSource(project, media).id;
+}
+
 /** Stretches joined where they touch or overlap, in order. */
 export function merged(stretches: readonly Stretch[]): Stretch[] {
   const out: Stretch[] = [];
@@ -55,8 +67,8 @@ export function merged(stretches: readonly Stretch[]): Stretch[] {
   return out;
 }
 
-/** What of `wanted` isn't in `have`: the only part that's paid for. */
-export function missing(wanted: readonly Stretch[], have: readonly Stretch[]): Stretch[] {
+/** What of `wanted` isn't in `have`, however short. */
+function gaps(wanted: readonly Stretch[], have: readonly Stretch[]): Stretch[] {
   const held = merged(have);
   const out: Stretch[] = [];
   for (const [from, to] of merged(wanted)) {
@@ -69,12 +81,17 @@ export function missing(wanted: readonly Stretch[], have: readonly Stretch[]): S
     }
     if (at < to) out.push([at, to]);
   }
-  return out.filter(([from, to]) => to - from >= 0.02);
+  return out;
 }
 
-/** Whether `have` holds all of from–to. */
+/** What of `wanted` isn't in `have`: the only part that's paid for (a sliver under 20 ms isn't worth a request). */
+export function missing(wanted: readonly Stretch[], have: readonly Stretch[]): Stretch[] {
+  return gaps(wanted, have).filter(([from, to]) => to - from >= 0.02);
+}
+
+/** Whether `have` holds all of from–to: any gap a frame could fall in means no, whatever it would cost to fill. */
 export function covers(have: readonly Stretch[], from: number, to: number): boolean {
-  return missing([[from, to]], have).length === 0;
+  return gaps([[from, to]], have).every(([start, end]) => end - start <= 0.001);
 }
 
 const rateOf = (project: Project) => (project.settings.ntsc === true ? (project.settings.fps * 1000) / 1001 : project.settings.fps);

@@ -88,16 +88,25 @@ export function playedIn(project: Project, clip: AudioClip, from: number, to: nu
  * edge. Returns how many sounds moved.
  */
 export function moveToCleaned(project: Project, ids: readonly string[], original: string, cleaned: string, stretches: readonly Stretch[], from: number, to: number): number {
-  let count = 0;
-  for (const id of ids) {
+  // Where each sound is, taken before any razor: splitting one sound splits those linked to it on other tracks too,
+  // so after the splits a sound is found by its track and place, not by its id.
+  const places = ids.flatMap((id) => {
     const clip = project.clips.find((one): one is AudioClip => one.id === id && one.type === "audio" && one.media === original);
-    if (clip === undefined || clipEnd(clip) <= from || clip.start >= to) continue;
+    if (clip === undefined || clipEnd(clip) <= from || clip.start >= to) return [];
     const [start, end] = playedIn(project, clip, from, to);
-    if (!covers(stretches, start, end)) continue;
-    splitLinked(project, clip, from);
-    const inside = clip.start >= from ? clip : audioAt(project, clip.track, (one) => one.start === from && one.media === original && continues(project, clip, one));
+    if (!covers(stretches, start, end)) return [];
+    return [{ track: clip.track, from: Math.max(clip.start, from), to: Math.min(clipEnd(clip), to) }];
+  });
+  for (const place of places) {
+    for (const frame of [place.from, place.to]) {
+      const through = audioAt(project, place.track, (one) => one.media === original && one.start < frame && clipEnd(one) > frame);
+      if (through !== undefined) splitLinked(project, through, frame);
+    }
+  }
+  let count = 0;
+  for (const place of places) {
+    const inside = audioAt(project, place.track, (one) => one.media === original && one.start === place.from && clipEnd(one) === place.to);
     if (inside === undefined) continue;
-    splitLinked(project, inside, to);
     const before = audioAt(project, inside.track, (one) => clipEnd(one) === inside.start && one.media === original && continues(project, one, inside));
     const after = audioAt(project, inside.track, (one) => one.start === clipEnd(inside) && one.media === original && continues(project, inside, one));
     inside.media = cleaned;
@@ -124,9 +133,10 @@ export function wavCommand(input: string, [from, to]: Stretch, out: string): str
   return [ffmpeg(), "-nostdin", "-v", "error", "-y", "-ss", seconds(from), "-t", seconds(to - from), "-i", input, "-vn", "-ac", "1", "-ar", "44100", "-c:a", "pcm_s16le", "-map_metadata", "-1", "-fflags", "+bitexact", "-flags:a", "+bitexact", out];
 }
 
-async function isolatedPiece(input: string, dir: string, [from, to]: Stretch, signal?: AbortSignal): Promise<string> {
+/** A stretch with its music taken out, and how many seconds were sent for it (none when it was kept from a try that failed later). */
+async function isolatedPiece(input: string, dir: string, [from, to]: Stretch, signal?: AbortSignal): Promise<{ file: string; sent: number }> {
   const out = join(dir, `${Math.round(from * 1000)}-${Math.round(to * 1000)}.mp3`);
-  if (fs.existsSync(out) && fs.statSync(out).size > 0) return out;
+  if (fs.existsSync(out) && fs.statSync(out).size > 0) return { file: out, sent: 0 };
   const wav = `${out}.wav`;
   const partial = `${out}.partial`;
   await run(wavCommand(input, [from, to], wav), { background: true, ...(signal === undefined ? {} : { signal }) });
@@ -164,7 +174,21 @@ async function isolatedPiece(input: string, dir: string, [from, to]: Stretch, si
     await fs.promises.rm(wav, { force: true });
     await fs.promises.rm(partial, { force: true });
   }
-  return out;
+  return { file: out, sent: to - from };
+}
+
+/** One removal per source at a time, whoever asks (the agent, MCP, two projects): they share its pieces and its folder. */
+const cleaning = new Map<string, Promise<unknown>>();
+async function oneAtATime<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const ahead = cleaning.get(key) ?? Promise.resolve();
+  const mine = ahead.catch(() => undefined).then(work);
+  const held = mine.catch(() => undefined);
+  cleaning.set(key, held);
+  try {
+    return await mine;
+  } finally {
+    if (cleaning.get(key) === held) cleaning.delete(key);
+  }
 }
 
 /** The cleaned file: what was cleaned before, with the new pieces laid in at their times, silence elsewhere. */
@@ -189,64 +213,17 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
   const rate = fpsOf(live.project);
   const first = from === null ? 0 : Math.floor(from * rate);
   const last = to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate);
+  if (!(last > first)) throw new Error("end must be after start");
   const groups = soundsToClean(live.project, first, last);
   if (groups.size === 0) throw new Error("there's no footage sound in that span");
   let paidSeconds = 0;
   let moved = 0;
-  for (const [originalId, sounds] of groups) {
-    const project = app.store.get(id)!.project;
-    const original = mediaOf(project, originalId);
-    if (original === undefined) continue;
-    const before = cleanedOf(project, originalId);
-    const had = before === undefined ? [] : (cleanedInfo(before)?.stretches ?? []);
-    const wanted = merged(
-      sounds.map((clip): Stretch => {
-        const [start, end] = playedIn(project, clip, first, last);
-        return [Math.max(0, start - HANDLE), Math.min(original.duration, end + HANDLE)];
-      }),
-    );
-    const need = missing(wanted, had);
-    let cleanedId = before?.id;
-    let stretches = had;
-    if (need.length > 0) {
-      // Its words first: the cleaned file shares them, so nothing is heard twice.
-      await transcriptOf(app, original, project);
-      const key = new Bun.CryptoHasher("sha256").update(original.cloud?.source ?? original.path).digest("hex").slice(0, 24);
-      const dir = join(app.store.cacheDir(), "music-removed", key);
-      await fs.promises.mkdir(dir, { recursive: true });
-      const input = await app.media.analysisInput(original.path);
-      const pieces: { file: string; from: number; to: number }[] = [];
-      for (const piece of requests(need)) {
-        pieces.push({ file: await isolatedPiece(input, dir, piece, signal), from: piece[0], to: piece[1] });
-        paidSeconds += piece[1] - piece[0];
-      }
-      const folder = join(app.store.uploadsDir(id), "music-removed");
-      await fs.promises.mkdir(folder, { recursive: true });
-      const out = join(folder, `${original.name.replace(/\.[^.]+$/u, "").replaceAll("/", "-")} (music removed ${Date.now()}).flac`);
-      const base = before === undefined ? null : await app.media.analysisInput(before.path);
-      await buildFile(base, pieces, original.duration, out, signal);
-      const words = app.media.paths(fs.realpathSync(out)).transcript;
-      await fs.promises.mkdir(parent(words) ?? dir, { recursive: true });
-      await fs.promises.copyFile(app.media.paths(original.path).transcript, words);
-      const [, added, errors] = await importPaths(app, id, [out], false, "voice");
-      cleanedId = added[0];
-      if (cleanedId === undefined) throw new Error(`Couldn't bring in the cleaned sound: ${errors.join("; ")}`);
-      stretches = merged([...had, ...need]);
-      await fs.promises.rm(dir, { recursive: true, force: true });
-    }
-    if (cleanedId === undefined) continue;
-    const ids = sounds.map((clip) => clip.id);
-    const newId = cleanedId;
-    const [, changed] = await app.store.update(id, "agent", (draft) => {
-      const media = mediaOf(draft, newId);
-      if (media === undefined) throw new Error("the cleaned sound went missing");
-      media.markers = [cleanedMarker({ of: originalId, stretches })];
-      if (before !== undefined && newId !== before.id) {
-        for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
-        draft.media = draft.media.filter((one) => one.id !== before.id);
-      }
-      return moveToCleaned(draft, ids, originalId, newId, stretches, first, last);
-    });
+  for (const originalId of groups.keys()) {
+    const source = mediaOf(live.project, originalId);
+    if (source === undefined) continue;
+    const key = new Bun.CryptoHasher("sha256").update(source.cloud?.source ?? source.path).digest("hex").slice(0, 24);
+    const [sent, changed] = await oneAtATime(key, () => cleanSource(app, id, originalId, key, first, last, signal));
+    paidSeconds += sent;
     moved += changed;
   }
   return {
@@ -255,6 +232,67 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
     cost_usd: Math.round((paidSeconds / 60) * 0.12 * 100) / 100,
     then: "Listen back. Where the team hears a word lost, use bring_back_sound at that moment.",
   };
+}
+
+/** One source's sounds in frames first–last cleaned, read afresh once it's this one's turn: seconds sent and sounds moved. */
+async function cleanSource(app: App, id: string, originalId: string, key: string, first: number, last: number, signal?: AbortSignal): Promise<[number, number]> {
+  const project = app.store.get(id)?.project;
+  const original = project === undefined ? undefined : mediaOf(project, originalId);
+  if (project === undefined || original === undefined) return [0, 0];
+  // Chosen now, not when asked: a removal just before this one may have cut or moved them.
+  const sounds = soundsToClean(project, first, last).get(originalId) ?? [];
+  const before = cleanedOf(project, originalId);
+  const had = before === undefined ? [] : (cleanedInfo(before)?.stretches ?? []);
+  const wanted = merged(
+    sounds.map((clip): Stretch => {
+      const [start, end] = playedIn(project, clip, first, last);
+      return [Math.max(0, start - HANDLE), Math.min(original.duration, end + HANDLE)];
+    }),
+  );
+  const need = missing(wanted, had);
+  let paidSeconds = 0;
+  let cleanedId = before?.id;
+  let stretches = had;
+  if (need.length > 0) {
+    // Its words first: the cleaned file shares them, so nothing is heard twice.
+    await transcriptOf(app, original, project);
+    const dir = join(app.store.cacheDir(), "music-removed", key);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const input = await app.media.analysisInput(original.path);
+    const pieces: { file: string; from: number; to: number }[] = [];
+    for (const piece of requests(need)) {
+      const { file, sent } = await isolatedPiece(input, dir, piece, signal);
+      pieces.push({ file, from: piece[0], to: piece[1] });
+      paidSeconds += sent;
+    }
+    const folder = join(app.store.uploadsDir(id), "music-removed");
+    await fs.promises.mkdir(folder, { recursive: true });
+    const out = join(folder, `${original.name.replace(/\.[^.]+$/u, "").replaceAll("/", "-")} (music removed ${Date.now()}).flac`);
+    const base = before === undefined ? null : await app.media.analysisInput(before.path);
+    await buildFile(base, pieces, original.duration, out, signal);
+    const words = app.media.paths(fs.realpathSync(out)).transcript;
+    await fs.promises.mkdir(parent(words) ?? dir, { recursive: true });
+    await fs.promises.copyFile(app.media.paths(original.path).transcript, words);
+    const [, added, errors] = await importPaths(app, id, [out], false, "voice");
+    cleanedId = added[0];
+    if (cleanedId === undefined) throw new Error(`Couldn't bring in the cleaned sound: ${errors.join("; ")}`);
+    stretches = merged([...had, ...need]);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
+  if (cleanedId === undefined) return [paidSeconds, 0];
+  const newId = cleanedId;
+  const ids = sounds.map((clip) => clip.id);
+  const [, changed] = await app.store.update(id, "agent", (draft) => {
+    const media = mediaOf(draft, newId);
+    if (media === undefined) throw new Error("the cleaned sound went missing");
+    media.markers = [cleanedMarker({ of: originalId, stretches })];
+    if (before !== undefined && newId !== before.id) {
+      for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
+      draft.media = draft.media.filter((one) => one.id !== before.id);
+    }
+    return moveToCleaned(draft, ids, originalId, newId, stretches, first, last);
+  });
+  return [paidSeconds, changed];
 }
 
 /** The razor at `frame` through a clip and whatever's linked to it, as the timeline's split does. */
