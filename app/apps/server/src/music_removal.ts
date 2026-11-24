@@ -585,12 +585,20 @@ export function applyBringBack(project: Project, asked: number, until: number, f
  * own time and length). A steady wiggle only reads the timeline's time.
  */
 function shapedOverItsLength(clip: Clip): boolean {
-  if (clip.type !== "adjustment" || clip.shake === undefined || clip.shake.preset === "none") return false;
+  if (clip.type !== "adjustment" || clip.shake === undefined) return false;
+  // Resolved as the engine does (model.rs Shake::resolved): each number given, else the preset's ("none" gives none).
   const { preset } = clip.shake;
+  const amount = clip.shake.amount ?? SHAKE_AMOUNT[preset];
+  const rotation = clip.shake.rotation ?? SHAKE_ROTATION[preset];
+  if (amount === 0 && Math.abs(rotation) <= 0) return false;
   const envelope = clip.shake.envelope ?? (preset === "impact" ? "hit" : "steady");
   const motion = clip.shake.motion ?? (preset === "vertical" || preset === "horizontal" ? "drop" : "wiggle");
   return envelope !== "steady" || motion === "drop";
 }
+
+/** Each shake preset's amount and rotation (model.rs ShakePreset::settings). */
+const SHAKE_AMOUNT = { none: 0, handheld: 8, vertical: 540, horizontal: 540, impact: 160, earthquake: 60 } as const;
+const SHAKE_ROTATION = { none: 0, handheld: 0.4, vertical: 0, horizontal: 0, impact: 3, earthquake: 1.5 } as const;
 
 /**
  * `frame` moved out of anything a cut there would change, the span made wider

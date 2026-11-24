@@ -279,6 +279,16 @@ test("an impact shake following the footage is never cut: the span takes all of 
   steady.tracks.push(v2);
   steady.clips.push(clip({ id: "wig", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake: { preset: "handheld" }, opacity: 1 } as never));
   expect(applyBringBack(steady, 300, 310, 6, false)).toMatchObject({ from: 300, to: 310 });
+  // No preset, its own numbers: a hit all the same. No preset and no numbers: no shake at all.
+  for (const [shake, span] of [
+    [{ preset: "none", amount: 100, envelope: "hit" }, { from: 290, to: 320 }],
+    [{ preset: "none", envelope: "hit" }, { from: 300, to: 310 }],
+  ] as const) {
+    const custom = edit();
+    custom.tracks.push(v2);
+    custom.clips.push(clip({ id: "own", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake, opacity: 1 } as never));
+    expect(applyBringBack(custom, 300, 310, 6, false)).toMatchObject(span);
+  }
 });
 
 test("a muted track is never paid for", () => {
