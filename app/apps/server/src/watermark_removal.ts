@@ -576,7 +576,7 @@ async function work(app: App, job: Job): Promise<void> {
       if (stopped()) return;
       piece.left = Math.round(found.left * 1000) / 1000;
       piece.filled = Math.round(found.filled * 1000) / 1000;
-      await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
+      await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`, false);
       return;
     }
     const done = await shelfOf(app).keep(job.source, found === null ? null : out, { from: job.from, to: job.to, box: found?.region ?? null }, job.model.hash);
@@ -643,7 +643,7 @@ async function unlay(app: App, id: string, media: string, from: number): Promise
  * `check_removal`): its strip out of the project and its kept cell forgotten;
  * done once more, else given up on, the watermark left there, said in `error`.
  */
-export async function reject(app: App, id: string, key: string, why: string): Promise<string> {
+export async function reject(app: App, id: string, key: string, why: string, laid = true): Promise<string> {
   const match = /^watermark:(.+)@(\d+)$/u.exec(key);
   const piece = match === null ? undefined : pieces.get(id)?.get(pieceKey(match[1]!, Number(match[2]) / 1000));
   if (piece === undefined) throw new Error(`no piece ${key}`);
@@ -651,10 +651,11 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   const media = live?.project.media.find((one) => one.id === piece.media);
   const source = media === undefined ? null : await sourceOf(media);
   const model = source === null ? null : await markOf(app, source);
-  if (source !== null && model !== null && !isNone(model)) {
+  // The automatic look's piece was never kept or laid (`laid` false): a cell another project kept meanwhile stays.
+  if (laid && source !== null && model !== null && !isNone(model)) {
     for (const kept of (await shelfOf(app).list(source, model.hash)).filter((one) => Math.abs(one.from - piece.from) < 0.01)) await shelfOf(app).forget(source, kept, model.hash);
   }
-  await unlay(app, id, piece.media, piece.from);
+  if (laid) await unlay(app, id, piece.media, piece.from);
   const again = (piece.tries ?? 1) < 2;
   note(id, { ...piece, state: "failed", error: why, ...(again ? {} : { gaveUp: true }) });
   diag.warn("watermark", `${id}: ${piece.name} ${piece.from}–${piece.to} s not clean (${why}): ${again ? "done again" : "left as it was"}`);

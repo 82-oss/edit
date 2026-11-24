@@ -370,6 +370,50 @@ test("a cell here that finishes after the Stop is kept and laid only when clean;
   }
 }, 60_000);
 
+test("an unclean cell's automatic look leaves alone the cell another project on the same footage kept meanwhile", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("watermark-shared-reject");
+  const base = standIn([]);
+  const gates = new Map<string, () => void>();
+  let first = "";
+  // Two projects on one tape run the same cell at once: the first project's comes out clean, the second's not.
+  wm.useEngine({
+    ...base,
+    remove: async (piece, progress) => {
+      const ours = piece.out.includes(`${first}-`);
+      await new Promise<void>((resolve) => gates.set(ours ? "first" : "second", resolve));
+      const done = await base.remove(piece, progress);
+      return done === null ? null : { ...done, left: ours ? 0.08 : 0.6 };
+    },
+  });
+  const shelf = wm.shelfIn(join(dir, "shelf"), () => false);
+  wm.useShelf(shelf);
+  const before = wm.limits.cells;
+  try {
+    const file = join(dir, "marked.mp4");
+    fs.writeFileSync(file, "a stand-in tape with a mark");
+    first = await project(app, [file], 20);
+    const second = await project(app, [file], 20, "q");
+    wm.limits.cells = 2;
+    await wm.ensure(app, first);
+    await wm.ensure(app, second);
+    while (gates.size < 2) await Bun.sleep(10);
+    gates.get("first")!();
+    while (!store.get(first)!.project.media.some((media) => media.cleans?.what === "watermark")) await Bun.sleep(10);
+    gates.get("second")!();
+    await wm.settled();
+    const source = `sha256:${await cloudMedia.sha256File(file)}`;
+    const model = (await wm.markOf(app, source)) as wm.Model;
+    // The first project's strip and its kept cell stay; the second's is done once more from that kept cell.
+    const kept = await shelf.list(source, model.hash);
+    expect(kept.map((one) => one.from)).toEqual([0]);
+    const strip = store.get(first)!.project.media.find((media) => media.cleans?.what === "watermark")!;
+    expect(fs.existsSync(strip.path)).toBe(true);
+  } finally {
+    wm.limits.cells = before;
+    cleanup();
+  }
+}, 60_000);
+
 test("a plan begun before the person's Stop queues nothing after it", async () => {
   const { app, dir, cleanup } = fixtureHome("watermark-stop-plan");
   const calls: WatermarkPiece[] = [];
