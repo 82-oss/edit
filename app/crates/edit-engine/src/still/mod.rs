@@ -257,7 +257,7 @@ impl Frames {
         for one in [
             "-an",
             "-vf",
-            &format!("{filters}scale={w}:{h},format=rgb24"),
+            &format!("{filters}scale={w}:{h}:flags={EXACT},format=rgb24"),
             "-fps_mode",
             "vfr",
             "-f",
@@ -286,7 +286,7 @@ impl Frames {
         args.push("-i".into());
         args.push(job.input.clone().into());
         let filters = format!(
-            "setpts=PTS-STARTPTS,fps={:.6},crop={w}:{}:0:{y0},scale=in_color_matrix={}:in_range=tv,format=rgb24",
+            "setpts=PTS-STARTPTS,fps={:.6},crop={w}:{}:0:{y0},scale=in_color_matrix={}:in_range=tv:flags={EXACT},format=rgb24",
             job.fps,
             y1 - y0,
             job.matrix
@@ -328,6 +328,10 @@ impl Drop for Frames {
 }
 
 /// worker.Strip: the stacked strip written as it goes (picture over alpha, premultiplied), x264 at CRF 14.
+/// FFmpeg's colour conversion the same on every computer: its fast paths round by the CPU's own instructions (an M1's
+/// pixels came out 1–3 levels off Linux's, enough to move a mask's edge; Nov 24), so a stretch cleans the same on a Mac.
+const EXACT: &str = "bicubic+accurate_rnd+bitexact";
+
 struct Strip {
     child: std::process::Child,
     stdin: Option<ChildStdin>,
@@ -340,6 +344,10 @@ struct Strip {
 
 impl Strip {
     fn open(out: &Path, w: usize, rows: usize, fps: f64) -> Result<Self, String> {
+        if let Some(folder) = out.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|error| format!("making the strip's folder: {error}"))?;
+        }
         let gop = round(fps / 2.0).max(1).to_string();
         let mut partial = out.as_os_str().to_owned();
         partial.push(".partial.mp4");
@@ -362,7 +370,7 @@ impl Strip {
             "-i",
             "-",
             "-vf",
-            "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+            &format!("scale=out_color_matrix=bt709:out_range=tv:flags={EXACT},format=yuv420p"),
             "-an",
             "-c:v",
             "libx264",
@@ -431,11 +439,30 @@ impl Strip {
                 down.copy_from_slice(&[level; 3]);
             }
         }
-        self.stdin
+        let written = self
+            .stdin
             .as_mut()
             .ok_or("the strip is closed")?
-            .write_all(&bytes)
-            .map_err(|error| format!("writing the strip: {error}"))
+            .write_all(&bytes);
+        written.map_err(|error| {
+            // FFmpeg stopped: its own words, not the broken pipe they left.
+            let _ = self.close();
+            let said = self.said();
+            format!(
+                "writing the strip: {}",
+                said.unwrap_or_else(|| error.to_string())
+            )
+        })
+    }
+
+    /// FFmpeg's last line of complaint, once it has stopped.
+    fn said(&mut self) -> Option<String> {
+        let errors = self.errors.take()?.join().ok()?;
+        let text = String::from_utf8_lossy(&errors);
+        text.lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_owned())
     }
 
     fn close(&mut self) -> Result<std::process::ExitStatus, String> {
@@ -445,18 +472,11 @@ impl Strip {
 
     fn finish(mut self) -> Result<(), String> {
         let status = self.close()?;
-        let errors = self
-            .errors
-            .take()
-            .and_then(|handle| handle.join().ok())
-            .unwrap_or_default();
+        let said = self.said();
         if !status.success() {
-            let text = String::from_utf8_lossy(&errors);
-            let last = text.lines().rev().find(|line| !line.trim().is_empty());
             return Err(format!(
                 "FFmpeg couldn't write the strip{}",
-                last.map(|line| format!(": {}", line.trim()))
-                    .unwrap_or_default()
+                said.map(|line| format!(": {line}")).unwrap_or_default()
             ));
         }
         std::fs::rename(&self.partial, &self.out).map_err(|error| error.to_string())

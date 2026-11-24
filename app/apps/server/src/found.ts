@@ -168,7 +168,16 @@ export function foundOf(app: App, source: string): Found | null {
 }
 
 /** Stretches of still footage cleaned at once: a CPU core each, at background priority, and no GPU; half the cores at most, so the machine stays responsive. */
-const stillSlots = new Semaphore(Math.max(1, Math.min(8, Math.floor(os.cpus().length / 2))));
+/**
+ * Stretches cleaned from the room's picture at once: each holds about 0.8 GB with its FFmpegs at its peak (an M1 Air,
+ * Nov 24: 0.5 GB the engine, 0.3 GB FFmpeg), so one on an 8 GB Mac, more with room for the rest of Edit and the
+ * person's apps, at most half the cores (each is one core) and eight.
+ */
+export function stillAtOnceFor(totalBytes: number, cores: number): number {
+  const gb = totalBytes / 2 ** 30;
+  return Math.max(1, Math.min(8, Math.floor(cores / 2), Math.floor((gb - 6) / 1.5)));
+}
+const stillSlots = new Semaphore(stillAtOnceFor(os.totalmem(), os.cpus().length));
 /** A video's first stretch makes its room plate; the rest of that video wait for it and read it. */
 const plating = new Map<string, Promise<unknown>>();
 
