@@ -190,4 +190,24 @@ test("an edge inside a word moves out to take the whole word", () => {
   expect(offWord(words, 10.1, "start")).toBeCloseTo(9.96, 6);
   expect(offWord(words, 10.6, "end")).toBeCloseTo(10.74, 6);
   expect(offWord(words, 10.4, "start")).toBe(10.4);
+  // An edge in a word right after another is moved out of that word, not just past its neighbour.
+  const close = [{ text: "move", start: 10, end: 10.3 }, { text: "your", start: 10.31, end: 10.7 }];
+  expect(offWord(close, 10.32, "end")).toBeCloseTo(10.74, 6);
+  expect(offWord(close, 10.305, "end")).toBeCloseTo(10.74, 6);
+  expect(offWord(close, 10.32, "start")).toBeCloseTo(9.96, 6);
+});
+
+test("a seam's own crossfade comes back on undo", () => {
+  const project = edit();
+  const first = audio(project)[0]!;
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  first.duration = 300;
+  picture.duration = 300;
+  project.clips.push(clip({ id: "pic2", type: "video", track: picture.track, media: "m1", start: 300, duration: 300, source_in: 20, speed: 1, link: "l2" }));
+  project.clips.push(clip({ id: "snd2", type: "audio", track: first.track, media: "m2", start: 300, duration: 300, source_in: 20, speed: 1, volume_db: -20, link: "l2", crossfade: 12 } as never));
+  applyBringBack(project, 300, 330, 6, false);
+  expect(audio(project).find((one) => one.start === 300)!.crossfade).toBe(12);
+  applyBringBack(project, 300, 330, 6, true);
+  expect(audio(project).map((one) => [one.start, one.duration, one.crossfade ?? 0])).toEqual([[0, 300, 0], [300, 300, 12]]);
+  expect(cleanedInfo(project.media.find((one) => one.id === "m2")!)!.seams).toBeUndefined();
 });

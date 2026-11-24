@@ -17,6 +17,8 @@ export interface Cleaned {
   of: string;
   /** What's cleaned, in order, none overlapping. */
   stretches: Stretch[];
+  /** The crossfade each seam had before a brought-back piece set its own (by `track@frame`), put back on undo. */
+  seams?: Record<string, number>;
 }
 
 const isStretch = (value: unknown): value is Stretch =>
@@ -27,9 +29,13 @@ export function cleanedInfo(media: Pick<Media, "markers">): Cleaned | null {
   const note = media.markers?.find((marker) => marker.name === MARK)?.note;
   if (note === undefined) return null;
   try {
-    const parsed = JSON.parse(note) as { of?: unknown; stretches?: unknown };
+    const parsed = JSON.parse(note) as { of?: unknown; stretches?: unknown; seams?: unknown };
     if (typeof parsed.of !== "string" || !Array.isArray(parsed.stretches) || !parsed.stretches.every(isStretch)) return null;
-    return { of: parsed.of, stretches: parsed.stretches };
+    const seams =
+      typeof parsed.seams === "object" && parsed.seams !== null
+        ? Object.fromEntries(Object.entries(parsed.seams).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])))
+        : {};
+    return { of: parsed.of, stretches: parsed.stretches, ...(Object.keys(seams).length > 0 ? { seams } : {}) };
   } catch {
     return null;
   }

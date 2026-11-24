@@ -287,7 +287,8 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     const media = mediaOf(draft, newId);
     if (media === undefined) throw new Error("the cleaned sound went missing");
     // Its own marker replaced; any other (a word kept unmuted) stays.
-    media.markers = [...(media.markers ?? []).filter((marker) => marker.name !== MARK), cleanedMarker({ of: originalId, stretches })];
+    const seams = before === undefined ? undefined : cleanedInfo(before)?.seams;
+    media.markers = [...(media.markers ?? []).filter((marker) => marker.name !== MARK), cleanedMarker({ of: originalId, stretches, ...(seams === undefined ? {} : { seams }) })];
     if (before !== undefined && newId !== before.id) {
       for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
       draft.media = draft.media.filter((one) => one.id !== before.id);
@@ -311,6 +312,8 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
     right.start = frame;
     right.duration = one.duration - offset;
     right.fade_in = 0;
+    // A split's halves play straight on: no crossfade between them.
+    if (right.type === "audio") delete right.crossfade;
     if (link !== undefined) right.link = link;
     if (right.type === "video" || right.type === "audio") right.source_in += (offset / rate) * right.speed;
     for (const keys of Object.values(right.keyframes ?? {})) for (const key of keys) key.frame -= offset;
@@ -373,6 +376,20 @@ function originalOfPiece(project: Project, clip: AudioClip): Media | undefined {
   return isOriginalPiece(clip) ? cleanedOf(project, clip.media) : undefined;
 }
 
+const seamKey = (track: string, frame: number) => `${track}@${frame}`;
+
+/** The seams a brought-back piece set, and what they had before, kept on the cleaned file (Cleaned.seams). */
+function seamsOf(media: Media): Record<string, number> {
+  return { ...cleanedInfo(media)?.seams };
+}
+function setSeams(media: Media, seams: Record<string, number>): void {
+  const info = cleanedInfo(media);
+  if (info === null) return;
+  const { seams: _, ...rest } = info;
+  const marker = cleanedMarker(Object.keys(seams).length === 0 ? rest : { ...rest, seams });
+  media.markers = (media.markers ?? []).map((one) => (one.name === MARK ? marker : one));
+}
+
 /**
  * Frames from–to play the original sound, crossfading in and out over `fade`
  * frames. Any brought-back piece touching that span is replaced by it, so
@@ -388,10 +405,19 @@ export function applyBringBack(project: Project, from: number, to: number, fade:
     const cleaned = originalOfPiece(project, clip);
     if (cleaned === undefined) continue;
     seams.add(clip.start).add(clipEnd(clip));
-    const after = audioAt(project, clip.track, (one) => one.start === clipEnd(clip) && one.media === cleaned.id && continues(project, clip, one));
-    if (after !== undefined) after.crossfade = 0;
+    // Each seam gets back the crossfade it had before the piece (none, where the piece's own split made it).
+    const kept = seamsOf(cleaned);
+    const restore = (one: AudioClip) => {
+      const key = seamKey(one.track, one.start);
+      if ((kept[key] ?? 0) === 0) delete one.crossfade;
+      else one.crossfade = kept[key];
+      delete kept[key];
+    };
+    const after = audioAt(project, clip.track, (one) => one.start === clipEnd(clip) && one.media === cleaned.id);
+    if (after !== undefined) restore(after);
+    restore(clip);
+    setSeams(cleaned, kept);
     clip.media = cleaned.id;
-    clip.crossfade = 0;
     const name = withoutLabel(clip.name);
     if (name === undefined) delete clip.name;
     else clip.name = name;
@@ -418,21 +444,38 @@ export function applyBringBack(project: Project, from: number, to: number, fade:
   for (const clip of middles) {
     const cleanedId = clip.media;
     const original = cleanedInfo(mediaOf(project, cleanedId)!)!.of;
+    const cleanedMedia = mediaOf(project, cleanedId)!;
     const before = audioAt(project, clip.track, (one) => clipEnd(one) === clip.start && one.media === cleanedId && continues(project, one, clip));
-    const after = audioAt(project, clip.track, (one) => one.start === clipEnd(clip) && one.media === cleanedId && continues(project, clip, one));
+    const after = audioAt(project, clip.track, (one) => one.start === clipEnd(clip) && one.media === cleanedId);
+    // What a seam had before is kept, so undo puts it back (a cut's own crossfade, a level change's).
+    const kept = seamsOf(cleanedMedia);
+    const set = (one: AudioClip, value: number) => {
+      const key = seamKey(one.track, one.start);
+      if (!(key in kept)) kept[key] = one.crossfade ?? 0;
+      one.crossfade = value;
+    };
     clip.media = original;
     clip.name = clip.name === undefined ? ORIGINAL_SOUND : `${ORIGINAL_SOUND} · ${clip.name}`;
-    clip.crossfade = before === undefined ? 0 : fade;
-    if (after !== undefined) after.crossfade = fade;
+    // Where the take carries on, the fade asked for; at a real cut, what the cut had.
+    set(clip, before === undefined ? (clip.crossfade ?? 0) : Math.max(fade, clip.crossfade ?? 0));
+    if (after !== undefined) set(after, continues(project, clip, after) ? Math.max(fade, after.crossfade ?? 0) : (after.crossfade ?? 0));
+    setSeams(cleanedMedia, kept);
   }
   return { pieces: middles.length, undone };
 }
 
 /** `time` (a source second) moved out of any word it falls in, earlier for a start and later for an end. */
 export function offWord(words: readonly Word[], time: number, side: "start" | "end"): number {
-  const word = words.find((one) => one.start - WORD_GUARD < time && time < one.end + WORD_GUARD);
-  if (word === undefined) return time;
-  return side === "start" ? word.start - WORD_GUARD : word.end + WORD_GUARD;
+  // The word the edge is in first, then any whose guard it still falls in, until it's clear of them all.
+  let at = time;
+  for (let step = 0; step <= words.length; step++) {
+    const word = words.find((one) => one.start < at && at < one.end) ?? words.find((one) => one.start - WORD_GUARD < at && at < one.end + WORD_GUARD);
+    if (word === undefined) return at;
+    const moved = side === "start" ? word.start - WORD_GUARD : word.end + WORD_GUARD;
+    if (moved === at) return at;
+    at = moved;
+  }
+  return at;
 }
 
 function edgeOffWord(app: App, project: Project, frame: number, side: "start" | "end"): number {
