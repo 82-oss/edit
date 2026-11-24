@@ -265,6 +265,8 @@ interface Request {
   inputKey?: string;
   /** The piece it's for (a Stop cancels its RunPod job). */
   piece?: string;
+  /** Whether the piece is still wanted: false once the person stopped it, even while its job was on the way (its id not back yet). */
+  wanted?: () => boolean;
   input: string;
   input_args: string[];
   from: number;
@@ -402,8 +404,8 @@ const cleaner = (app: App): Cleaner => override ?? (cloudNow() ? remoteCleaner :
 
 /** RunPod's GPUs, through the relay (apps/relay/src/remover.ts): the stretch's R2 keys go, its strip comes back by R2. */
 class RunPod implements Cleaner {
-  /** Each running piece's RunPod job (a Stop cancels it: the GPU is paid by the second). */
-  readonly jobs = new Map<string, string>();
+  /** Each running piece's RunPod job and this caller's hold on it (a Stop cancels it: the GPU is paid by the second). */
+  readonly jobs = new Map<string, Held>();
 
   async clean(request: Request): Promise<Answer> {
     if (request.inputKey === undefined) return { ok: false, error: "the footage isn't in the cloud yet" };
@@ -411,20 +413,26 @@ class RunPod implements Cleaner {
     if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
     const { from, fps, width, height, matrix, masks } = request;
     const started = Date.now();
-    const job = (await removerCloud.call<{ id: string; out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, backlog: Math.round(waitingSeconds()), request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
-    if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
+    const job = (await removerCloud.call<Held & { out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, backlog: Math.round(waitingSeconds()), request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
+    if (request.piece !== undefined) this.jobs.set(request.piece, { id: job.id, sub: job.sub });
     let misses = 0;
     try {
       for (;;) {
+        // Stopped while the job was on the way (Nov 24: a Stop then had no id to cancel, and nine stopped stretches
+        // each kept a lane, asking after their jobs until RunPod's refusal ten minutes later), or since: let go.
+        if (request.wanted?.() === false) {
+          await this.cancel(job);
+          return { ok: false, error: "stopped" };
+        }
         await Bun.sleep(timing.pollMs);
         if (request.piece !== undefined && !this.jobs.has(request.piece)) return { ok: false, error: "stopped" };
         if (Date.now() - started > timing.deadlineMs) {
-          await this.cancel(job.id);
+          await this.cancel(job);
           return { ok: false, error: "RunPod didn't finish it in 3 hours" };
         }
-        let answer: Answer & { pending?: boolean };
+        let answer: Answer & { pending?: boolean; shared?: boolean };
         try {
-          const asked = await removerCloud.call<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
+          const asked = await removerCloud.call<Answer & { pending?: boolean; shared?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
           answer = asked.value;
           misses = 0;
           if (asked.status === 202) continue;
@@ -434,7 +442,8 @@ class RunPod implements Cleaner {
           continue;
         }
         if (answer.box != null) await cloud.download(job.out, request.out);
-        await cloud.remove([job.out]).catch(() => {});
+        // Another caller's too (the same stretch sent twice is one job): the relay takes it away once both had time to read it.
+        if (answer.shared !== true) await cloud.remove([job.out]).catch(() => {});
         return { ok: true, box: answer.box ?? null, inferred: answer.inferred, seconds: answer.seconds };
       }
     } finally {
@@ -450,9 +459,17 @@ class RunPod implements Cleaner {
     void this.cancel(job);
   }
 
-  private async cancel(job: string): Promise<void> {
-    await removerCloud.call("DELETE", `/v1/remover/jobs/${job}`).catch(() => {});
+  /** Lets go of this caller's hold on the job (sent twice, a Stop lets go of it once: another caller's hold stays). */
+  private async cancel(job: Held): Promise<void> {
+    const sub = job.sub === undefined ? "" : `?sub=${encodeURIComponent(job.sub)}`;
+    await removerCloud.call("DELETE", `/v1/remover/jobs/${job.id}${sub}`).catch(() => {});
   }
+}
+
+/** A RunPod job and this caller's hold on it (`sub`; a relay from before holds sends none). */
+interface Held {
+  id: string;
+  sub?: string;
 }
 
 const remoteCleaner = new RunPod();
@@ -540,11 +557,13 @@ export function current(project: { media: Media[] }, media: string, from: number
 }
 
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
-async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined): Promise<void> {
+async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined, stands: () => boolean = () => true): Promise<void> {
   const probed = await probe(file);
-  await playing.whenIdle();
+  await playing.whenIdle(() => !stands());
+  // Its plan gone stale meanwhile (a Stop of their text): not laid, here or once the store's turn comes.
+  if (!stands()) return;
   await app.store.update(id, "text removal", (project) => {
-    if (!project.media.some((one) => one.id === footage.id)) return;
+    if (!stands() || !project.media.some((one) => one.id === footage.id)) return;
     // A current-VERSION strip always replaces an older PREV_VERSION strip; only skip if current-VERSION (or legacy Vmake) is already placed.
     const already =
       version === VERSION
@@ -589,10 +608,12 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined, stands: () => boolean = () => true): Promise<void> {
   // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
   // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
-  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf, rangeOf));
+  // `stands`: the plan still stands (text_removal: no Stop of their text since it began), when its turn comes and
+  // after each wait in it.
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => (stands() ? ensureNow(app, id, given, masksOf, rangeOf, stands) : undefined));
   const settledRun = run.catch(() => {});
   ensuring.set(id, settledRun);
   void settledRun.finally(() => {
@@ -603,13 +624,15 @@ export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: Mask
 
 const ensuring = new Map<string, Promise<void>>();
 
-async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf): Promise<void> {
+async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf, stands: () => boolean = () => true): Promise<void> {
   if (!available()) return;
   const live = app.store.get(id);
   if (live === null) return;
   const was = pieces.get(id);
   const mine = new Map<string, InpaintPiece>();
-  pieces.set(id, mine);
+  // Every stretch of the plan is in the map before anything is awaited: one still running that the plan keeps stays
+  // wanted (`work`'s check) while the rest are looked at, instead of being thrown away as stopped.
+  const all: { plan: InpaintPlan; from0: number; to0: number; first: number; frames: number; from: number; to: number; key: string; piece: InpaintPiece }[] = [];
   for (const plan of given) {
     const fps = plan.media.fps || 30;
     for (const [from0, to0] of plan.spans) {
@@ -617,49 +640,56 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       if (frames < 2) continue;
       const [from, to] = [first / fps, (first + frames) / fps];
       const key = keyOf(plan.media.id, from, to);
-      const piece: InpaintPiece = was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
+      const piece: InpaintPiece = mine.get(key) ?? was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
       mine.set(key, piece);
-      const beneath = beneathOf(live.project, plan.media.id, from, to);
-      const strips = beneath.strips;
-      const under = underWith(beneath.under, plan.marks ?? [], from, to);
-      const getRange = () => rangeOf(plan.source, from0, to0);
-      // Fast O(1) path: current-version strips never inspect tracks; legacy v2 strips only check the cached y-range (never expanding per-frame masks).
-      if (current(live.project, plan.media.id, from, to, under, getRange)) {
-        piece.state = "done";
-        continue;
-      }
-      if (piece.state === "queued" || piece.state === "running") continue;
-      // Read, and nothing of theirs for the model in it: no card is rented for it, and it keeps its blur.
-      if (getRange() === null) {
-        piece.state = "done";
-        continue;
-      }
-      if (givenUp(app).has(jobKey(plan.source, from, to))) {
-        piece.state = "failed";
-        piece.why ??= "turned down twice: it stays blurred";
-        continue;
-      }
-      if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
-      // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
-      if (watermarks.pending(id, plan.media.id, from, to)) {
-        piece.state = "waiting";
-        continue;
-      }
-      const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
-      if (kept !== null) {
-        piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange);
-        continue;
-      }
-      // Only expand per-frame masks when we actually need to queue work.
-      const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
-      if (boxes === null) {
-        piece.state = "waiting";
-        continue;
-      }
-      piece.state = "queued";
-      queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
+      all.push({ plan, from0, to0, first, frames, from, to, key, piece });
     }
+  }
+  pieces.set(id, mine);
+  for (const { plan, from0, to0, first, frames, from, to, key, piece } of all) {
+    const fps = plan.media.fps || 30;
+    const beneath = beneathOf(live.project, plan.media.id, from, to);
+    const strips = beneath.strips;
+    const under = underWith(beneath.under, plan.marks ?? [], from, to);
+    const getRange = () => rangeOf(plan.source, from0, to0);
+    // Fast O(1) path: current-version strips never inspect tracks; legacy v2 strips only check the cached y-range (never expanding per-frame masks).
+    if (current(live.project, plan.media.id, from, to, under, getRange)) {
+      piece.state = "done";
+      continue;
+    }
+    if (piece.state === "queued" || piece.state === "running") continue;
+    // Read, and nothing of theirs for the model in it: no card is rented for it, and it keeps its blur.
+    if (getRange() === null) {
+      piece.state = "done";
+      continue;
+    }
+    if (givenUp(app).has(jobKey(plan.source, from, to))) {
+      piece.state = "failed";
+      piece.why ??= "turned down twice: it stays blurred";
+      continue;
+    }
+    if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
+    // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
+    if (watermarks.pending(id, plan.media.id, from, to)) {
+      piece.state = "waiting";
+      continue;
+    }
+    const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
+    if (!stands()) return;
+    if (kept !== null) {
+      piece.state = "done";
+      if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
+      if (!stands()) return;
+      continue;
+    }
+    // Only expand per-frame masks when we actually need to queue work.
+    const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
+    if (boxes === null) {
+      piece.state = "waiting";
+      continue;
+    }
+    piece.state = "queued";
+    queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
   }
   drain();
 }
@@ -681,9 +711,22 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const started = Date.now();
     const inputKey = cloudKeyOf(plan.media);
     const request = { input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath };
+    // The person's Stop while it waited or the still clean ran: no model run is started for it, and nothing it made is laid.
+    const wanted = () => pieces.get(id)?.get(piece.key) === piece;
     // A camera that doesn't move: the room's own picture, free. Anything else goes to the model.
-    const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request) : null;
-    const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, ...request }));
+    const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request, wanted) : null;
+    if (!wanted()) {
+      piece.state = "failed";
+      piece.why = "stopped";
+      return;
+    }
+    const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, wanted, ...request }));
+    // Stopped meanwhile: nothing it made is laid, and no failure is said of it.
+    if (!wanted()) {
+      piece.state = "failed";
+      piece.why = "stopped";
+      return;
+    }
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);

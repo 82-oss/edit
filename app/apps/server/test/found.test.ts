@@ -118,3 +118,14 @@ test("the judge's answer is read out of whatever is round it, unknown words left
   expect(found.readVerdicts("no idea")).toEqual({});
   expect(found.readVerdicts("{not json}")).toEqual({});
 });
+
+test("stretches cleaned from the room's picture at once, by the Mac's memory and cores", () => {
+  const at = (gb: number, cores: number) => found.stillAtOnceFor(gb * 2 ** 30, cores);
+  // An 8 GB M1 Air (kenobi): one. A 16 GB 10-core: five. The 17.2 GB M4: five. Mandalorian (30 GB, 32 threads): eight.
+  expect([at(8, 8), at(16, 10), at(17.2, 10), at(24, 10), at(30, 32), at(4, 4)]).toEqual([1, 5, 5, 5, 8, 1]);
+  // More memory or more cores is never fewer at once.
+  for (const gb of [4, 8, 12, 16, 24, 32, 64]) for (const cores of [4, 8, 10, 16]) {
+    expect(at(gb * 2, cores)).toBeGreaterThanOrEqual(at(gb, cores));
+    expect(at(gb, cores * 2)).toBeGreaterThanOrEqual(at(gb, cores));
+  }
+});

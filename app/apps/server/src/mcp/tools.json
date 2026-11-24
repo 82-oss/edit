@@ -4678,7 +4678,7 @@
     "name": "check_removal"
   },
   {
-    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Their subtitles and text get a blur tracked tight over their words, in every section; their watermarks come out. For a channel taught to take their text out, it's also how you mark it: only stretches you mark are blurred, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal (the blur's with render_frame) as they're done; exports wait for them.",
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Their subtitles and text get a blur tracked tight over their words, in every section; their watermarks come out. For a channel taught to take their text out, it's also how you mark it: only stretches you mark are blurred, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. When the person wants a part stopped (\"stop the watermark removal\"), {stop: true, kinds: [\"watermarks\"]} stops just that, the rest going on (no kinds: all of it); what's done stays, and it starts again only on a new ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal (the blur's with render_frame) as they're done; exports wait for them.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4771,6 +4771,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "stop": {
+          "description": "Stop the parts named in kinds (all of them when none), the rest going on",
+          "type": "boolean"
         }
       },
       "type": "object"

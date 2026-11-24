@@ -1,6 +1,7 @@
 // The RunPod cleaner against a stand-in relay: a stretch started (202), still going (202), then done (200) is a
 // success, not three failures (Nov 20: relay.json took the 202 as a refusal and all 105 of Boyfriends' stretches
-// were left blurred the moment they started); the relay's own refusal ends it.
+// were left blurred the moment they started); the relay's own refusal ends it; a Stop while the job was being sent
+// cancels it once its id comes back.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 
 import * as inpaint from "../src/text_inpaint.ts";
@@ -9,6 +10,9 @@ let server: ReturnType<typeof Bun.serve>;
 const asked: string[] = [];
 let polls = 0;
 let refuse = false;
+let slow = false;
+let shared = false;
+const cancels: string[] = [];
 
 beforeAll(() => {
   server = Bun.serve({
@@ -16,8 +20,13 @@ beforeAll(() => {
     async fetch(request) {
       const url = new URL(request.url);
       asked.push(`${request.method} ${url.pathname}`);
+      if (request.method === "DELETE") cancels.push(url.search);
       if (url.pathname === "/v1/remover/jobs" && request.method === "POST") {
         if (refuse) return Response.json({ error: "Cleaning on RunPod isn't on for this relay." }, { status: 503 });
+        if (slow) {
+          await Bun.sleep(100);
+          return Response.json({ id: "job-slow", out: "edit/cleaned/work/slow.mp4", sub: "hold-1" }, { status: 202 });
+        }
         const body = (await request.json()) as { worker: string; request: { input: string } };
         expect(body.worker.length).toBeGreaterThan(100);
         expect(body.request.input).toBe("edit/originals/test/clip.mp4");
@@ -26,8 +35,9 @@ beforeAll(() => {
       if (url.pathname === "/v1/remover/jobs/job-123456" && request.method === "GET") {
         polls += 1;
         if (polls < 2) return Response.json({ pending: true, status: "IN_PROGRESS" }, { status: 202 });
-        return Response.json({ ok: true, box: null, inferred: 0, seconds: 3 });
+        return Response.json({ ok: true, box: null, inferred: 0, seconds: 3, ...(shared ? { shared: true } : {}) });
       }
+      if (url.pathname === "/v1/remover/jobs/job-slow") return Response.json({ pending: true, status: "IN_QUEUE" }, { status: 202 });
       if (url.pathname === "/v1/cloud/r2/delete") return Response.json({ ok: true, deleted: 1 });
       return Response.json({ error: "not found" }, { status: 404 });
     },
@@ -63,6 +73,35 @@ test("a stretch started and still going (202) then done (200) is cleaned", async
   expect(answer).toEqual({ ok: true, box: null, inferred: 0, seconds: 3 });
   expect(polls).toBe(2);
   expect(asked.filter((one) => one.startsWith("POST /v1/remover/jobs"))).toHaveLength(1);
+});
+
+test("a Stop while the job was being sent cancels it once its id comes back, and nothing more is asked of it", async () => {
+  // Nov 24, the M1 Air: nine of Trooper's stretches were stopped while their jobs were on the way to the relay; with
+  // no id yet the Stop missed them, and each lane kept asking after its job until RunPod's refusal ten minutes later
+  // (a rent would have cleaned, and paid for, stretches nobody wanted), while Hitman's stretches waited for a lane.
+  slow = true;
+  let wanted = true;
+  const going = inpaint.runPodForTests.clean({ ...request, piece: "p1 clean:m1@5000-6000", wanted: () => wanted });
+  await Bun.sleep(20);
+  wanted = false;
+  expect(await going).toEqual({ ok: false, error: "stopped" });
+  expect(asked).toContain("DELETE /v1/remover/jobs/job-slow");
+  // This caller's own hold let go (a Stop sent twice can't take another caller's).
+  expect(cancels).toContain("?sub=hold-1");
+  expect(asked).not.toContain("GET /v1/remover/jobs/job-slow");
+  slow = false;
+});
+
+test("a result another caller shares (the same stretch sent twice) is left on R2 for the relay to take away", async () => {
+  polls = 0;
+  shared = true;
+  const before = asked.filter((one) => one === "POST /v1/cloud/r2/delete").length;
+  expect((await inpaint.runPodForTests.clean(request)).ok).toBe(true);
+  expect(asked.filter((one) => one === "POST /v1/cloud/r2/delete").length).toBe(before);
+  shared = false;
+  polls = 0;
+  expect((await inpaint.runPodForTests.clean(request)).ok).toBe(true);
+  expect(asked.filter((one) => one === "POST /v1/cloud/r2/delete").length).toBe(before + 1);
 });
 
 test("the relay's refusal ends it with its words", async () => {

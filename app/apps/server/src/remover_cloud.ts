@@ -87,10 +87,12 @@ export async function call<T>(method: string, route: string, body?: unknown): Pr
 export interface Started {
   id: string;
   out: string;
+  /** This caller's hold on it (the same job sent twice is one job, held twice); a relay from before holds sends none. */
+  sub?: string;
 }
 
-/** Starts a job of `kind` (the relay's request for it), `worker` for a GPU clean. */
-export async function start(kind: "clean" | "learn" | "watermark" | "track", request: Record<string, unknown>, worker?: string): Promise<Started> {
+/** Starts a job of `kind` (the relay's request for it), `worker` for GPU clean/find jobs. */
+export async function start(kind: "clean" | "learn" | "watermark" | "track" | "find", request: Record<string, unknown>, worker?: string): Promise<Started> {
   return (await call<Started>("POST", "/v1/remover/jobs", { kind, request, ...(worker === undefined ? {} : { worker }) })).value;
 }
 
@@ -101,11 +103,11 @@ export async function wait<T>(job: Started, stopped: () => boolean = () => false
   for (;;) {
     await Bun.sleep(timing.pollMs);
     if (stopped()) {
-      await cancel(job.id);
+      await cancel(job.id, job.sub);
       throw new Error("stopped");
     }
     if (Date.now() - started > timing.deadlineMs) {
-      await cancel(job.id);
+      await cancel(job.id, job.sub);
       throw new Error("the rented machine didn't finish it in 3 hours");
     }
     try {
@@ -119,15 +121,21 @@ export async function wait<T>(job: Started, stopped: () => boolean = () => false
   }
 }
 
-export async function cancel(id: string): Promise<void> {
-  await call("DELETE", `/v1/remover/jobs/${id}`).catch(() => {});
+/** Lets go of this caller's hold on job `id` (`sub`: sent twice, a Stop lets go of it once, and another caller's hold stays). */
+export async function cancel(id: string, sub?: string): Promise<void> {
+  await call("DELETE", `/v1/remover/jobs/${id}${sub === undefined ? "" : `?sub=${encodeURIComponent(sub)}`}`).catch(() => {});
+}
+
+/** A small result left on R2 by a rented machine (JSON or text), read without deleting. */
+async function read(key: string): Promise<string> {
+  const answer = await fetch(await cloud.presign(key, "GET"), { signal: AbortSignal.timeout(120_000) });
+  if (!answer.ok) throw new Error(`the result wasn't on R2 (${answer.status})`);
+  return answer.text();
 }
 
 /** A small result left on R2 by a rented machine (JSON or text), read and then deleted. */
 async function take(key: string): Promise<string> {
-  const answer = await fetch(await cloud.presign(key, "GET"), { signal: AbortSignal.timeout(120_000) });
-  if (!answer.ok) throw new Error(`the result wasn't on R2 (${answer.status})`);
-  const text = await answer.text();
+  const text = await read(key);
   await cloud.remove([key]).catch(() => {});
   return text;
 }
@@ -164,18 +172,20 @@ export function watermarkEngine(key: string) {
   return {
     async learn(_input: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], _progress: (progress: number) => void): Promise<string> {
       const job = await start("learn", { input: key, size, duration, hint, avoid });
-      const answer = await wait<{ ok: boolean; error?: string }>(job);
+      const answer = await wait<{ ok: boolean; error?: string; shared?: boolean }>(job);
       // The engine's own words ("no see-through watermark", …), as from this computer's.
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be learned");
-      return take(job.out);
+      // Another caller's too: the relay takes it away once both had time to read it.
+      return answer.shared === true ? read(job.out) : take(job.out);
     },
-    async remove(piece: WatermarkPiece, _progress: (progress: number) => void): Promise<WatermarkRemoved | null> {
+    async remove(piece: WatermarkPiece, _progress: (progress: number) => void, stopped: () => boolean = () => false): Promise<WatermarkRemoved | null> {
       const model = await modelKey(piece.model);
+      if (stopped()) throw new Error("stopped");
       const job = await start("watermark", { input: key, size: piece.size, fps: piece.fps, from: piece.from, to: piece.to, model, keep: piece.keep });
-      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null }>(job);
+      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null; shared?: boolean }>(job, stopped);
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be taken out");
       if (answer.removed != null) await cloud.download(job.out, piece.out);
-      await cloud.remove([job.out]).catch(() => {});
+      if (answer.shared !== true) await cloud.remove([job.out]).catch(() => {});
       return answer.removed ?? null;
     },
   };
@@ -217,4 +227,38 @@ export async function track(key: string, size: [number, number], fps: number, re
   for (let at = samples.length - 1; at > 0; at--) if (samples[at]!.t === samples[at - 1]!.t) samples.splice(at, 1);
   diag.info("removal", `track ${from.toFixed(1)}–${to.toFixed(1)} s read on rented machines in ${parts.length} part${parts.length === 1 ? "" : "s"} (${samples.length} reads)`);
   return samples;
+}
+
+// ---------------------------------------------------------------------------
+// The finder (captions, labels, marks and notes on rented GPUs)
+
+/** Parent finder state put on R2 for slowed-copy find jobs, by its hash. */
+const parentStatesUp = new Map<string, Promise<string>>();
+
+export async function parentStateKey(stateJson: string): Promise<string> {
+  const hash = createHash("sha256").update(stateJson).digest("hex").slice(0, 32);
+  let up = parentStatesUp.get(hash);
+  if (up === undefined) {
+    up = (async () => {
+      const key = `edit/cleaned/finder/${hash}.json`;
+      if ((await cloud.head(key).catch(() => null)) === null) {
+        const put = await fetch(await cloud.presign(key, "PUT"), { method: "PUT", body: stateJson, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(300_000) });
+        if (!put.ok) throw new Error(`the parent finder state couldn't go up (${put.status})`);
+      }
+      return key;
+    })();
+    up.catch(() => parentStatesUp.delete(hash));
+    parentStatesUp.set(hash, up);
+  }
+  return up;
+}
+
+/** Runs finder `survey` on a rented GPU for a file on R2 and returns its packed SurveyBundle JSON. */
+export async function find<T>(key: string, spans: [number, number][], worker: string, parentKey: string | null = null, stopped: () => boolean = () => false): Promise<T> {
+  const job = await start("find", { input: key, spans, ...(parentKey === null ? {} : { parent: parentKey }) }, worker);
+  const answer = await wait<{ ok: boolean; error?: string; seconds?: number; shared?: boolean }>(job, stopped);
+  if (!answer.ok) throw new Error(answer.error ?? "the finder couldn't read the file");
+  // When another Edit deduplicated onto the same job, leave `job.out` for it (the relay cleans it up after 10 min).
+  const text = answer.shared === true ? await read(job.out) : await take(job.out);
+  return JSON.parse(text) as T;
 }

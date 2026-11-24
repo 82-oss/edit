@@ -24,6 +24,7 @@
 
 import type { App } from "./app.ts";
 import * as background from "./background.ts";
+import * as burned from "./burned_subtitles.ts";
 import { readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -260,6 +261,7 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   await removal.refresh();
   const lesson = removal.lessonOf(project);
   if (args.marks !== undefined || args.unmark !== undefined) return markRemoval(app, projectId, args);
+  if (args.stop === true) return stopRemoval(app, projectId, args);
   const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
   if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');
   // What the person didn't name: the parts taught to wait for an ask, else every part taught.
@@ -303,6 +305,23 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
     `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}, in the background, wherever the footage has them (their subtitles and text under a tight tracked blur, the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
       "Look at pieces with check_removal as they come back (the blur's with render_frame); exports wait for them." +
       (kinds.includes("subtitles") ? " Lay ours with add_subtitles over theirs as usual." : ""),
+  );
+}
+
+/**
+ * start_removal `stop`: the parts the person wants stopped (their watermarks only, say), the rest going on; what's done
+ * is kept. Asked again, a part runs on what that ask names.
+ */
+function stopRemoval(app: App, projectId: string, args: Record<string, unknown>): Content[] {
+  const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
+  if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');
+  const kinds = given.length > 0 ? (given as removal.Kind[]) : [...removal.KINDS];
+  stop(app, projectId, kinds);
+  const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
+  const { out } = progressOf(projectId);
+  return text(
+    `Stopped taking ${kinds.map((kind) => words[kind]).join(", ")} out: nothing more is done there, what's done stays${out > 0 ? `; ${out} piece${out === 1 ? "" : "s"} of the rest still out` : ""}. ` +
+      "It starts again only when someone asks (start_removal on what they point to).",
   );
 }
 
@@ -435,6 +454,13 @@ export function statusOf(app: App, id: string): Status {
   return { background: backgroundOf(id) };
 }
 
+/** The parts named (`kinds`), every part when none are. */
+function kindsOf(given: unknown): removal.Kind[] {
+  if (given === undefined || given === null) return [...removal.KINDS];
+  if (!Array.isArray(given) || given.length === 0 || given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new ApiError(400, 'kinds are "subtitles", "watermarks" and "text"');
+  return given as removal.Kind[];
+}
+
 export function routes(router: Router<App>): void {
   router.get("/api/projects/{id}/text-removal", ({ app, params }) => json(statusOf(app, params.id ?? "")));
   // The chat's waiting row: its Details (every piece, its seconds, how it came out and the check) and its Stop.
@@ -443,10 +469,10 @@ export function routes(router: Router<App>): void {
     if (app.store.get(id) === null) throw new ApiError(404, "no such project");
     return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id) });
   });
-  router.post("/api/projects/{id}/removal/stop", async ({ app, params }) => {
+  router.post("/api/projects/{id}/removal/stop", async ({ app, params, request }) => {
     const id = params.id ?? "";
     if (app.store.get(id) === null) throw new ApiError(404, "no such project");
-    stop(app, id);
+    stop(app, id, kindsOf(((await request.json().catch(() => ({}))) as { kinds?: unknown }).kinds));
     return json(statusOf(app, id));
   });
 }
@@ -521,14 +547,25 @@ export function backgroundOf(id: string): Status["background"] {
   return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now() };
 }
 
-/** The person's Stop: nothing more done (what's done is kept); kept across restarts until someone asks again. */
-export function stop(app: App, id: string): void {
-  asks.setStopped(app.store.home, id, true);
-  watermarkRemoval.stop(id);
-  textBlur.stop(id);
-  textInpaint.stop(id);
-  active.delete(id);
-  diag.info("removal", `${id}: stopped by the person`);
+/**
+ * The person's Stop: nothing more done (what's done is kept); kept across restarts until someone asks again. With
+ * `kinds`, only those parts (start_removal `stop`): their watermarks stopped, say, while their captions go on.
+ */
+export function stop(app: App, id: string, kinds: readonly removal.Kind[] = removal.KINDS): void {
+  const all = removal.KINDS.every((kind) => kinds.includes(kind));
+  if (all) asks.setStopped(app.store.home, id, true);
+  else asks.stopParts(app.store.home, id, [...kinds]);
+  if (kinds.includes("watermarks")) watermarkRemoval.stop(id);
+  if (kinds.includes("subtitles") || kinds.includes("text")) {
+    textRemoval.stopped(id);
+    textBlur.stop(id);
+    textInpaint.stop(id);
+    found.stop(id);
+  }
+  if (all) active.delete(id);
+  diag.info("removal", `${id}: ${all ? "stopped" : `${kinds.join(" and ")} stopped`} by the person`);
+  // What goes on is planned again (a text part stopped alone takes the other's queued pieces with it).
+  if (!all) void ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after a part's Stop: ${diag.messageOf(error)}`));
 }
 
 async function tick(): Promise<void> {
@@ -636,6 +673,7 @@ let wakeGeneration = 0;
 
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
+  burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
