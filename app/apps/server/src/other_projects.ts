@@ -208,11 +208,12 @@ function scriptChat(dir: string): Exchange[] {
       if (open !== null) out.push(open);
       continue;
     }
-    if (open === null || turn.failed === true || turn.text.trim() === "") continue;
+    if (open === null) continue;
+    // Before a failed or empty answer is passed over: one that pulled the notes taints its request, and a retry's answer to it.
     if ((turn.trace ?? []).some((group) => group.calls.some((call) => call.tool === "pull_feedback"))) {
       out.splice(out.indexOf(open), 1);
       open = null;
-    } else if (turn.workedMs !== undefined) open.answer = turn.text;
+    } else if (turn.failed !== true && turn.text.trim() !== "" && turn.workedMs !== undefined) open.answer = turn.text;
   }
   return out;
 }
