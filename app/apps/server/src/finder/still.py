@@ -29,6 +29,10 @@ REACH = 60
 SAMPLES = 5
 # Seconds either side of a stretch its own picture is read from.
 AROUND = 45
+# Share of a stretch's hidden pixels that may be filled with no clear look at the spot (no frame nearby, not this
+# stretch's picture, not one the room's picture can trust): above it the stretch goes to the model, which paints that
+# spot convincingly where a still picture can only lay a smooth patch (Nov 24, Trooper 12:17-17:05).
+BLIND = 0.2
 PAD = 14
 SIBLING_SAMPLES = 800
 
@@ -120,7 +124,11 @@ def captioned(frame, place):
     missed would otherwise win the few looks that spot gets between captions and be laid back in as the room (Nov 24,
     Trooper: one sentence over 17 minutes)."""
     x0, y0, x1, y1 = place
-    return float((cv2.cvtColor(np.ascontiguousarray(frame[y0:y1, x0:x1]), cv2.COLOR_RGB2GRAY) < 40).mean()) >= 0.015
+    if float((cv2.cvtColor(np.ascontiguousarray(frame[y0:y1, x0:x1]), cv2.COLOR_RGB2GRAY) < 40).mean()) >= 0.015:
+        return True
+    # White letters on a soft shadow (no black plate): their strokes (Nov 24, Hitman: an "OK so" the finder never boxed
+    # was kept as a clear frame and laid back on the table at 19:58).
+    return bool(letters(frame, [place], 0, frame.shape[0] / 1080)[0].any())
 
 
 def same_shot(a, b):
@@ -134,7 +142,7 @@ def build_plates(job, found, again=False):
     W, H = int(job["width"]), int(job["height"])
     key = hashlib.sha256(job["key"].encode()).hexdigest()[:24]
     os.makedirs(job["plates"], exist_ok=True)
-    path = os.path.join(job["plates"], f"{key}.v8.npz")
+    path = os.path.join(job["plates"], f"{key}.v9.npz")
     if os.path.exists(path) and not again:
         data = np.load(path)
         return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"], data[f"r{i}"]) for i in range(int(data["n"]))]
@@ -290,7 +298,7 @@ def stretch_plate(job, total, W, H, y0, y1, fps, small, found):
     return shot.plate(False), shot.counts.sum(axis=0) >= 2
 
 
-def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, seen, real):
+def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, seen, real, blind):
     """What goes under the mask: each pixel voted on by the nearest frames with no caption on it, so a person stays as
     they are and something that only passed through doesn't land there; failing that, this stretch's own picture, then
     the room's where it can be trusted; what's left is closed from around it."""
@@ -353,6 +361,8 @@ def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, s
     left = want & (count == 0) & ~known
     # No frame of these seconds shows it: the room as a clear frame had it, never a smooth guess from around it.
     patch[left] = sharp[left]
+    blind[0] += int((left & ~trust[c:d, a:b]).sum())
+    blind[1] += int(want.sum())
     # A line or a speck one frame had (a caption's edge as it slid in, a dotted edge of someone's shoe in the room's picture)
     # is put right from what's round it.
     smooth = cv2.medianBlur(patch, 9)
@@ -440,6 +450,9 @@ def clean(job):
         plate[top - y0:bottom - y0] = cv2.medianBlur(whole, 5)[top - span[0]:bottom - span[0]]
         real = plate.copy()
         real[top - y0:bottom - y0] = cv2.medianBlur(grain, 5)[top - span[0]:bottom - span[0]]
+        # A clear frame only where it is the room: anything it has that the room's picture hasn't (a word, a passer-by) isn't.
+        unlike = np.abs(real.astype(np.int16) - plate.astype(np.int16)).sum(axis=2) > 60
+        real[unlike] = plate[unlike]
         known = np.zeros((rows, W), bool)
         known[top - y0:bottom - y0] = True
         trust = np.zeros((rows, W), bool)
@@ -450,6 +463,7 @@ def clean(job):
         nearby, seen = stretch_plate(job, total, W, H, y0, y1, fps, small, found)
         window, marks, own = [], [], []
         off, checked, written, next_frame, boxed, empty = 0, 0, 0, 0, 0, 0
+        blind = [0, 0]
         none = np.zeros((rows, W), bool)
         out = job["out"]
         strip = worker.Strip(job["ffmpeg"], out, W, rows, fps)
@@ -485,11 +499,11 @@ def clean(job):
                 free = known & ~own[at]
                 gray = free.any() and is_gray(frame, free)
                 if gray:
-                    fill = filled(frame, regraded(plate, frame, free), trust, certain, m, scale, window, own, at, regraded(nearby, frame, free), seen, regraded(real, frame, free))
+                    fill = filled(frame, regraded(plate, frame, free), trust, certain, m, scale, window, own, at, regraded(nearby, frame, free), seen, regraded(real, frame, free), blind)
                 elif free.any() and float((np.abs(frame.astype(np.int16) - plate.astype(np.int16)).sum(axis=2)[free] < 45).mean()) < 0.3:
                     fill = closed_up(frame, m)
                 else:
-                    fill = filled(frame, plate, trust, certain, m, scale, window, own, at, nearby, seen, real)
+                    fill = filled(frame, plate, trust, certain, m, scale, window, own, at, nearby, seen, real, blind)
                 strip.write(fill, worker.alpha_of(m, max(worker.FEATHER, int(round(9 * scale)))))
             written += 1
             if written - off > REACH:
@@ -500,13 +514,16 @@ def clean(job):
             written += 1
         # Boxes with no letters we can see in most of their frames: a style this doesn't know, for the model.
         unread = boxed > 0 and empty / boxed > 0.6
-        if unread or (checked > 0 and job.get("_off", 0) / checked > OFF_PLATE):
+        unseen = blind[1] > 0 and blind[0] / blind[1] > BLIND
+        if unread or unseen or (checked > 0 and job.get("_off", 0) / checked > OFF_PLATE):
             strip.proc.stdin.close()
             strip.proc.wait()
             for one in (out, f"{out}.partial.mp4"):
                 if os.path.exists(one):
                     os.remove(one)
             strip = None
+            if unseen:
+                return {"still": False, "why": f"{round(100 * blind[0] / blind[1])}% of the caption's spot is never seen clear"}
             return {"still": False, "why": f"{empty} of {boxed} captioned frames without letters" if unread else f"{job['_off']} of {checked} looks off the room's picture"}
         strip.finish()
         strip = None
@@ -514,7 +531,7 @@ def clean(job):
         source.close()
         if strip is not None and strip.proc.poll() is None:
             strip.proc.kill()
-    return {"still": True, "box": [0.0, y0 / H, 1.0, y1 / H], "inferred": 0}
+    return {"still": True, "box": [0.0, y0 / H, 1.0, y1 / H], "inferred": 0, "blind": round(blind[0] / max(1, blind[1]), 3)}
 
 
 if __name__ == "__main__":
