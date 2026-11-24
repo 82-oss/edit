@@ -134,11 +134,12 @@ export function add(home: string, id: string, ask: Ask): void {
  * where their text is, not that it's asked for, but marks made after the
  * person's Stop are the agent starting those seconds again (Nov 19).
  */
-const asking = (home: string, id: string, ask: Ask): boolean => ask.mark === undefined || (ask.mark === "add" && isStopped(home, id));
+const asking = (home: string, id: string, ask: Ask, kind?: removal.Kind): boolean =>
+  ask.mark === undefined || (ask.mark === "add" && (isStopped(home, id) || (kind !== undefined && isPartStopped(home, id, kind))));
 
 /** The parts asked for in project `id`. */
 export function askedKinds(home: string, id: string): removal.Kind[] {
-  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => asking(home, id, ask) && ask.kinds.includes(kind) && liveFor(home, id, kind, ask)));
+  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => asking(home, id, ask, kind) && ask.kinds.includes(kind) && liveFor(home, id, kind, ask)));
 }
 
 /** The footage files named in what was asked since the Stop (not the whole project). */
@@ -176,7 +177,7 @@ export function scope(lesson: removal.Lesson | null, home: string, id: string, k
   if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id) && !isPartStopped(home, id, kind)) return shown;
   const out: Spans = [];
   for (const ask of liveAsks(home, id)) {
-    if (!asking(home, id, ask) || !ask.kinds.includes(kind) || !liveFor(home, id, kind, ask)) continue;
+    if (!asking(home, id, ask, kind) || !ask.kinds.includes(kind) || !liveFor(home, id, kind, ask)) continue;
     const given = ask.media === "all" ? "all" : ask.media[media];
     if (given === undefined) continue;
     out.push(...(given === "all" ? shown : intersect(shown, given)));

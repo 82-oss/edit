@@ -357,7 +357,6 @@ export function textOf(media: Media, camera: Box[], lesson: removal.Lesson | nul
 }
 
 export const lessonOf = removal.lessonOf;
-burned.theirs.takenOut = (project) => lessonOf(project)?.remove.subtitles === true;
 
 /** The camera's own text in a file, from the words read off it (no new reads; a bar needs its frames: `stampOf`). */
 function cameraFromReads(media: Media, bar: Bar | null): Box[] {
@@ -377,6 +376,20 @@ export async function stampOf(app: App, media: Media, input: string): Promise<Bo
     if (region !== null) boxes.push(region);
   }
   return boxes;
+}
+
+/**
+ * Whether removal takes their subtitles out of `one`'s frames: the part runs there by itself, or was asked for those
+ * seconds of that file (a Stop, an ask's place and a part stopped alone all count, as for what's planned).
+ */
+export function theirsTakenOut(app: App, project: Project, one: Pick<burned.Shown, "clip" | "start" | "end">): boolean {
+  const clip = project.clips.find((own) => own.id === one.clip);
+  if (clip === undefined || clip.type !== "video" || !(clip.speed > 0)) return false;
+  const fps = fpsOf(project);
+  const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
+  const span: [number, number] = [at(one.start), at(one.end)];
+  const covered = asks.scope(lessonOf(project), app.store.home, project.id, "subtitles", clip.media, [span]);
+  return sections.minus([span], covered).every(([a, b]) => b - a < 0.05);
 }
 
 /** The lesson as it applies to `project` now (its parts that run by themselves, and those asked for: removal_asks.ts). */
