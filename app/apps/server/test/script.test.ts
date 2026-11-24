@@ -10,6 +10,7 @@ import {
   align,
   clock,
   confirmLink,
+  cut as cutExcerpt,
   cueWords,
   dispositionName,
   docId,
@@ -44,6 +45,8 @@ import { scratch } from "./helpers/home.ts";
 import { media, project as newProject, stubNative } from "./helpers/model.ts";
 import type { Word } from "../src/transcribe.ts";
 import { THIS_MACHINE } from "../src/machine.ts";
+import * as failure from "../src/failure.ts";
+import * as diag from "../src/diag.ts";
 
 const DOC = `<html><head><title>Kent crash</title><style>.c1{color:red}</style></head><body>
 <p><span>Kent crash</span></p><p><span>Total Duration: 27m</span></p>
@@ -140,6 +143,116 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
       cleanup();
     }
   },
+);
+
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "an_asf_bodycam_file_cuts_into_excerpts_as_long_as_asked",
+  async () => {
+    // Nov 24, JJ's H.264 + AAC .asf bodycam files: cut back into ASF, each excerpt read 1 to 2 s long and was refused.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-asf");
+    try {
+      const source = `${dir}/Brent Griffin 2024-04-22_16_25_31_709.asf`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      const [cut] = await excerpts(source, [[40, 70]]);
+      expect(cut!.path.endsWith(".mp4")).toBe(true);
+      const seconds = await durationOf(cut!.path);
+      expect(Math.abs(seconds - (cut!.to - cut!.from))).toBeLessThan(0.5);
+    } finally {
+      cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "a_windows_media_video_asf_file_cuts_into_an_mp4_it_encodes",
+  async () => {
+    // MP4 can't hold WMV2 as it is: its picture is encoded into the excerpt instead of the cut failing.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-wmv");
+    try {
+      const source = `${dir}/Old camera.wmv`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "wmv2", "-g", "60", "-c:a", "wmav2", "-shortest", "-f", "asf", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      const [cut] = await excerpts(source, [[40, 70]]);
+      expect(cut!.path.endsWith(".mp4")).toBe(true);
+      const seconds = await durationOf(cut!.path);
+      expect(Math.abs(seconds - (cut!.to - cut!.from))).toBeLessThan(0.5);
+      const codecOf = (path: string) =>
+        Bun.spawnSync([Bun.which("ffprobe")!, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path]).stdout.toString().trim();
+      expect(codecOf(cut!.path)).toBe("h264");
+      // The same from the cloud's address (its key ends in the original's name), as when its download here failed.
+      const server = Bun.serve({ port: 0, fetch: () => new Response(Bun.file(source)) });
+      try {
+        const out = `${dir}/from-address.mp4`;
+        await cutExcerpt(`http://127.0.0.1:${server.port}/edit/originals/sha256/abc/Old%20camera.wmv?X-Amz-Signature=1`, cut!.from, cut!.to, out);
+        expect(codecOf(out)).toBe("h264");
+      } finally {
+        void server.stop(true);
+      }
+    } finally {
+      cleanup();
+    }
+  },
+  60_000,
+);
+
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "a_copied_cut_that_comes_out_wrong_is_cut_again_encoded_and_one_still_wrong_stops",
+  async () => {
+    // Nov 24, JJ's ASF files: a copied cut read a second long, was refused, and the whole file came down again on every
+    // retry. From a file here the cut is made again with its picture encoded; one still wrong is wrong every time.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-again");
+    try {
+      const source = `${dir}/bodycam.asf`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      // Copied into ASF or MKV it reads 2 s long (ASF's preroll); encoded, both come out right.
+      for (const out of [`${dir}/again.asf`, `${dir}/again.mkv`]) {
+        await cutExcerpt(source, 40, 76, out);
+        expect(Math.abs((await durationOf(out)) - 36)).toBeLessThan(0.5);
+      }
+      // A file whose index promises more than it holds: no cut of 60-90 s reads back, copied or encoded. A length that
+      // couldn't be read may be a probe out of time on a loaded Mac, so it isn't taken as wrong every time: it passes.
+      const whole = `${dir}/whole.mp4`;
+      expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", source, "-c", "copy", "-movflags", "+faststart", whole]).exitCode).toBe(0);
+      const short = `${dir}/short.mp4`;
+      fs.writeFileSync(short, fs.readFileSync(whole).subarray(0, Math.floor(fs.statSync(whole).size * 0.4)));
+      const unread = await cutExcerpt(short, 60, 90, `${dir}/never.mp4`).then(() => null, (thrown: unknown) => thrown);
+      expect(unread).not.toBeInstanceOf(failure.SameEveryTime);
+      expect(diag.messageOf(unread)).toContain("can't be read back");
+      expect(failure.kindOf(unread)).toBe("passing");
+      expect(fs.existsSync(`${dir}/never.mp4`)).toBe(false);
+      // Sound whose cut is measured short every time (AAC in a .wav, Nov 1's 911 call) is broken, from its words too.
+      const call = `${dir}/call.wav`;
+      expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000:duration=30", "-ac", "2", "-c:a", "pcm_mulaw", call]).exitCode).toBe(0);
+      const wrong = await cutExcerpt(call, 0, 20, `${dir}/wrong.wav`).then(() => null, (thrown: unknown) => thrown);
+      expect(wrong).toBeInstanceOf(failure.SameEveryTime);
+      expect(failure.kindOf(wrong)).toBe("broken");
+      expect(failure.kindOf(diag.messageOf(wrong))).toBe("broken");
+    } finally {
+      cleanup();
+    }
+  },
+  60_000,
 );
 
 test("lays_out_footage_and_cut_ins_in_order", () => {
@@ -661,6 +774,8 @@ test("a script's heading names its kind of video, as Writer heads them", () => {
 test("excerpts_of_dvd_and_webm_files_are_mp4", () => {
   expect(excerptExtension("VOB")).toBe("mp4");
   expect(excerptExtension("webm")).toBe("mp4");
+  expect(excerptExtension("ASF")).toBe("mp4");
+  expect(excerptExtension("wmv")).toBe("mp4");
   expect(excerptExtension("mov")).toBe("mov");
   expect(excerptExtension("mp4")).toBe("mp4");
   // Sound alone: the cut's AAC goes in an M4A, never a container that can't hold it (a 911 call's .wav, Nov 1).
