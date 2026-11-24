@@ -98,7 +98,7 @@ export function chosen(lessons: readonly Pick<Skill, "name" | "text">[], picked:
 const plain = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/gu, " ").trim();
 
 /** Words just before a style's name that turn it away ("not Documentary", "instead of the old one"). */
-const TURNED_AWAY = /\b(not|no|never|without|instead of|rather than|except|than|don t use|dont use|drop|stop using|away from|not the)( the| a| our| that| this| its)?\s*$/u;
+const TURNED_AWAY = /\b(not|no|never|without|instead of|rather than|except|than|drop|avoid|skip|stop using|away from|no more|((do|does|did|should|would|could) not|don t|dont|doesn t|won t|never|not) (use|using|go with|want|write in|write it in|do|pick|choose)( it)?( in)?)( the| a| our| that| this| its| any)?\s*$/u;
 
 /**
  * The style a note asks for by its title or name ("…in the Dr Insanity style"), or null: a style named only to be

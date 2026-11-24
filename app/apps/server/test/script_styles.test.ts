@@ -66,6 +66,8 @@ test("a build note names a style by its title or its name", () => {
   expect(styles.namedIn(both, "Use Classic, not Dr Insanity")?.name).toBe("style-classic");
   expect(styles.namedIn(both, "rather than the Dr Insanity style, keep it classic")?.name).toBe("style-classic");
   expect(styles.namedIn(both, "mix Dr Insanity and Classic")).toBeNull();
+  for (const note of ["Do not use Dr Insanity", "don't use the Dr Insanity style", "avoid Dr Insanity here", "we don't want Dr Insanity", "never write in the Dr Insanity style"]) expect(styles.namedIn(both, note)).toBeNull();
+  expect(styles.namedIn(both, "Do not use Dr Insanity, use Classic")?.name).toBe("style-classic");
   const nested = [lesson("style-dry", styles.compose("Dry", "Flat.", [])), lesson("style-dry-wit", styles.compose("Dry Wit", "Flat, with jokes.", []))];
   expect(styles.namedIn(nested, "in the dry wit style")?.name).toBe("style-dry-wit");
   // Each said on its own: two, so none.
