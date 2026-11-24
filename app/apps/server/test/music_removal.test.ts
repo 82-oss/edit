@@ -116,6 +116,20 @@ test("undo returns the span to the cleaned sound with no crossfade left", () => 
   expect(project.clips.filter((one) => one.type === "video").map((one) => [one.start, one.duration])).toEqual([[0, 1800]]);
 });
 
+test("two clips that happen to match are never joined into one: each shakes as its own take", () => {
+  const project = edit();
+  const first = audio(project)[0]!;
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  first.duration = 300;
+  picture.duration = 300;
+  // The second pair carries straight on in the source, at the same level: only its ids say it's another clip.
+  project.clips.push(clip({ id: "pic2", type: "video", track: picture.track, media: "m1", start: 300, duration: 300, source_in: 20, speed: 1, link: "l2" }));
+  project.clips.push(clip({ id: "snd2", type: "audio", track: first.track, media: "m2", start: 300, duration: 300, source_in: 20, speed: 1, volume_db: 0, link: "l2" }));
+  applyBringBack(project, 300, 330, 6, false);
+  applyBringBack(project, 300, 330, 6, true);
+  expect(project.clips.filter((one) => one.type === "video").map((one) => [one.id, one.start, one.duration]).sort()).toEqual([["pic", 0, 300], ["pic2", 300, 300]]);
+});
+
 test("a real cut next to the piece is never joined", () => {
   const project = edit();
   const snd = audio(project)[0]!;
@@ -486,6 +500,19 @@ test.skipIf(Bun.which("ffmpeg") === null)("a piece laid between what's already c
     };
     const level = measure(`${dir}/piece.mp3`, 0, 5, "max");
     const steady = measure(`${dir}/out.flac`, 1, 3, "mean");
+    // Across each join, sample by sample: no stretch of silence (a 300 Hz tone is near nothing for under a sample at a time).
+    const longestQuiet = (file: string, from: number, to: number) => {
+      const raw = Bun.spawnSync([ffmpeg(), "-v", "error", "-ss", String(from), "-t", String(to - from), "-i", file, "-f", "f32le", "-ac", "1", "-"]).stdout;
+      const samples = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
+      let longest = 0;
+      let run = 0;
+      for (const sample of samples) {
+        run = Math.abs(sample) < 1e-4 ? run + 1 : 0;
+        longest = Math.max(longest, run);
+      }
+      return longest;
+    };
+    for (const join of [4, 6]) expect(longestQuiet(`${dir}/out.flac`, join - 0.05, join + 0.05)).toBeLessThan(10);
     // The same level before, across the joins at 4 s and 6 s, between and after: summed, about 6 dB louder; a gap, quieter.
     for (const [from, to] of [[1, 3], [3.95, 4.05], [4.5, 5.5], [5.95, 6.05], [7, 9.5]] as const) {
       expect(Math.abs(measure(`${dir}/out.flac`, from, to, "max") - level)).toBeLessThan(1);

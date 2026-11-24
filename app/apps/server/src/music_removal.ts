@@ -449,6 +449,8 @@ const playback = (clip: Clip) => stableStringify(Object.fromEntries(Object.entri
 
 /** Whether `after` is the same take carrying on from `before`, nothing to tell them apart at the seam. */
 function sameTake(project: Project, before: Clip, after: Clip): boolean {
+  // Parts of one clip only (partId): two clips the person cut apart shake and glitch apart (the engine seeds by take), so stay apart.
+  if (before.id.split("~")[0] !== after.id.split("~")[0]) return false;
   // A text's right part had its entrance taken off by the split (splitLinked): the same text.
   const entered = before.type === "text" && after.type === "text" && after.animation.preset === "none" && before.animation.preset !== "words" && before.animation.preset !== "word" ? { ...after, animation: before.animation } : after;
   if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || before.type !== after.type || playback(before) !== playback(entered)) return false;
