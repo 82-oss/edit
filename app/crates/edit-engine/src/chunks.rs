@@ -970,11 +970,26 @@ mod tests {
             .map(|_| ("m9", "https://r2.example/edit/exports/render.mp4?sig=2"))
             .collect();
         let (one, two) = (cut_project(&first), cut_project(&again));
-        let before = split(&one, &whole(&one), "s", &named(&[("m1", "effect:subs:abc")]));
-        let after = split(&two, &whole(&two), "s", &named(&[("m9", "effect:subs:abc")]));
+        let before = split(
+            &one,
+            &whole(&one),
+            "s",
+            &named(&[("m1", "effect:subs:abc")]),
+        );
+        let after = split(
+            &two,
+            &whole(&two),
+            "s",
+            &named(&[("m9", "effect:subs:abc")]),
+        );
         assert_eq!(before, after);
         // Named differently it's another picture, whatever its file.
-        let changed = split(&one, &whole(&one), "s", &named(&[("m1", "effect:subs:def")]));
+        let changed = split(
+            &one,
+            &whole(&one),
+            "s",
+            &named(&[("m1", "effect:subs:def")]),
+        );
         assert!(before.iter().all(|chunk| !changed.contains(chunk)));
     }
 
@@ -989,7 +1004,10 @@ mod tests {
         let after = split(&two, &whole(&two), "s", &contents);
         let changed_at = 50 * 300;
         // A chunk ending right at the change is decided by the changed frame's hash.
-        let early: Vec<&Chunk> = before.iter().filter(|chunk| chunk.end < changed_at).collect();
+        let early: Vec<&Chunk> = before
+            .iter()
+            .filter(|chunk| chunk.end < changed_at)
+            .collect();
         assert!(!early.is_empty());
         assert!(early.iter().all(|chunk| after.contains(chunk)));
         assert_ne!(before, after);
