@@ -68,6 +68,42 @@ describe.skipIf(real === null)("a script and its edit, kept in step", () => {
     expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
   });
 
+  /** A sound-only recording laid out from `given`, its music removed, and 4–6 s of its first range brought back. */
+  function cleanedCall(given: Script): [Project, Script] {
+    const project = newProject("edit");
+    project.media.push(media({ id: "m1", name: "Call.mp3", path: "/call.mp3", kind: "audio", duration: 60, has_audio: true }));
+    project.script = { source: "writer:s1", blocks: toParsed(given as unknown as WriterScript).blocks.map((block) => (block.kind === "footage" ? { ...block, media: "m1" } : block)) };
+    layOut(project);
+    const link = linkOf("p", given);
+    link.clips = link.clips.map((kept) => ({ ...kept, edit: editSide(project, kept.id)! }));
+    given.edit = link;
+    project.media.push(media({ id: "m9", name: "Call (music removed 1).flac", path: "/call-clean.flac", kind: "audio", duration: 60, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 60]] })] }));
+    for (const clip of project.clips) if (clip.type === "audio" && clip.media === "m1") clip.media = "m9";
+    applyBringBack(project, 120, 180, 6, false);
+    return [project, given];
+  }
+
+  test("a range of a cleaned recording trimmed at its start past its first piece loses that time, all of it", () => {
+    const [project, given] = cleanedCall(script());
+    const now = structuredClone(given);
+    now.clips[0]!.startMs = 5_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    expect(editSide(project, "a")).toEqual({ head: 5, tail: 10, text: null });
+    const heard = project.clips.filter((clip) => clip.type === "audio" && clip.start < 150 + 1);
+    expect(heard.reduce((sum, clip) => sum + Math.min(clip.duration, 150 - clip.start), 0)).toBe(150);
+  });
+
+  test("two ranges of one recording back to back stay two, though one file plays through both", () => {
+    const given = script();
+    given.clips = [
+      { id: "a", startMs: 0, endMs: 10_000 },
+      { id: "b", startMs: 10_000, endMs: 20_000 },
+    ] as Script["clips"];
+    const [project] = cleanedCall(given);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    expect(editSide(project, "b")).toEqual({ head: 10, tail: 20, text: null });
+  });
+
   test("a range trimmed in the script loses that time on every track; one lengthened gains it", () => {
     const [project, given] = made();
     const now = structuredClone(given);

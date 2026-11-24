@@ -99,6 +99,8 @@ function fileSpan(project: Project, block: ScriptBlock, clip: Played): [number, 
 function run(project: Project, block: ScriptBlock): Played[] {
   if (block.kind !== "footage") return [];
   const others = new Set((project.script?.blocks ?? []).flatMap((other) => (other !== block && other.clip ? [other.clip] : [])));
+  // Another block's sound: the sound linked to its card (two ranges of one recording can sit back to back).
+  const otherLinks = new Set([...others].flatMap((id) => clipOf(project, id)?.link ?? []));
   const card = block.clip ? clipOf(project, block.clip) : undefined;
   const first = card?.type === "video" ? card : card?.link ? project.clips.find((clip): clip is Played => clip.type === "audio" && clip.link === card.link) : undefined;
   if (first !== undefined && (first.type === "video" || first.type === "audio")) {
@@ -106,7 +108,7 @@ function run(project: Project, block: ScriptBlock): Played[] {
     const pieces: Played[] = [first];
     for (const clip of same) {
       const last = pieces[pieces.length - 1]!;
-      if (others.has(clip.id) || clip.start - clipEnd(last) > 1 || clip.source_in < last.source_in) break;
+      if (others.has(clip.id) || (clip.link !== undefined && otherLinks.has(clip.link)) || clip.start - clipEnd(last) > 1 || clip.source_in < last.source_in) break;
       pieces.push(clip);
     }
     return pieces;
@@ -225,12 +227,14 @@ export function applyToEdit(project: Project, given: WriterScript, change: Chang
       if (moveTail > 0) insertTime(project, end, by, new Set(linked(project, tail)), new Set());
       else cutTime(project, Math.max(end - by, tailRun[0]!.start), end);
     }
-    const head = run(project, first)[0];
+    const headRun = run(project, first);
+    const head = headRun[0];
     const moveHead = (clip.startMs - kept.startMs) / 1000;
     if (head !== undefined && moveHead !== 0) {
       const by = frames(Math.max(moveHead, -head.source_in) / head.speed);
       if (moveHead < 0) insertTime(project, head.start, by, new Set(), new Set(linked(project, head)));
-      else cutTime(project, head.start, Math.min(head.start + by, clipEnd(head)));
+      // As far as the trim goes through the range's pieces (music removal cuts a recording into several), no further.
+      else cutTime(project, head.start, Math.min(head.start + by, clipEnd(headRun.at(-1)!)));
     }
     // The script's times, as the edit's script shows them.
     const now = blocksOf(project, kept.id);

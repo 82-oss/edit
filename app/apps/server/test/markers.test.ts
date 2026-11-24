@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import { addTimeline, edit, frames, listing, times } from "../src/markers.ts";
+import { cleanedMarker } from "../src/music_removed.ts";
 import type { Project } from "../src/model.ts";
 import { findAddon, native, wrap, type Native } from "../src/native/index.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
@@ -76,4 +77,14 @@ test.skipIf(findAddon() === null)("ripples_carry_timeline_markers", () => {
   const real = wrap(require(findAddon()!) as Native);
   const cut = real.removeTime({ json: JSON.stringify(p) }, 0, 60);
   expect((JSON.parse(cut.json) as Project).markers![0]!.frame).toBe(640);
+});
+
+test("a marker shows where its file plays, through a copy with its music removed too, and one on the copy stays", () => {
+  const p = project();
+  p.media.push(media({ id: "m2", name: "bodycam (music removed 1).flac", path: "/b.flac", kind: "audio", duration: 600, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 600]] })] }));
+  // Only the cleaned sound plays 50 s of the bodycam from 300 s, at frame 1200.
+  p.clips.push(clip({ id: "a1", track: "a1", type: "audio", media: "m2", source_in: 300, start: 1200, duration: 1500, volume_db: 0 }));
+  edit(p, { add: [{ name: "radio call", media: "m1", time: 310 }, { name: "heard through the copy", media: "m2", time: 320 }] });
+  expect(frames(p, "radio call")).toEqual([1500]);
+  expect(frames(p, "heard through the copy")).toEqual([1800]);
 });
