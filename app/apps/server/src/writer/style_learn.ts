@@ -373,6 +373,8 @@ export const hooks = {
       signal.throwIfAborted();
       stage("Hearing the video");
       await transcribe.run(sound.path, heard);
+      // Stopped while it was heard: nothing more is done for it (the hearing itself can't be cut short; what it kept stays for next time).
+      signal.throwIfAborted();
       const words = kept();
       if (words !== null) return [words, true];
     } catch (error) {
