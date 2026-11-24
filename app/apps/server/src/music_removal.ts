@@ -326,6 +326,15 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
   return [paidSeconds, changed];
 }
 
+/** A free id for a part cut off `id`: `<the take's first id>~<n>`. */
+function partId(project: Project, id: string): string {
+  const take = id.split("~")[0]!;
+  for (let n = 1; ; n++) {
+    const candidate = `${take}~${n}`;
+    if (!project.clips.some((clip) => clip.id === candidate || clip.link === candidate) && !project.tracks.some((track) => track.id === candidate) && !project.media.some((media) => media.id === candidate)) return candidate;
+  }
+}
+
 /** What a cut at `frame` through `clip` cuts (splitLinked): it, what's linked to it and what follows it, all crossing the frame. */
 function cutWith(project: Project, clip: Clip, frame: number): Clip[] {
   const crosses = (one: Clip) => one.start < frame && clipEnd(one) > frame;
@@ -356,7 +365,8 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
   for (const one of group) {
     const offset = frame - one.start;
     const right = structuredClone(one);
-    right.id = freshId(project, "c");
+    // Named after the clip it's cut from (<id>~<n>): the engine shakes and glitches a take by its first id, so the picture moves on as it did.
+    right.id = partId(project, one.id);
     right.start = frame;
     right.duration = one.duration - offset;
     right.fade_in = 0;

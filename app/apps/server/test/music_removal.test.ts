@@ -253,6 +253,14 @@ test("only what the cut goes through moves an edge: a music bed fading in under 
   expect(project.clips.find((one) => one.id === "bed")!.duration).toBe(1800);
 });
 
+test("a part cut off a clip is named after it, so it shakes as the clip did", () => {
+  const project = edit();
+  applyBringBack(project, 300, 330, 6, false);
+  applyBringBack(project, 600, 630, 6, false);
+  const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
+  expect(pictures.map((one) => one.id)).toEqual(["pic", "pic~1", "pic~2", "pic~3", "pic~4"]);
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;

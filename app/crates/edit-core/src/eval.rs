@@ -271,8 +271,9 @@ pub fn evaluate(project: &Project, frame: i64) -> Scene {
                             / 1080.0,
                         slices: glitch.slices.max(1.0),
                         rgb: glitch.rgb,
-                        seed: ((seed_of(&clip.id) ^ (frame as u32).wrapping_mul(0x9E37_79B9)) % 997)
-                            as f32,
+                        seed: ((seed_of(take_of(&clip.id))
+                            ^ (frame as u32).wrapping_mul(0x9E37_79B9))
+                            % 997) as f32,
                     },
                     blur: follow.blur(Blur {
                         radius: anim("blur", blur.radius).max(0.0),
@@ -285,7 +286,7 @@ pub fn evaluate(project: &Project, frame: i64) -> Scene {
                         mosaic: blur.mosaic.max(0.0),
                     }),
                     shake: shake_offset(
-                        &clip.id,
+                        take_of(&clip.id),
                         &ShakeSettings { amount, ..settings },
                         ShakeTime {
                             seconds,
@@ -448,6 +449,12 @@ fn capitals(text: &str) -> String {
         .collect()
 }
 
+/// The take a clip's id names: a part split off a clip is `<id>~<n>`
+/// (music removal's cuts), and shakes the same as the clip it came from.
+fn take_of(id: &str) -> &str {
+    id.split('~').next().unwrap_or(id)
+}
+
 fn seed_of(text: &str) -> u32 {
     text.bytes().fold(2166136261_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(16777619)
@@ -599,7 +606,7 @@ fn moved(clip: &Clip, transform: &Transform, frame: i64, fps: f64) -> Transform 
     let anim = |param: &str, base: f32| animated(clip, param, local, base);
     let shake = anim("shake", transform.shake);
     let [dx, dy, turn] = if shake > 0.0 {
-        wobble(&clip.id, frame as f32 / fps as f32)
+        wobble(take_of(&clip.id), frame as f32 / fps as f32)
     } else {
         [0.0; 3]
     };
@@ -1964,6 +1971,9 @@ mod tests {
 
     #[test]
     fn shake_wanders_smoothly_within_its_amount() {
+        // A part split off a clip shakes as the clip did: the same take.
+        assert_eq!(wobble(take_of("c1~2"), 1.0), wobble("c1", 1.0));
+        assert_eq!(take_of("c1"), "c1");
         let mut last = wobble("c1", 0.0);
         for step in 1..300 {
             let now = wobble("c1", step as f32 / 30.0);
