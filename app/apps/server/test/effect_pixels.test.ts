@@ -56,12 +56,25 @@ function read() {
 window.seek = async () => { let p; try { p = read(); } catch (e) { p = [0, 0, 255]; } out.fillStyle = "rgb(" + p[0] + "," + p[1] + "," + p[2] + ")"; out.fillRect(0, 0, 1920, 1080); };
 </script></body>`;
 
-/** Green when this browser plays the footage at all (its first frame within 8 s), magenta when it doesn't (the Check's Mac, a VM: its video never loads). */
+/**
+ * Green when this browser plays the footage (a frame seeked to within 8 s and read back as the footage's red), magenta
+ * when it doesn't: the Check's Mac, a VM, mostly never loads a video, and sometimes loads it and decodes black frames
+ * (Nov 24: #4's and main's Checks failed "Expected < 10, Received 200" on red).
+ */
 const PLAYS = `<!doctype html><body style="margin:0;background:#000"><video id="v" src="shot.mp4" muted playsinline style="display:none"></video>
 <canvas id="c" width="1920" height="1080" style="position:absolute;inset:0"></canvas><script>
 let ok = false; const v = document.getElementById("v");
 window.duration = 1;
-window.ready = new Promise((resolve) => { v.addEventListener("loadeddata", () => { ok = true; resolve(); }, { once: true }); setTimeout(resolve, 8000); });
+window.ready = new Promise((resolve) => {
+  v.addEventListener("loadeddata", () => {
+    v.addEventListener("seeked", () => {
+      try { const c = document.createElement("canvas"); c.width = 64; c.height = 36; const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(v, 0, 0, 64, 36); const p = x.getImageData(32, 18, 1, 1).data; ok = p[0] > 150 && p[1] < 100; } catch (e) {}
+      resolve();
+    }, { once: true });
+    v.currentTime = 0.5;
+  }, { once: true });
+  setTimeout(resolve, 8000);
+});
 window.seek = async () => { const out = document.getElementById("c").getContext("2d"); out.fillStyle = ok ? "rgb(0,255,0)" : "rgb(255,0,255)"; out.fillRect(0, 0, 1920, 1080); };
 </script></body>`;
 
