@@ -2679,7 +2679,9 @@ export async function excerptProblem(source: string, start: number, to: number, 
   if (got >= asked - leeway) return null;
   // Shorter than asked is right only when the footage itself ends sooner.
   const whole = await secondsOf(source);
-  if (whole !== null && whole - start <= got + leeway) return null;
+  // The footage's own length unread (perhaps a probe out of time) decides nothing: never a length measured wrong.
+  if (whole === null) return UNREADABLE;
+  if (whole - start <= got + leeway) return null;
   return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
 }
 
