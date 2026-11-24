@@ -127,10 +127,11 @@ const MARKED_LEAST = 300;
  */
 export function split(text: string): [string, string] {
   const whole = text.trim();
+  // Links are left out only to measure: what's pasted keeps them (a script's own citations are part of it).
   if (withoutLinks(whole).length < PASTED) {
     const [head, ...rest] = whole.split(/\n\s*\n|\n/u);
-    const after = withoutLinks(whole.slice(head!.length));
-    return head !== undefined && rest.length > 0 && ASKS.test(head) && MARKED.test(head) && after.length >= MARKED_LEAST ? [head.trim(), after] : [whole, ""];
+    const after = whole.slice(head!.length).trim();
+    return head !== undefined && rest.length > 0 && ASKS.test(head) && MARKED.test(head) && withoutLinks(after).length >= MARKED_LEAST ? [head.trim(), after] : [whole, ""];
   }
   const paragraphs = whole.split(/\n\s*\n/u);
   const units = paragraphs.length > 1 ? paragraphs : whole.split("\n");
@@ -140,9 +141,12 @@ export function split(text: string): [string, string] {
   const last = units.length > 2 && units.at(-1)!.length <= 400 ? units.length - 1 : null;
   let taken = [first, last].filter((at): at is number => at !== null && asks(units[at]!));
   if (taken.length === 0 && first !== null) taken = [first];
-  const pasted = withoutLinks(join(units.filter((_, at) => !taken.includes(at))));
-  // One long paragraph: its start is the ask.
-  if (pasted.length < PASTED) return [`${whole.slice(0, 300)}…`, withoutLinks(whole)];
+  const pasted = join(units.filter((_, at) => !taken.includes(at))).trim();
+  // One long paragraph, ask and script in one: its start is said as the ask, with every link in it (references and the producer's words are never lost).
+  if (taken.length === 0 || withoutLinks(pasted).length < PASTED) {
+    const linked = [...new Set(whole.match(URL_IN_TEXT) ?? [])];
+    return [`${whole.slice(0, 300)}…${linked.length > 0 ? `\n(its links: ${linked.join(" ")})` : ""}`, whole];
+  }
   return [taken.map((at) => units[at]!.trim()).join("\n"), pasted];
 }
 

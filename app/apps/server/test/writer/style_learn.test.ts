@@ -48,11 +48,16 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   expect(learn.mayAsk(`${lines}\nThat's a Dr Insanity script: write ours in this style.`)).toBe(true);
   expect(learn.mayAsk(`${lines}\nTighten the intro.`)).toBe(false);
   expect(learn.split(`Pick up the style: ${pasted}`)[1]).toContain("Pick up the style");
+  // One long paragraph keeps its link as a reference and its words for the learner.
+  const oneParagraph = learn.referencesIn(`Pick up the style of ${pasted} and also this one https://youtu.be/5kFYKil24A0`);
+  expect(oneParagraph.references.map((one) => one.kind)).toEqual(["text", "video"]);
+  expect(oneParagraph.words).toContain("Pick up the style of");
   // A pasted script's own citations stay in it, never references of their own.
   const cited = Array.from({ length: 30 }, (_, at) => `Line ${at}: the detective leans in (https://news.example/${at}).`).join("\n");
   const withCites = learn.referencesIn(`Learn the style from this script:\n\n${cited}`);
   expect(withCites.references).toHaveLength(1);
   expect(withCites.references[0]!.kind).toBe("text");
+  expect((withCites.references[0] as { text: string }).text).toContain("https://news.example/3");
   // A short script marked as following the ask is taken as one.
   const short = Array.from({ length: 10 }, (_, at) => `Line ${at}: the detective leans in and waits.`).join("\n");
   expect(learn.split(`Learn the writing style from the script below:\n${short}`)).toEqual(["Learn the writing style from the script below:", short]);
