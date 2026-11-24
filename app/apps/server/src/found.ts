@@ -187,8 +187,8 @@ export async function stillClean(app: App, source: string, media: Media[], reque
       return input === null ? null : { input, input_args: tools.urlArgs(input), found: fileOf(app, one.cloud!.source!) };
     }),
   );
+  // It holds signed links to the originals: this user's only. Written inside the try, so a full disk still leaves the model.
   const file = `${request.out}.job.json`;
-  fs.writeFileSync(file, JSON.stringify({ ...request, ffmpeg: tools.ffmpeg(), found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) }));
   const run = async () => {
     const child = Bun.spawn(["nice", "-n", "10", join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "still.py"), file], { stdout: "pipe", stderr: "pipe", env: { ...process.env, OMP_NUM_THREADS: "2", OPENCV_FOR_THREADS_NUM: "2" } });
     const timer = setTimeout(() => child.kill(), STILL_LONGEST_MS);
@@ -201,6 +201,7 @@ export async function stillClean(app: App, source: string, media: Media[], reque
     }
   };
   try {
+    fs.writeFileSync(file, JSON.stringify({ ...request, ffmpeg: tools.ffmpeg(), found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) }), { mode: 0o600 });
     await plating.get(key);
     const going = stillSlots.with(run);
     if (!plating.has(key)) {
@@ -217,7 +218,11 @@ export async function stillClean(app: App, source: string, media: Media[], reque
     diag.warn("removal", `${source} from ${Math.round(request.from)} s: the still clean stopped, the model takes it: ${diag.messageOf(error)}`);
     return null;
   } finally {
-    fs.rmSync(file, { force: true });
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // A job file left behind mustn't take the answer's place.
+    }
   }
 }
 

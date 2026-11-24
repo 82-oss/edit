@@ -683,9 +683,21 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const request = { input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath };
     // A camera that doesn't move: the room's own picture, free. Anything else goes to the model.
     const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request) : null;
+    // The person's Stop while the still clean ran: no model run is started for it, and nothing it made is laid.
+    const wanted = () => pieces.get(id)?.get(piece.key) === piece;
+    if (!wanted()) {
+      piece.state = "failed";
+      piece.why = "stopped";
+      return;
+    }
     const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, ...request }));
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
+    if (!wanted()) {
+      piece.state = "failed";
+      piece.why = "stopped";
+      return;
+    }
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
     if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file, under);
     piece.state = "done";

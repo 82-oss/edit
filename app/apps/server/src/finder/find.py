@@ -121,7 +121,8 @@ def finish(mid, verdicts, parent):
     reads = []
     if os.path.exists(f"{TAG}/scan/{mid}.jsonl"):
         for line in open(f"{TAG}/scan/{mid}.jsonl"):
-            reads += json.loads(line)["lines"]
+            row = json.loads(line)
+            reads += [[*L[:6], row["f"]] for L in row["lines"] if len(L) >= 6]
     out = assemble.off_caption_labels(assemble.off_titles(out, Z["W"], Z["H"], reads), reads)
     found = {"version": 1, "width": Z["W"], "height": Z["H"], "fps": fps, "covered": load(f"{TAG}/shown.json", {}).get(mid, []), "masks": out}
     tmp = f"{TAG}/found/{mid}.json.tmp"; json.dump(found, open(tmp, "w")); os.replace(tmp, f"{TAG}/found/{mid}.json")

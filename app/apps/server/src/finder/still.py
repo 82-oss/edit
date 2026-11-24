@@ -145,7 +145,9 @@ def build_plates(job, found, again=False):
     path = os.path.join(job["plates"], f"{key}.v9.npz")
     if os.path.exists(path) and not again:
         data = np.load(path)
-        return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"], data[f"r{i}"]) for i in range(int(data["n"]))]
+        # An empty one (too few looks when it was made) is made again: another file of the video may have them now.
+        if int(data["n"]) > 0:
+            return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"], data[f"r{i}"]) for i in range(int(data["n"]))]
     files = [{"input": job["input"], "input_args": job.get("input_args", []), "found": found}]
     for other in job.get("also", [])[:24]:
         try:
@@ -408,13 +410,28 @@ def clean(job):
     W, H, fps = int(job["width"]), int(job["height"]), float(job["fps"])
     found = json.load(open(job["found"]))
     masks = job["masks"]
+    # A watermark already taken out under these seconds: the room's picture and other frames still have it, so the model
+    # (which reads the cleaned frames) takes the stretch.
+    if job.get("beneath"):
+        return {"still": False, "why": "a cleaned watermark under it"}
     # A box far from where this file's captions come up is a title or a screen read as one: left alone, and the strip
-    # stays the height of the captions.
+    # stays the height of the captions. Only when the file's blur still covers it (a label there at that moment): once
+    # this strip is laid, the stretch's caption blur comes off, and anything left out would show.
     caps = caps_of(found)
     where = place_of(caps)
     if where is not None:
         inside = lambda box: where[0] - 40 <= (box[0] + box[2]) / 2 <= where[2] + 40 and where[1] - 40 <= (box[1] + box[3]) / 2 <= where[3] + 40
         if sum(inside(m[2:6]) for m in caps) >= 0.9 * len(caps):
+            every = found.get("fps") or fps
+            start = int(round(float(job["from"]) * every))
+            labels = [m for m in found["masks"] if m[6] == "label"]
+            def blurred(box, at):
+                area = max(1.0, (box[2] - box[0]) * (box[3] - box[1]))
+                return any(m[0] <= at <= m[1] and max(0, min(box[2], m[4]) - max(box[0], m[2])) * max(0, min(box[3], m[5]) - max(box[1], m[3])) >= 0.5 * area for m in labels)
+            for index, boxes in enumerate(masks):
+                for box in boxes:
+                    if not inside(box) and not blurred(box, start + int(round(index * every / fps))):
+                        return {"still": False, "why": "a caption away from the others"}
             masks = [[box for box in boxes if inside(box)] for boxes in masks]
     total = len(masks)
     band = worker.band_of(masks, W, H)
@@ -462,6 +479,9 @@ def clean(job):
 
         nearby, seen = stretch_plate(job, total, W, H, y0, y1, fps, small, found)
         window, marks, own = [], [], []
+        place_rows = None
+        if where is not None and where[3] > y0 and where[1] < y1:
+            place_rows = [where[0], max(y0, where[1]), where[2], min(y1, where[3])]
         off, checked, written, next_frame, boxed, empty = 0, 0, 0, 0, 0, 0
         blind = [0, 0]
         none = np.zeros((rows, W), bool)
@@ -477,6 +497,10 @@ def clean(job):
                     m, cover = letters(frame, masks[next_frame], y0, scale)
                     boxed += 1
                     empty += 0 if m.any() else 1
+                elif place_rows is not None:
+                    # No box this frame, but a line the finder missed may still be up: its letters lend nothing.
+                    seen_letters = letters(frame, [place_rows], y0, scale)[0]
+                    m, cover = None, (seen_letters > 0) if seen_letters.any() else none
                 else:
                     m, cover = None, none
                 window.append(frame)
@@ -491,7 +515,8 @@ def clean(job):
                 free = known & ~own[at]
                 if free.any():
                     checked += 1
-                    if float((np.abs(frame.astype(np.int16) - plate.astype(np.int16)).sum(axis=2)[free] < 45).mean()) < ON_PLATE:
+                    room = regraded(plate, frame, free) if is_gray(frame, free) else plate
+                    if float((np.abs(frame.astype(np.int16) - room.astype(np.int16)).sum(axis=2)[free] < 45).mean()) < ON_PLATE:
                         job["_off"] = job.get("_off", 0) + 1
             if m is None or not m.any():
                 strip.write(None, None)
