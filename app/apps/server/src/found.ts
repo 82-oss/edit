@@ -153,7 +153,7 @@ export function foundOf(app: App, source: string): Found | null {
 }
 
 /** Stretches of still footage cleaned at once: about a CPU core each, at low priority, and no GPU. */
-const stillSlots = new Semaphore(6);
+const stillSlots = new Semaphore(8);
 /** A video's first stretch makes its room plate; the rest of that video wait for it and read it. */
 const plating = new Map<string, Promise<unknown>>();
 /** The longest one stretch may take, plate included. */

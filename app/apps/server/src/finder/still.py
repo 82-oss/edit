@@ -84,7 +84,9 @@ class Shot:
         rows, cols = np.indices(best.shape)
         counts = self.counts.astype(np.int32)
         near = counts[best, rows, cols] + counts[np.maximum(best - 1, 0), rows, cols] * (best > 0) + counts[np.minimum(best + 1, 15), rows, cols] * (best < 15)
-        return (255 * near / np.maximum(counts.sum(axis=0), 1)).astype(np.uint8)
+        looks = counts.sum(axis=0)
+        # A spot seen only a few times between captions can't be trusted, however much those few agree.
+        return ((255 * near / np.maximum(looks, 1)) * (looks >= 5)).astype(np.uint8)
 
 
 def caps_of(found):
@@ -102,7 +104,7 @@ def build_plates(job, found, again=False):
     W, H = int(job["width"]), int(job["height"])
     key = hashlib.sha256(job["key"].encode()).hexdigest()[:24]
     os.makedirs(job["plates"], exist_ok=True)
-    path = os.path.join(job["plates"], f"{key}.v2.npz")
+    path = os.path.join(job["plates"], f"{key}.v4.npz")
     if os.path.exists(path) and not again:
         data = np.load(path)
         return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"]) for i in range(int(data["n"]))]
@@ -132,6 +134,11 @@ def build_plates(job, found, again=False):
         read = one["found"].get("covered") or []
         fps = one["found"].get("fps") or 30
         caps = caps_of(one["found"])
+        # Where this file's captions come up. A line the finder missed there would otherwise win the few looks that spot
+        # gets between captions, and be laid back in as the room (Nov 24, Trooper: one sentence over 17 minutes).
+        place_box = None
+        if len(caps) >= 5:
+            place_box = [float(np.percentile([m[2] for m in caps], 2)), float(np.percentile([m[3] for m in caps], 2)), float(np.percentile([m[4] for m in caps], 98)), float(np.percentile([m[5] for m in caps], 98))]
         seconds = sum(b - a for a, b in read)
         if seconds <= 0:
             continue
@@ -145,6 +152,10 @@ def build_plates(job, found, again=False):
             for m in caps:
                 if m[0] - 6 <= here <= m[1] + 6:
                     skip[max(0, m[3] - y0 - PAD):max(0, m[5] - y0 + PAD), max(0, m[2] - PAD):m[4] + PAD] = True
+            if place_box is not None:
+                # Letters anywhere in that place: none of it is the room this time (their black plate's corners included).
+                if letters(frame[y0:y1], [place_box], y0, H / 1080)[0].any():
+                    skip[max(0, int(place_box[1]) - y0 - PAD):max(0, int(place_box[3]) - y0 + PAD), max(0, int(place_box[0]) - PAD):int(place_box[2]) + PAD] = True
             place(frame, skip)
     out = [(one.small.astype(np.uint8), one.plate(), one.sure()) for one in shots if one.seen >= 8]
     tmp = f"{path}.{os.getpid()}.npz"
@@ -167,8 +178,10 @@ def letters(frame, boxes, y0, scale):
         c, d = max(0, int(by0 - y0) - 6), min(rows, int(by1 - y0) + 6)
         if b <= a or d <= c:
             continue
-        # A caption on a plate of its own: the whole box goes.
-        if worker.on_a_plate(frame, a, b, c, d, scale):
+        # A caption on a plate of its own: the whole box goes. A black plate is nearly half the box at the darkest, which a
+        # soft shadow round the letters isn't.
+        darkest = cv2.cvtColor(np.ascontiguousarray(frame[c:d, a:b]), cv2.COLOR_RGB2GRAY) < 40
+        if worker.on_a_plate(frame, a, b, c, d, scale) or darkest.mean() >= 0.45:
             out[c:d, a:b] = 255
             cover[c:d, a:b] = True
             continue
@@ -206,7 +219,12 @@ def letters(frame, boxes, y0, scale):
         tail = int(22 * scale)
         A, B, C, D = max(0, a - reach - tail), min(W, b + reach + tail), max(0, c - reach - tail), min(rows, d + reach + tail)
         canvas = np.zeros((D - C, B - A), np.uint8)
-        canvas[c - C:d - C, a - A:b - A] = core
+        # The black plate the letters sit on, however little of the box it fills: its corners stayed behind otherwise.
+        dark = (gray < 40).astype(np.uint8)
+        blobs, blob = cv2.connectedComponents(dark, connectivity=8)
+        touching = np.unique(blob[(cv2.dilate(core, np.ones((9, 9), np.uint8)) > 0) & (dark > 0)])
+        on_plate = np.isin(blob, touching[touching > 0])
+        canvas[c - C:d - C, a - A:b - A] = core | on_plate.astype(np.uint8)
         grown = cv2.dilate(canvas, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (reach * 2 + 1, reach * 2 + 1)))
         out[C:D, A:B] = np.maximum(out[C:D, A:B], grown * 255)
         cover[C:D, A:B] |= cv2.dilate(grown, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tail * 2 + 1, tail * 2 + 1))) > 0
