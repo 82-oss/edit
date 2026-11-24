@@ -200,7 +200,7 @@ export interface StillRequest {
  * doubled a notepad and melted hands (Nov 23, the Hitman video). Null when the stretch isn't a still shot or this
  * machine can't: the model takes it as before. The engine stops a stretch that takes over 20 minutes (still.rs `LONGEST`).
  */
-export async function stillClean(app: App, source: string, media: Media[], request: StillRequest): Promise<{ ok: true; box: Box | null; inferred: 0 } | null> {
+export async function stillClean(app: App, source: string, media: Media[], request: StillRequest, wanted: () => boolean = () => true): Promise<{ ok: true; box: Box | null; inferred: 0 } | null> {
   const addon = native();
   if (addon.stillClean === undefined || standIn !== null || foundOf(app, source) === null) return null;
   const key = source.split("#")[0]!;
@@ -214,12 +214,15 @@ export async function stillClean(app: App, source: string, media: Media[], reque
   const job = JSON.stringify({ ...request, found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) });
   try {
     await plating.get(key);
-    const going = stillSlots.with(() => addon.stillClean!(job));
+    // Still wanted once its turn comes: a stretch the person stopped while it waited (an 8 GB Mac has one turn) is
+    // never started (Nov 24, the M1 Air: two of Trooper's stopped stretches took that turn for minutes, one twice).
+    const going = stillSlots.with(async () => (wanted() ? await addon.stillClean!(job) : null));
     if (!plating.has(key)) {
       const settled = going.catch(() => {}).finally(() => plating.delete(key));
       plating.set(key, settled);
     }
     const answer = await going;
+    if (answer === null) return null;
     if (answer.still !== true) {
       diag.info("removal", `${source} from ${Math.round(request.from)} s: not a still shot (${answer.why ?? "?"}), the model takes it`);
       return null;

@@ -687,10 +687,10 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const started = Date.now();
     const inputKey = cloudKeyOf(plan.media);
     const request = { input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath };
-    // A camera that doesn't move: the room's own picture, free. Anything else goes to the model.
-    const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request) : null;
-    // The person's Stop while the still clean ran: no model run is started for it, and nothing it made is laid.
+    // The person's Stop while it waited or the still clean ran: no model run is started for it, and nothing it made is laid.
     const wanted = () => pieces.get(id)?.get(piece.key) === piece;
+    // A camera that doesn't move: the room's own picture, free. Anything else goes to the model.
+    const still = override === null ? await finder.stillClean(app, plan.source, app.store.get(id)?.project.media ?? [], request, wanted) : null;
     if (!wanted()) {
       piece.state = "failed";
       piece.why = "stopped";
