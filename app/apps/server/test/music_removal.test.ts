@@ -6,7 +6,7 @@ import { beforeEach, expect, test } from "bun:test";
 
 import type { Clip, Project } from "../src/model.ts";
 import { applyBringBack, moveToCleaned, offWord, ORIGINAL_SOUND, playedIn, requests, soundsToClean } from "../src/music_removal.ts";
-import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, type Stretch } from "../src/music_removed.ts";
+import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
@@ -181,6 +181,8 @@ test("two sounds of one take on separate tracks both move, though splitting one 
 test("cleaned sound is still the footage's sound, so its lines are still subtitled", () => {
   const project = edit();
   expect(footageSound(project, 0, 1800).map((one) => one.id)).toEqual(["snd"]);
+  // Its words, faces, speakers and the words kept unmuted are all looked up on the video it came from.
+  expect([soundSourceId(project, "m2"), soundSourceId(project, "m1"), soundSourceId(project, "gone")]).toEqual(["m1", "m1", "gone"]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {

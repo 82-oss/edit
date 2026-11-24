@@ -50,7 +50,7 @@ import { isSubtitled, SUBTITLE_NAME } from "./store.ts";
 import { join } from "./paths.ts";
 import { fixTurns } from "./turns.ts";
 import * as changes from "./changes.ts";
-import { soundSource } from "./music_removed.ts";
+import { soundSource, soundSourceId } from "./music_removed.ts";
 import { spills as post } from "./ai_claude.ts";
 import type { Transcript, Word } from "./transcribe.ts";
 
@@ -1031,8 +1031,10 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
   const heard: { clip: Clip & { type: "audio" }; media: Media; transcript: Transcript; words: TimedWord[]; visibleFrom: number; visibleTo: number }[] = [];
   for (const clip of sound) {
     if (clip.type !== "audio") continue;
-    const media = mediaOf(project, clip.media);
-    if (media === undefined) continue;
+    const played = mediaOf(project, clip.media);
+    if (played === undefined) continue;
+    // Cleaned sound is its footage's (music_removed.ts): its words, faces and speakers are the video's.
+    const media = soundSource(project, played);
     if (!transcripts.has(media.id)) transcripts.set(media.id, await transcriptOf(app, media, project));
     const transcript = transcripts.get(media.id)!;
     const [visibleFrom, visibleTo] = visible(clip, from, to, fps);
@@ -1112,7 +1114,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
         if (moving === true) {
           // A moving camera: the faces frame by frame, only over this span's stretches of the file.
           const spans = sound
-            .filter((clip) => clip.type === "audio" && clip.media === mediaId)
+            .filter((clip) => clip.type === "audio" && soundSourceId(project, clip.media) === mediaId)
             .map((clip) => visible(clip as Clip & { type: "audio" }, from, to, fps))
             .filter(([s, e]) => e > s);
           // The camera's wearer is never seen: one person on camera is enough.
@@ -1583,8 +1585,10 @@ export async function houseWords(
   const out: HouseWords = { mutes: new Map(), found: [], listed: [], kept: [] };
   for (const [clip, voiceOver] of sound) {
     if (clip.type !== "audio") continue;
-    const media = mediaOf(project, clip.media);
-    if (media === undefined) continue;
+    const played = mediaOf(project, clip.media);
+    if (played === undefined) continue;
+    // Cleaned sound is its footage's: the words, and the ones kept unmuted, are the source's.
+    const media = soundSource(project, played);
     if (!transcripts.has(media.id)) transcripts.set(media.id, options.cachedOnly === true ? cachedTranscript(app, media) : await transcriptOf(app, media, project));
     const transcript = transcripts.get(media.id)!;
     // Not heard yet (cachedOnly): left as it is, never waited on.
@@ -1669,7 +1673,7 @@ export async function muteHouseWords(
     const clip = live.project.clips.find((one) => one.id === best[1].clip);
     if (clip === undefined || clip.type !== "audio") continue;
     const source = clip.source_in + ((Number(best[1].time) * fps - clip.start) / fps) * clip.speed;
-    marks.push([clip.media, round(source * 1000.0) / 1000.0, String(best[1].term)]);
+    marks.push([soundSourceId(live.project, clip.media), round(source * 1000.0) / 1000.0, String(best[1].term)]);
   }
   const marked = marks.length > 0 ? await app.store.update(projectId, "agent", (project) => {
     for (const [mediaId, seconds, term] of marks) {

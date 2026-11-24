@@ -24,6 +24,7 @@ import {
   cleanedMarker,
   cleanedOf,
   covers,
+  MARK,
   merged,
   missing,
   sourceRange,
@@ -285,7 +286,8 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
   const [, changed] = await app.store.update(id, "agent", (draft) => {
     const media = mediaOf(draft, newId);
     if (media === undefined) throw new Error("the cleaned sound went missing");
-    media.markers = [cleanedMarker({ of: originalId, stretches })];
+    // Its own marker replaced; any other (a word kept unmuted) stays.
+    media.markers = [...(media.markers ?? []).filter((marker) => marker.name !== MARK), cleanedMarker({ of: originalId, stretches })];
     if (before !== undefined && newId !== before.id) {
       for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
       draft.media = draft.media.filter((one) => one.id !== before.id);
