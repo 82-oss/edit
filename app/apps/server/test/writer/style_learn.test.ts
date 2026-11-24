@@ -60,6 +60,12 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   const later = `${"The detective leans in. ".repeat(270)}So learn the writing style from that.`;
   expect(later.indexOf("learn the writing style")).toBeGreaterThan(6_000);
   expect(learn.split(later)[0]).toBe(later);
+  // With a link in it, near the most: still all of it, the link a reference.
+  const linkedMiddle = `${"The detective leans in. ".repeat(160)}Learn the writing style from https://youtu.be/5kFYKil24A0 for this channel. ${"He waits. ".repeat(390)}`.trim();
+  expect([...linkedMiddle].length).toBeGreaterThan(7_700);
+  expect([...linkedMiddle].length).toBeLessThanOrEqual(learn.MOST_ASKED);
+  expect(learn.split(linkedMiddle)[0]).toBe(linkedMiddle);
+  expect(learn.referencesIn(linkedMiddle).references.some((one) => one.kind === "video")).toBe(true);
   // Past that, its start and its end are, where an ask is said.
   const longest = `${"The detective leans in. ".repeat(1_000)}So learn the writing style from that.`;
   expect(learn.split(longest)[0]).toContain("learn the writing style from that");

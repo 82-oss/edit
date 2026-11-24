@@ -146,6 +146,8 @@ export function split(text: string): [string, string] {
   if (taken.length === 0 || withoutLinks(pasted).length < PASTED) {
     const linked = [...new Set(whole.match(URL_IN_TEXT) ?? [])];
     // As much of it as any message may be (the ask is read for what it asks): all of it when it fits, else its start and its end, where an ask is said; the whole of it the paste.
+    // Within any message's most, it's all read, its links in it.
+    if ([...whole].length <= MOST_ASKED) return [whole, whole];
     const links = linked.length > 0 ? `\n(its links: ${linked.join(" ")})` : "";
     const room = Math.max(1_000, MOST_ASKED - links.length - 10);
     const asked = whole.length <= room ? whole : `${whole.slice(0, Math.floor(room * 0.6))} … ${whole.slice(whole.length - Math.floor(room * 0.4))}`;
