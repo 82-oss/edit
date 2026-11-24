@@ -463,6 +463,32 @@ export const runPodForTests: Cleaner = remoteCleaner;
 
 const pieces = new Map<string, Map<string, InpaintPiece>>();
 const tries = new Map<string, number>();
+/**
+ * The stretches whose clean was turned down and tried again: they stay blurred, across a restart too (`tries` is
+ * forgotten at one, and each would have been paid for again; Nov 23, a retry of 15 pieces had fixed none of them).
+ */
+const gaveUp = new Map<string, Set<string>>();
+function givenUp(app: App): Set<string> {
+  const file = join(app.store.cacheDir(), "cleaned", "given-up.json");
+  let jobs = gaveUp.get(file);
+  if (jobs === undefined) {
+    try {
+      jobs = new Set(JSON.parse(fs.readFileSync(file, "utf8")) as string[]);
+    } catch {
+      jobs = new Set();
+    }
+    gaveUp.set(file, jobs);
+  }
+  return jobs;
+}
+function giveUp(app: App, job: string): void {
+  const jobs = givenUp(app);
+  jobs.add(job);
+  const file = join(app.store.cacheDir(), "cleaned", "given-up.json");
+  fs.mkdirSync(join(app.store.cacheDir(), "cleaned"), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify([...jobs]));
+  fs.renameSync(`${file}.tmp`, file);
+}
 const queue: { key: string; seconds: number; run: () => Promise<void> }[] = [];
 /** Footage seconds still waiting here to be sent: the relay rents more GPUs when there's a lot (apps/relay/src/remover.ts). */
 const waitingSeconds = (): number => queue.reduce((sum, one) => sum + one.seconds, 0);
@@ -602,6 +628,16 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
         continue;
       }
       if (piece.state === "queued" || piece.state === "running") continue;
+      // Read, and nothing of theirs for the model in it: no card is rented for it, and it keeps its blur.
+      if (getRange() === null) {
+        piece.state = "done";
+        continue;
+      }
+      if (givenUp(app).has(jobKey(plan.source, from, to))) {
+        piece.state = "failed";
+        piece.why ??= "turned down twice: it stays blurred";
+        continue;
+      }
       if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
       // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
       if (watermarks.pending(id, plan.media.id, from, to)) {
@@ -742,6 +778,7 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   piece.why = why;
   const again = (tries.get(jobKey(source, piece.from, piece.to)) ?? 0) < TRIES;
   if (again) piece.state = "waiting";
+  else giveUp(app, jobKey(source, piece.from, piece.to));
   return again ? "taken out; it's cleaned once more (blurred meanwhile)" : "taken out; it stays blurred";
 }
 
@@ -756,6 +793,7 @@ export function stop(id: string): void {
 export function reset(): void {
   pieces.clear();
   tries.clear();
+  gaveUp.clear();
   queue.length = 0;
   availableHere = null;
 }

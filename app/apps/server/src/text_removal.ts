@@ -659,7 +659,15 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
   const texts = live.project.media.filter((media) => media.cleans != null && (media.cleans.what ?? "text") === "text");
   const again = (media: Media): boolean =>
     texts.some((later) => made(later) > made(media) && later.cleans!.media === media.cleans!.media && later.cleans!.from <= media.cleans!.from + 0.2 && later.cleans!.to >= media.cleans!.to - 0.2);
-  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && (!wanted(media) || again(media));
+  // Nothing of theirs for the model there: a title taken for captions until the finder knew better (Nov 23, the Trooper
+  // video's case 2, where the strips had repainted the deputy's head). The blur over the title stands alone.
+  const empty = (media: Media): boolean => {
+    const plan = plans.find((one) => one.media.id === media.cleans!.media);
+    const boxes = plan === undefined ? null : found.foundOf(app, plan.source);
+    if (plan === undefined || boxes === null || (plan.marks ?? []).some((mark) => mark.from < media.cleans!.to && mark.to > media.cleans!.from)) return false;
+    return !found.captionsIn(boxes, media.cleans!.from, media.cleans!.to);
+  };
+  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && (!wanted(media) || again(media) || empty(media));
   const count = live.project.media.filter(stale).length;
   if (count === 0) return;
   await app.store.update(id, "text removal", (project) => {

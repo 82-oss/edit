@@ -146,6 +146,13 @@ export function foundOf(app: App, source: string): Found | null {
   }
 }
 
+/** Whether anything the model takes out (a caption or a note) is on between source seconds `from` and `to`. */
+export function captionsIn(found: Found, from: number, to: number): boolean {
+  const fps = found.fps > 0 ? found.fps : 30;
+  const [first, last] = [Math.floor(from * fps), Math.ceil(to * fps)];
+  return found.masks.some((mask) => (mask[6] === "subtitle" || mask[6] === "note") && mask[0] <= last && mask[1] >= first);
+}
+
 /** Whether the finder looked at all of `spans` (source seconds). */
 export function covers(found: Found, spans: [number, number][]): boolean {
   const looked = merged(found.covered.map(([a, b]): [number, number] => [a - LOOKED_PAST_S, b + LOOKED_PAST_S]));
