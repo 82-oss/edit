@@ -25,3 +25,5 @@ export type ScreenText = { b: Box; t: string };
 /** What taking a watermark out of a piece did (watermark.rs `Removed`): the strip's box (shares), its frames and those with the mark, the share of the mark's pixels from neighbouring frames, how much of the mark is still found (0 gone, 1 untouched), seconds it took. */
 export type WatermarkRemoved = { region: Box; frames: number; marked: number; filled: number; left: number; took: number };
 
+/** What the still clean of a stretch said (still.rs `clean`): a strip was written to the job's `out` (its box in shares, null with no words), or why the stretch isn't a still shot it cleans (the model takes it). */
+export type StillAnswer = { still: boolean; box?: Box | null; why?: string };

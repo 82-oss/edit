@@ -25,6 +25,9 @@ export type ScreenText = { b: Box; t: string };
 /** What taking a watermark out of a piece did (watermark.rs `Removed`): the strip's box (shares), its frames and those with the mark, the share of the mark's pixels from neighbouring frames, how much of the mark is still found (0 gone, 1 untouched), seconds it took. */
 export type WatermarkRemoved = { region: Box; frames: number; marked: number; filled: number; left: number; took: number };
 
+/** What the still clean of a stretch said (still.rs `clean`): a strip was written to the job's `out` (its box in shares, null with no words), or why the stretch isn't a still shot it cleans (the model takes it). */
+export type StillAnswer = { still: boolean; box?: Box | null; why?: string };
+
 /** One export, running on its own thread. */
 export declare class ExportJob {
   /** Starts exporting; progress (0–1) comes to `onProgress`. */
@@ -578,6 +581,13 @@ export declare function smoothSupported(): boolean
  * keeping their speed (`edit_core::speed_span_holding`).
  */
 export declare function speedSpanHolding(project: ProjectInput, start: number, end: number, speed: number, hold: Array<string>): RippleResult
+
+/**
+ * Their captions out of a stretch filmed by a camera that doesn't move (the engine's still.rs `clean`), from `job`
+ * (found.ts `stillClean`'s JSON): on a thread of its own at background priority, stopped once it has taken longer
+ * than a stretch may.
+ */
+export declare function stillClean(job: string): Promise<StillAnswer>
 
 export interface Stretch {
   /** Seconds into the sound. */

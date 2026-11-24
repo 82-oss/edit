@@ -501,6 +501,28 @@ pub async fn watermark_remove(
     .await
 }
 
+/// Their captions out of a stretch filmed by a camera that doesn't move (the engine's still.rs `clean`), from `job`
+/// (found.ts `stillClean`'s JSON): on a thread of its own at background priority, stopped once it has taken longer
+/// than a stretch may.
+#[napi(ts_return_type = "Promise<StillAnswer>")]
+pub async fn still_clean(job: String) -> napi::Result<serde_json::Value> {
+    crate::blocking("cleaning a still stretch", move || {
+        let job: edit_engine::still::Job = serde_json::from_str(&job)
+            .map_err(|error| format!("the still clean's job doesn't read: {error}"))?;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    edit_engine::util::background_thread();
+                    let deadline = std::time::Instant::now() + edit_engine::still::LONGEST;
+                    edit_engine::still::clean(&job, &|| std::time::Instant::now() > deadline)
+                })
+                .join()
+                .map_err(|payload| edit_engine::util::crashed("the still clean", &*payload))?
+        })
+    })
+    .await
+}
+
 fn shares(values: &[f64]) -> Result<[f64; 4], String> {
     values
         .try_into()

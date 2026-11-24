@@ -40,7 +40,7 @@ import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import type { Media } from "./model.ts";
-import type { Box } from "./native/index.ts";
+import { native, type Box } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { merged } from "./removal_sections.ts";
 import * as removerCloud from "./remover_cloud.ts";
@@ -63,7 +63,6 @@ import ocrSource from "./finder/ocr.py" with { type: "text" };
 import roamtrackSource from "./finder/roamtrack.py" with { type: "text" };
 import scanSource from "./finder/scan.py" with { type: "text" };
 import slowcopySource from "./finder/slowcopy.py" with { type: "text" };
-import stillSource from "./finder/still.py" with { type: "text" };
 import thumbsSource from "./finder/thumbs.py" with { type: "text" };
 import zoneSource from "./finder/zone.py" with { type: "text" };
 import minimaxSource from "./minimax_worker.py" with { type: "text" };
@@ -83,7 +82,6 @@ const SCRIPTS: Record<string, string> = {
   "roamtrack.py": roamtrackSource,
   "scan.py": scanSource,
   "slowcopy.py": slowcopySource,
-  "still.py": stillSource,
   "minimax_worker.py": minimaxSource,
   "thumbs.py": thumbsSource,
   "zone.py": zoneSource,
@@ -169,12 +167,10 @@ export function foundOf(app: App, source: string): Found | null {
   }
 }
 
-/** Stretches of still footage cleaned at once: about a CPU core each, at low priority, and no GPU. */
-const stillSlots = new Semaphore(8);
+/** Stretches of still footage cleaned at once: a CPU core each, at background priority, and no GPU; half the cores at most, so the machine stays responsive. */
+const stillSlots = new Semaphore(Math.max(1, Math.min(8, Math.floor(os.cpus().length / 2))));
 /** A video's first stretch makes its room plate; the rest of that video wait for it and read it. */
 const plating = new Map<string, Promise<unknown>>();
-/** The longest one stretch may take, plate included. */
-const STILL_LONGEST_MS = 20 * 60_000;
 
 export interface StillRequest {
   input: string;
@@ -190,12 +186,14 @@ export interface StillRequest {
 }
 
 /**
- * Their captions out of a stretch filmed by a camera that doesn't move, from the room itself (finder/still.py): free,
- * on this machine, and the picture is the real one, where the model doubled a notepad and melted hands (Nov 23, the
- * Hitman video). Null when the stretch isn't a still shot or this machine can't: the model takes it as before.
+ * Their captions out of a stretch filmed by a camera that doesn't move, from the room itself (the engine's still.rs,
+ * wherever the addon is, a Mac included): free, on this machine, and the picture is the real one, where the model
+ * doubled a notepad and melted hands (Nov 23, the Hitman video). Null when the stretch isn't a still shot or this
+ * machine can't: the model takes it as before. The engine stops a stretch that takes over 20 minutes (still.rs `LONGEST`).
  */
 export async function stillClean(app: App, source: string, media: Media[], request: StillRequest): Promise<{ ok: true; box: Box | null; inferred: 0 } | null> {
-  if (!available() || standIn !== null || foundOf(app, source) === null) return null;
+  const addon = native();
+  if (addon.stillClean === undefined || standIn !== null || foundOf(app, source) === null) return null;
   const key = source.split("#")[0]!;
   const others = media.filter((one) => one.kind === "video" && one.cloud?.source !== undefined && one.cloud.source !== source && one.cloud.source.split("#")[0] === key && foundOf(app, one.cloud.source) !== null);
   const also = await Promise.all(
@@ -204,23 +202,10 @@ export async function stillClean(app: App, source: string, media: Media[], reque
       return input === null ? null : { input, input_args: tools.urlArgs(input), found: fileOf(app, one.cloud!.source!) };
     }),
   );
-  // It holds signed links to the originals: this user's only. Written inside the try, so a full disk still leaves the model.
-  const file = `${request.out}.job.json`;
-  const run = async () => {
-    const child = Bun.spawn(["nice", "-n", "10", join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "still.py"), file], { stdout: "pipe", stderr: "pipe", env: { ...process.env, OMP_NUM_THREADS: "2", OPENCV_FOR_THREADS_NUM: "2" } });
-    const timer = setTimeout(() => child.kill(), STILL_LONGEST_MS);
-    try {
-      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-      if (code !== 0) throw new Error((err.trim().split("\n").at(-1) ?? `stopped (${code})`).slice(0, 300));
-      return JSON.parse(out.trim().split("\n").at(-1) ?? "{}") as { still?: boolean; box?: Box | null; why?: string };
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  const job = JSON.stringify({ ...request, found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) });
   try {
-    fs.writeFileSync(file, JSON.stringify({ ...request, ffmpeg: tools.ffmpeg(), found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) }), { mode: 0o600 });
     await plating.get(key);
-    const going = stillSlots.with(run);
+    const going = stillSlots.with(() => addon.stillClean!(job));
     if (!plating.has(key)) {
       const settled = going.catch(() => {}).finally(() => plating.delete(key));
       plating.set(key, settled);
@@ -234,12 +219,6 @@ export async function stillClean(app: App, source: string, media: Media[], reque
   } catch (error) {
     diag.warn("removal", `${source} from ${Math.round(request.from)} s: the still clean stopped, the model takes it: ${diag.messageOf(error)}`);
     return null;
-  } finally {
-    try {
-      fs.rmSync(file, { force: true });
-    } catch {
-      // A job file left behind mustn't take the answer's place.
-    }
   }
 }
 
