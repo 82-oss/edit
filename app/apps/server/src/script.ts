@@ -2466,11 +2466,15 @@ let nextCut = 0;
  * Ogg), then M4A. The cut always encodes the sound as AAC, and AAC written
  * into a .wav reads back as garbage (Nov 1: a µ-law 911 call's 0–55 s excerpt
  * came out a 27.6 s .wav no proxy could decode, so that import waited all day
- * on "1 of 12 files couldn't be downloaded").
+ * on "1 of 12 files couldn't be downloaded"). An ASF (a WMV) goes to MP4 too:
+ * the ASF muxer writes its preroll into the length, so every cut read back 1 to
+ * 2 s long and was refused as wrong (Nov 24, JJ's "Cops Catch Killer at
+ * Airport": three H.264 .asf bodycam files each downloaded whole, refused, and
+ * downloaded again on every retry for hours).
  */
 export function excerptExtension(ext: string): string {
   const lower = ext.toLowerCase();
-  if (["vob", "mpg", "mpeg", "m2p", "ps", "dat", "webm", "ogv"].includes(lower)) return "mp4";
+  if (["vob", "mpg", "mpeg", "m2p", "ps", "dat", "webm", "ogv", "asf", "wmv"].includes(lower)) return "mp4";
   if (["wav", "wave", "aif", "aiff", "aifc", "flac", "mp3", "ogg", "oga", "opus", "wma", "amr", "au", "snd", "ac3", "dts"].includes(lower)) return "m4a";
   return ext;
 }

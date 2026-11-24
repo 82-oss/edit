@@ -142,6 +142,32 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
   },
 );
 
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "an_asf_bodycam_file_cuts_into_excerpts_as_long_as_asked",
+  async () => {
+    // Nov 24, JJ's H.264 + AAC .asf bodycam files: cut back into ASF, each excerpt read 1 to 2 s long and was refused.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-asf");
+    try {
+      const source = `${dir}/Brent Griffin 2024-04-22_16_25_31_709.asf`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      const [cut] = await excerpts(source, [[40, 70]]);
+      expect(cut!.path.endsWith(".mp4")).toBe(true);
+      const seconds = await durationOf(cut!.path);
+      expect(Math.abs(seconds - (cut!.to - cut!.from))).toBeLessThan(0.5);
+    } finally {
+      cleanup();
+    }
+  },
+  30_000,
+);
+
 test("lays_out_footage_and_cut_ins_in_order", () => {
   stubNative();
   const project = newProject("Test");
@@ -661,6 +687,8 @@ test("a script's heading names its kind of video, as Writer heads them", () => {
 test("excerpts_of_dvd_and_webm_files_are_mp4", () => {
   expect(excerptExtension("VOB")).toBe("mp4");
   expect(excerptExtension("webm")).toBe("mp4");
+  expect(excerptExtension("ASF")).toBe("mp4");
+  expect(excerptExtension("wmv")).toBe("mp4");
   expect(excerptExtension("mov")).toBe("mov");
   expect(excerptExtension("mp4")).toBe("mp4");
   // Sound alone: the cut's AAC goes in an M4A, never a container that can't hold it (a 911 call's .wav, Nov 1).
