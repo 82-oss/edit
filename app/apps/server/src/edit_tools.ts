@@ -2460,6 +2460,9 @@ function removalContext(app: App, p: Project): Args {
       // How their text comes out (a tight tracked blur, every section), the edit's sections, and what detection proposes for the agent to mark.
       ...(removalLesson.kinds(lesson).blur.length > 0 ? removalSections.outline(p, textRemoval.proposed(app, p)) : {}),
       pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
+      ...(!removalAsks.isStopped(app.store.home, p.id) && removalLesson.KINDS.some((kind) => removalAsks.isPartStopped(app.store.home, p.id, kind))
+        ? { stopped: `${removalLesson.KINDS.filter((kind) => removalAsks.isPartStopped(app.store.home, p.id, kind)).join(" and ")}: the person stopped it here, the rest goes on; only what's asked of it since with start_removal is taken out.` }
+        : {}),
       ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "It doesn't run by itself here: the person stopped it (the chat's Stop), or moved this edit onto its channel from today's kind of edit (its picture stays as it was until they ask). Only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
       note:
         (textRemoval.marksOnly(p)

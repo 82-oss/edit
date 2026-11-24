@@ -33,6 +33,7 @@ import { dispatch } from "../src/mcp/index.ts";
 import * as wm from "../src/watermark_removal.ts";
 import type { WatermarkRemoved } from "../src/native/index.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
+import * as found from "../src/found.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 // One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
@@ -806,6 +807,137 @@ test("stopped, then asked for a stretch: only that stretch is blurred, what ran 
   }
 }, 120_000);
 
+test("after the person's Stop a cleaned strip stays unless what's asked since runs over its seconds (Nov 24, the Hitman edit: the intro's captions came back)", () => {
+  const strip = { id: "s", name: "s", path: "/s.mp4", kind: "video", duration: 20, cleans: { media: "m", from: 10, to: 30, box: [0, 0, 1, 0.9] } } as unknown as Media;
+  const media = { id: "m" } as Media;
+  // Going: the blur or the model's new strips take its place.
+  expect(tr.takesItsPlace([], strip, false)).toBe(true);
+  // Stopped: nothing asked there, so it stays; asked over its seconds, the new run takes them.
+  expect(tr.takesItsPlace([], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media, spans: [[40, 50]] }], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media: { id: "n" } as Media, spans: [[10, 30]] }], strip, true)).toBe(false);
+  // Asked over only part of it: the rest would lose its clean, so it stays; asked over all of it, the new run takes it.
+  expect(tr.takesItsPlace([{ media, spans: [[25, 35]] }], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media, spans: [[10, 20]] }, { media, spans: [[20, 30.05]] }], strip, true)).toBe(true);
+  expect(tr.takesItsPlace([{ media, spans: [[5, 35]] }], strip, true)).toBe(true);
+});
+
+test("ours go over their subtitles only where removal takes theirs out: taught to by itself, or asked for those seconds; not when stopped or taught to wait", async () => {
+  const { app, store, cleanup } = fixtureHome("removal-theirs-taken");
+  try {
+    const live = app.store.create("p", { width: 1920, height: 1080, fps: 30 });
+    const project = structuredClone(live.project) as Project;
+    project.media = [{ id: "m", name: "tape", path: "/tape.mp4", kind: "video", duration: 30, width: 320, height: 180, fps: 30, has_audio: false }];
+    project.clips = [{ id: "f", track: "v1", start: 0, duration: 900, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip];
+    project.channel = "ch-taught";
+    await app.store.replace(project.id, null, project, "test");
+    const id = project.id;
+    const at = (from: number, to: number) => tr.theirsTakenOut(app, store.get(id)!.project, { clip: "f", start: from * 30, end: to * 30 });
+    // With no finder, a channel taught to take theirs out blurs only what's marked (`wantedOf`): ours wait for a mark.
+    teach({ subtitles: true });
+    expect(at(10, 12)).toBe(false);
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles"], media: { m: [[9, 13]] }, mark: "add" });
+    expect(at(10, 12)).toBe(true);
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles"], media: { m: [[9, 13]] }, mark: "remove" });
+    // A machine with the finder takes out all it finds: no mark needed.
+    found.useFinderForTests({ find: async () => ({ ask: [], sheets: [] }), finish: async () => { throw new Error("not read here"); } });
+    expect(at(10, 12)).toBe(true);
+    // Taught only their text, or their subtitles only when asked: theirs stay, so ours are refused there.
+    teach({ text: true });
+    expect(at(10, 12)).toBe(false);
+    teach({ subtitles: true }, [], { subtitles: "asked" });
+    expect(at(10, 12)).toBe(false);
+    // Asked for 5–15 s of the tape: those seconds, not the rest.
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles"], media: { m: [[5, 15]] } });
+    expect(at(10, 12)).toBe(true);
+    expect(at(14, 18)).toBe(false);
+    // Stopped: only what's asked since.
+    teach({ subtitles: true });
+    await Bun.sleep(5);
+    removalSchedule.stop(app, id, ["subtitles"]);
+    expect(at(20, 22)).toBe(false);
+  } finally {
+    found.useFinderForTests(null);
+    cleanup();
+  }
+});
+
+test("after one part is stopped alone, the agent's marks start it again on what they mark", async () => {
+  const { app, cleanup } = fixtureHome("removal-part-marks");
+  try {
+    teach({ text: true });
+    const id = "p-marks";
+    asks.stopParts(app.store.home, id, ["text"]);
+    expect(asks.scope(removal.lessonOf({ channel: "ch-taught" } as Project), app.store.home, id, "text", "m", [[0, 30]])).toEqual([]);
+    await Bun.sleep(5);
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["text"], media: { m: [[4, 9]] }, mark: "add" });
+    expect(asks.askedKinds(app.store.home, id)).toEqual(["text"]);
+    expect(asks.scope(removal.lessonOf({ channel: "ch-taught" } as Project), app.store.home, id, "text", "m", [[0, 30]])).toEqual([[4, 9]]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("one part stopped alone, the rest goes on; asked again, it runs on what's named (Nov 24, the Trooper edit: no way to stop just its watermarks)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-stop-part");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true, watermarks: true });
+  const reads: number[] = [];
+  blurReads(reads);
+  const calls: string[] = [];
+  wm.useEngine(engine(calls));
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const call = async (args: Record<string, unknown>) =>
+    ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+  let id = "";
+  try {
+    const file = await labelledFootage(dir, 8);
+    id = await labelledProject(app, file, 8);
+    const said = await call({ stop: true, kinds: ["watermarks"] });
+    expect(said.isError).toBe(false);
+    expect(said.content[0]!.text).toContain("Stopped taking their watermarks out");
+    await removalSchedule.ensure(app, id);
+    await blur.settled();
+    await wm.settled();
+    // Their text still blurred; no file looked at for a mark.
+    expect(blurs(id)).toEqual([["m", 0, 8, "done"]]);
+    expect(calls).toEqual([]);
+    expect(asks.isStopped(app.store.home, id)).toBe(false);
+    // Kept across a restart.
+    asks.reset();
+    await removalSchedule.ensure(app, id);
+    await wm.settled();
+    expect(calls).toEqual([]);
+    await Bun.sleep(5);
+    // Asked for again: done on what's named.
+    expect((await call({ kinds: ["watermarks"], media: ["m"] })).isError).toBe(false);
+    await wm.settled();
+    expect(calls).toEqual(["learn null", "remove 0-8"]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("a plan begun before a Stop of their text lays nothing after it", async () => {
+  const { app, dir, cleanup } = fixtureHome("removal-stop-text-plan");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const reads: number[] = [];
+  blurReads(reads);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    const planning = tr.ensure(app, id);
+    removalSchedule.stop(app, id, ["text"]);
+    await planning;
+    await blur.settled();
+    expect(blurs(id)).toEqual([]);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest; a longer clip is blurred to its new end", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
@@ -903,4 +1035,19 @@ test("masksWithMarks covers the first and last whole frames when a mark starts o
   const out = tr.masksWithMarks(empty, [{ from: 278.952, to: 282.285333, box }], 30, 8368);
   expect(out[0]).toEqual([box]);
   expect(out[100]).toEqual([box]);
+});
+
+test("after their subtitles are stopped, text that goes on over the same seconds sends the model none of the stopped captions (CodeRabbit on #5)", () => {
+  const media = { id: "m" } as Media;
+  const plan = { media, source: "sha256:s", spans: [[10, 20], [40, 50]] as [number, number][], marks: [] };
+  // Subtitles on 12–14 s and 44–46 s (frames at 30 fps), a label the whole time.
+  const read = { version: 1, width: 1920, height: 1080, fps: 30, covered: [[0, 60]], masks: [[360, 419, 0, 900, 1920, 1000, "subtitle"], [1320, 1379, 0, 900, 1920, 1000, "subtitle"], [0, 1800, 0, 0, 300, 80, "label"]] } as unknown as found.Found;
+  const all = (_media: string, spans: [number, number][]) => spans;
+  // Asked of their subtitles everywhere: as planned.
+  expect(tr.subtitlesAsked([plan], all, () => read)).toEqual([plan]);
+  // Stopped after 30 s: the first stretch as planned; of the second, only the seconds with no subtitle of theirs.
+  const until30 = (_media: string, spans: [number, number][]) => spans.flatMap(([a, b]): [number, number][] => (a < 30 ? [[a, Math.min(b, 30)]] : []));
+  expect(tr.subtitlesAsked([plan], until30, () => read)[0]!.spans).toEqual([[10, 20], [40, 44], [46, 50]]);
+  // A file the finder hasn't read: left as it is.
+  expect(tr.subtitlesAsked([plan], until30, () => null)).toEqual([plan]);
 });

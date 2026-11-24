@@ -675,7 +675,7 @@ export async function writerSystem(script: Script, writing: Pick<Writing, "lesso
   if (writing.extra.trim() !== "") system += `\n\n${writing.extra.trim()}`;
   if (taught(script)) {
     await lanes.refresh();
-    system += lanes.section(script.channel, "script", "none", false);
+    system += lanes.section(script.channel, "script", "none", false, script.style ?? null);
   }
   return system;
 }
@@ -814,7 +814,7 @@ export async function reviseSystem(script: Script, lessons: string, tools: boole
   system += `\n\n${REVISE_NOTE}${tools ? `\n${TOOLS_NOTE}` : ""}${teach === "lesson" ? `\n${LESSON_RULE}` : ""}`;
   if (taught(script)) {
     await lanes.refresh();
-    system += lanes.section(script.channel, "script", teach, false);
+    system += lanes.section(script.channel, "script", teach, false, script.style ?? null);
   }
   return system;
 }
@@ -863,7 +863,7 @@ export async function revise(dir: string, script: Script, request: string, lesso
 }
 
 /** The draft as a plan, each paragraph with its id. */
-function planWithIds(draft: Draft): Record<string, unknown> {
+export function planWithIds(draft: Draft): Record<string, unknown> {
   const plan = planOf(draft);
   (plan.sections as { paragraphs: Record<string, unknown>[] }[]).forEach((section, s) => section.paragraphs.forEach((item, p) => (item.id = draft.sections[s]!.paragraphs[p]!.id)));
   return plan;

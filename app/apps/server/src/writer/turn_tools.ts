@@ -23,6 +23,7 @@ import * as lanes from "../lanes.ts";
 import { empty, json } from "../http/errors.ts";
 import { readJson, type Router } from "../http/router.ts";
 import { native } from "../native/index.ts";
+import * as otherProjects from "../other_projects.ts";
 import { join, parent } from "../paths.ts";
 import * as research from "../research.ts";
 import * as youtube from "../youtube.ts";
@@ -30,6 +31,7 @@ import * as youtubeResearch from "../youtube_research.ts";
 import { toolsAddress } from "./build.ts";
 import * as fixing from "./fixing.ts";
 import * as reviews from "./reviews.ts";
+import * as styles from "../script_styles.ts";
 import * as store from "./store.ts";
 
 /** One turn's tools: its script, and the review notes it has taken to fix. */
@@ -42,6 +44,13 @@ export interface Session {
   pulled: Map<string, reviews.Note>;
   /** A channel's script: its Script lane, which the lane's tools (remember, read_skill, other_channels) keep and read. */
   place: lanes.Place | null;
+  /**
+   * Which of two this turn has read, as a turn has only one: the review's
+   * notes (written by whoever holds the review link) or another project
+   * (other_projects). A turn with both could be steered by a note into
+   * handing another script to the reviewer, in a reply or in this script.
+   */
+  read: "notes" | "other" | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -55,7 +64,7 @@ export function open(data: string, id: string, given: string[] | null = null): [
   } catch {
     // Unreadable now: the turn reads it again and says so.
   }
-  const session: Session = { data, id, given, pulled: new Map(), place: channel === null ? null : { channel, lane: "script" } };
+  const session: Session = { data, id, given, pulled: new Map(), place: channel === null ? null : { channel, lane: "script" }, read: null };
   sessions.set(token, session);
   return [token, toolsAddress(`/mcp/writer-turn/${token}`), session];
 }
@@ -70,10 +79,18 @@ export const TOOLS_NOTE = `TOOLS. Before your answer you can use these tools; th
 - search_web, read_page: research on the web: news reports, court records, the case's facts and dates.
 - search_youtube, read_youtube: find videos on YouTube and read what's said in them (their captions), e.g. another channel's video on this case ("Red File Stephanie Lazarus") to see which details they give their viewers. Use the facts that hold up; never copy their wording. Bringing footage into the script is the footage search's job, not yours.
 - find_images: pictures of the case (its people, places, evidence, documents, news photos), shown to you as a numbered sheet with each one's link and page. The editor places pictures: each picture worth showing goes on the script as a note for the editor on the words it belongs under: "edit: show this photo of Sherri Rasmussen <image link> (from <page link>)". Only pictures of this case (their page is about it) and never stock. A reviewer asking for assets, images or visuals is asking for these notes, as many as the script can use, spread through it.
-A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).`;
+A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.
+- other_projects: another of the team's scripts or edits on this computer, when the producer points you at one ("do it like I told you on the Kimberly script", "the same as the Trooper edit"): what they asked for in its chat, with the answer each got, and the script itself. Take from it what they pointed you at and do it here; never say you can't see other scripts.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).\n- And use_style: which of the channel's script styles this script is written in, when the producer names one ("do this one in the Dr Insanity style", "go back to the default"), or makes one the channel's default. Its guide comes back: write what's asked in it. A new style is learned from videos, a Doc or a script pasted in when the producer's message brings them and asks for it; asked to learn one with nothing to learn from, ask for the links.`;
 
 type Args = Record<string, unknown>;
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/** A channel's script's: its style (script_styles.ts). */
+const USE_STYLE = {
+  name: "use_style",
+  description: "Which of this channel's script styles this script is written in, from now on: style is its name as the instructions list it, or \"default\" for the channel's default. default: true also makes it the channel's default (what a script is written in when none is named), when the producer asks for that. Answers with the style's guide and examples.",
+  inputSchema: { type: "object", properties: { style: { type: "string" }, default: { type: "boolean" }, reason: { type: "string", description: "What the producer said, quoted" } }, required: ["style"] },
+};
 
 const TOOLS = [
   { name: "pull_feedback", description: "The open notes reviewers left on this script's review link (feedback.spheceo.com), taken for you to fix: each with its id, who left it, where it is (the words it's on), what kind of note it is and what that lets you change, the replies under it, and its words. Fix them all in this answer and report each in feedback. done: true reads back the notes already fixed instead, each with what was done, taking nothing (for \"remember all of this for the future\").", inputSchema: { type: "object", properties: { done: { type: "boolean" } } } },
@@ -89,14 +106,14 @@ export function routes(router: Router<App>): void {
   router.post("/mcp/writer-turn/{token}", async (context) => {
     const token = context.params.token ?? "";
     const body = await readJson<unknown>(context);
-    const answers = (await Promise.all((Array.isArray(body) ? body : [body]).map((message) => answerTo(token, message)))).filter((one) => one !== null);
+    const answers = (await Promise.all((Array.isArray(body) ? body : [body]).map((message) => answerTo(token, message, context.app)))).filter((one) => one !== null);
     if (answers.length === 0) return empty(202);
     return json(Array.isArray(body) ? answers : answers[0]);
   });
 }
 
 /** One JSON-RPC message to a turn's tools, answered (null for a notification). */
-export async function answerTo(token: string, message: unknown): Promise<unknown> {
+export async function answerTo(token: string, message: unknown, app?: App): Promise<unknown> {
   if (typeof message !== "object" || message === null) return null;
   const { id, method, params } = message as { id?: unknown; method?: unknown; params?: Record<string, unknown> };
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
@@ -108,13 +125,13 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: session.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("script")] });
+      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: toolsOf(session) });
     case "tools/call": {
       if (session === undefined) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
       const args = (typeof params?.arguments === "object" && params.arguments !== null ? params.arguments : {}) as Args;
       try {
-        return reply({ content: await call(session, name, args) });
+        return reply({ content: await call(session, name, args, app) });
       } catch (error) {
         diag.warn("writer", `${session.id}: ${name} failed: ${diag.messageOf(error)}`);
         return reply({ content: [{ type: "text", text: diag.messageOf(error) }], isError: true });
@@ -130,9 +147,27 @@ const str = (value: unknown): string | null => (typeof value === "string" && val
 const count = (value: unknown, fallback: number, low: number, high: number): number => (typeof value === "number" && Number.isFinite(value) ? Math.min(Math.max(Math.round(value), low), high) : fallback);
 const homeOf = (session: Session): string => parent(session.data) ?? session.data;
 
-async function call(session: Session, name: string, args: Args): Promise<Content[]> {
+/**
+ * The tools a turn has. A turn fixing a review's notes (`given`: the notes a
+ * Ready for changes took) has no other_projects: it's driven by whoever holds
+ * the review link, so it reads this script alone (review_guard.ts, the edit's).
+ */
+function toolsOf(session: Session): unknown[] {
+  // Read here, not when this file loads: other_projects.ts reads revise.ts, which reads this file.
+  const own = session.given === null ? [...TOOLS, { name: "other_projects", description: otherProjects.DESCRIPTION, inputSchema: otherProjects.INPUT_SCHEMA }] : TOOLS;
+  return session.place === null ? own : [...own, ...lanes.toolsFor("script"), USE_STYLE];
+}
+
+async function call(session: Session, name: string, args: Args, app?: App): Promise<Content[]> {
   switch (name) {
+    case "other_projects":
+      if (session.given !== null || session.read === "notes") throw new Error("A turn fixing the review's notes works on this script alone: other_projects isn't here. Say so, and ask the producer to point you at the other project in a message of its own.");
+      if (app === undefined) throw new Error("other_projects isn't available here.");
+      session.read = "other";
+      return said(otherProjects.answer(app.store, args, session.id, "script"));
     case "pull_feedback":
+      if (session.read === "other") throw new Error("This turn read another project, so it doesn't take the review's notes as well (they come from whoever holds the review link). Say so, and ask the producer to ask for the feedback in a message of its own.");
+      session.read = "notes";
       return said(args.done === true ? await doneFeedback(session) : await pullFeedback(session));
     case "search_web": {
       const query = str(args.query);
@@ -162,9 +197,40 @@ async function call(session: Session, name: string, args: Args): Promise<Content
     case "other_channels":
       if (session.place === null) throw new Error("This script isn't a channel's, so it has no lessons to keep or read.");
       return said(await lanes.call(name, args, session.place));
+    case "use_style":
+      if (session.place === null) throw new Error("This script isn't a channel's, so it has no styles.");
+      return said(await useStyle(session, session.place, args));
     default:
       throw new Error(`There's no tool ${name} here.`);
   }
+}
+
+/** Writes the script in one of its channel's styles from now on (and makes it the default, when asked); its guide, said back. */
+async function useStyle(session: Session, place: lanes.Place, args: Args): Promise<string> {
+  await lanes.refresh();
+  const lessons = lanes.lessonsOf(place);
+  const all = styles.stylesIn(lessons);
+  const asked = str(args.style) ?? "";
+  const dir = store.scriptDir(session.data, session.id);
+  if (/^(default|none|the default)$/iu.test(asked)) {
+    store.update(dir, (now) => void delete now.style, true);
+    const fallback = lanes.chosenStyle(place, null);
+    return fallback === null ? "This script is written in no style of its own now: the channel's lessons alone. The channel has no default style." : `This script is written in the channel's default style now, ${fallback.title}:\n\n${styles.prompt(fallback, all, true)}`;
+  }
+  const wanted = styles.nameFor(asked);
+  const found = all.find((one) => one.name === wanted || one.name === asked || one.title.toLowerCase() === asked.toLowerCase());
+  if (found === undefined) throw new Error(all.length === 0 ? "This channel has no script styles yet. One is learned from videos, a Doc or a script pasted in: ask the producer for the links." : `No style ${asked}: this channel's are ${all.map((one) => `${one.title} (${one.name.slice(styles.PREFIX.length)})`).join(", ")}.`);
+  // The channel's default first (a teacher's): refused, the script is left as it was.
+  let made = "";
+  if (args.default === true) {
+    // Kept where it takes: a channel's own style, or a channel with its own default, is that channel's, never its group's.
+    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat", lanes.defaultScope(place.channel, found.name));
+    await lanes.refresh();
+    made = lanes.defaultStyle(place) === found.name ? " It's the channel's default now: scripts that name no style are written in it." : ` It was kept as the default, but ${lanes.defaultStyle(place) ?? "no style"} is still this channel's default: say so.`;
+  }
+  store.update(dir, (now) => void (now.style = found.name), true);
+  const isDefault = lanes.defaultStyle(place) === found.name;
+  return `This script is written in ${found.title} from now on.${made} Say so in your reply.\n\n${styles.prompt(found, all, isDefault)}`;
 }
 
 /** The most of a video's captions one answer carries (about an hour of talk). */

@@ -9,6 +9,8 @@ import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/typ
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import * as lanes from "../lanes.ts";
+import * as styles from "../script_styles.ts";
+import * as otherProjects from "../other_projects.ts";
 import { join } from "../paths.ts";
 import { probe as probeFile } from "../media.ts";
 import { isFile } from "../paths.ts";
@@ -114,9 +116,22 @@ async function pickReused(dir: string, script: Script, job: Job): Promise<Script
  * script is read again afterwards, so an edit made during the build to
  * anything but the timeline stays.
  */
+/**
+ * A build note that names one of the channel's script styles ("…in the Dr Insanity style") writes the script in it
+ * from now on (script_styles.ts), as its default would be without one.
+ */
+async function styleNamed(dir: string, script: Script, note: string): Promise<Script> {
+  if (!script.channel || note.trim() === "") return script;
+  await lanes.refresh();
+  const named = styles.namedIn(lanes.lessonsOf({ channel: script.channel, lane: "script" }), note);
+  if (named === null || named.name === script.style) return script;
+  diag.info("writer", `${named.title} style asked for in the note: ${script.title} is written in it`);
+  return store.update(dir, (now) => void (now.style = named.name), true);
+}
+
 export async function buildOnce(app: App, data: string, id: string, note: string, kind: Kind | undefined, job: Job): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
-  let script = store.read(dir);
+  let script = await styleNamed(dir, store.read(dir), note);
   if (script.commentary) return buildCommentary(data, dir, script, note, job);
   if (kind !== undefined && kind !== script.kind) {
     script.kind = kind;
@@ -151,6 +166,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   }
   found = casefiles.withDocuments(dir, found);
   found = await withNoteDocs(note, found, id, script.title);
+  found = await withNoteProjects(app, note, found, id, script.title, job.signal);
   // The day the camera burned into its picture: the case opening's verified date when no report gives one.
   job.stage("Reading the footage's date");
   const stamps = await footageStamps(data, dir, script, job.signal);
@@ -159,7 +175,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   // The sound, so pauses with speech the transcript missed are kept.
   const peaks = await peaksOf(dir, script, job.signal);
   job.stage("Writing the script");
-  chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
+  if (!job.asked) chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
   let built: build.Built;
   try {
     // Its progress kept beside it, so a restart carries on from the last phase done, not from the outline.
@@ -168,9 +184,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   } catch (error) {
     failed(dir, job, error);
   }
-  const reports = found.articles.length;
-  const researched = reports === 0 ? `Research: ${found.problem ?? "nothing found."}` : `Research: ${reports} ${reports === 1 ? "report" : "reports"} (${found.articles.map((article) => article.outlet).join(", ")}).`;
-  let report = `${built.report.trim()}\n\n${researched}`;
+  let report = `${built.report.trim()}\n\n${researchLine(found)}`;
   checkStopped(job);
   const now = store.read(dir);
   const before = structuredClone(now);
@@ -237,6 +251,24 @@ export async function needsTeaching(script: Script, note: string): Promise<strin
 // On by default since loop 7 S2–S3 (four builds with and without: fewer flags, less re-telling, crumbs merged, for about two minutes); a build may ask without it (review: false).
 export const scriptFreshEyes = (asked: boolean | undefined): boolean => asked ?? true;
 
+/** How the builder is given what the producer's note points at (a Doc, another project), before its name. */
+const REFERENCE = "The producer's reference";
+
+/**
+ * The build report's line on its research: the news reports counted, and the
+ * producer's references said by name, never counted as reports (Nov 24 trial
+ * of #8: "Research: 1 report (Another of the team's projects the producer's
+ * note points at: follow what…)" beside "There was no research on this case").
+ */
+export function researchLine(found: Research): string {
+  const references = found.articles.filter((article) => article.title.startsWith(REFERENCE));
+  const news = found.articles.filter((article) => !references.includes(article));
+  const said = news.length === 0 ? `Research: ${found.problem ?? "nothing found."}` : `Research: ${news.length} ${news.length === 1 ? "report" : "reports"} (${news.map((article) => article.outlet).join(", ")}).`;
+  if (references.length === 0) return said;
+  const named = references.map((article) => (article.title === `${REFERENCE} (not read)` ? `${article.url} (couldn't be read)` : article.title.slice(REFERENCE.length + 2)));
+  return `${said}\n\nYour ${references.length === 1 ? "reference" : "references"}: ${named.join("; ")}.`;
+}
+
 /**
  * A Google Doc the build's note links to, read with the team's sign-in and
  * given to the builder beside the research (Republican Chairman, Nov 1: "you
@@ -252,13 +284,42 @@ export async function withNoteDocs(note: string, found: Research, id: string, ti
   for (const link of links) {
     try {
       const [name, text] = await commentary.fetchSource(link);
-      articles.push({ title: `The producer's reference: ${name}`, outlet: "A Doc the producer's note links to (follow the note on what to take from it)", published: null, url: link, summary: [...text.trim()].slice(0, 20_000).join(""), facts: [] });
+      articles.push({ title: `${REFERENCE}: ${name}`, outlet: "A Doc the producer's note links to (follow the note on what to take from it)", published: null, url: link, summary: [...text.trim()].slice(0, 20_000).join(""), facts: [] });
     } catch (error) {
       diag.warn("writer", `${named(id, title)}: the note's Doc ${link} couldn't be read: ${diag.messageOf(error)}`);
-      articles.push({ title: "The producer's reference (not read)", outlet: "A Doc the producer's note links to", published: null, url: link, summary: `This Doc couldn't be read (${diag.messageOf(error)}). Say so in the report, with the reason.`, facts: [] });
+      articles.push({ title: `${REFERENCE} (not read)`, outlet: "A Doc the producer's note links to", published: null, url: link, summary: `This Doc couldn't be read (${diag.messageOf(error)}). Say so in the report, with the reason.`, facts: [] });
     }
   }
   return { ...found, articles };
+}
+
+/**
+ * Another of the team's projects the build's note points at ("build it out
+ * like the Kimberly script", other_projects.ts `pointedAt`), given to the
+ * builder beside the research as the producer's reference, as a linked Doc
+ * is: every phase of the build reads it. Its case is another's: its shape and
+ * what was asked there, never its facts. Not read, the build goes on without it.
+ */
+export async function withNoteProjects(app: App, note: string, found: Research, id: string, title: string, signal?: AbortSignal): Promise<Research> {
+  let pointed: { one: otherProjects.Other; text: string }[];
+  try {
+    pointed = await otherProjects.pointedAt(app.store, note, id, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    diag.warn("writer", `${named(id, title)}: which project the note points at couldn't be read: ${diag.messageOf(error)}`);
+    return found;
+  }
+  if (pointed.length === 0) return found;
+  diag.info("writer", `${named(id, title)}: the note points at ${pointed.map(({ one }) => `${one.kind} ${one.id}`).join(", ")}`);
+  const articles = pointed.map(({ one, text }) => ({
+    title: `${REFERENCE}: the ${one.kind} "${one.title}"`,
+    outlet: "Another of the team's projects the producer's note points at: follow what they asked for there and how it's built, as the note says; its case is another's, so never take its facts, names or words",
+    published: null,
+    url: "",
+    summary: text,
+    facts: [],
+  }));
+  return { ...found, articles: [...found.articles, ...articles] };
 }
 
 /**
@@ -276,7 +337,7 @@ export async function buildAndReview(app: App, data: string, id: string, note: s
   job.stage("Reading it with fresh eyes");
   try {
     const built = store.read(store.scriptDir(data, id));
-    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job, { given: null, tools: false });
+    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), chat.FRESH_EYES, { selected: [], picked: null, playheadMs: null }, true, job, { given: null, tools: false });
     return [`${report}\n\nFresh eyes: ${again}`, cost + more];
   } catch (error) {
     checkStopped(job);
@@ -401,7 +462,7 @@ export async function reviseWith(data: string, id: string, request: string, said
   if (script.commentary) return reviseCommentary(data, dir, script, request, said, job, turn);
   if (!script.clips.some((clip) => clip.kind === "cut-in")) throw new Error("Build the script first; then ask for changes.");
   const earlier = chat.recent(dir);
-  chat.asked(dir, said, job.resumed);
+  if (!job.asked) chat.asked(dir, said, job.resumed);
   script = await pickReused(dir, script, job);
   const peaks = await peaksOf(dir, script, job.signal);
   const found = casefiles.withDocuments(dir, research.load(dir) ?? { articles: [], queries: [], at: 0 });
@@ -448,7 +509,7 @@ export async function reviseCommentary(data: string, dir: string, given: Script,
   // Edits name paragraphs by id: a script never shared gets them now.
   const script = structuredClone(given);
   if (script.commentary?.draft && ensureIds(script.commentary.draft)) store.write(dir, script);
-  chat.asked(dir, said, job.resumed);
+  if (!job.asked) chat.asked(dir, said, job.resumed);
   return withTools(data, script.id, turn, async (tools, settle) => {
     let done: commentary.Revised;
     try {

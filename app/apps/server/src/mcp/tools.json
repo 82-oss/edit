@@ -14,6 +14,28 @@
     "name": "list_projects"
   },
   {
+    "description": "Another of the team's projects on this computer (an edit or a script), when the person points you at one (\"do it like the Kimberly script\", \"the same as we did on the Trooper edit\"): what they asked for in its chat, each with the answer it got, and the work itself. name: what the person called it; id: one from an earlier answer; neither: the most recent. Read only.",
+    "inputSchema": {
+      "properties": {
+        "id": {
+          "description": "Its id, from an earlier answer",
+          "type": "string"
+        },
+        "name": {
+          "description": "What the person called it, in their words",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "other_projects"
+  },
+  {
     "description": "Load one part of the house style (the SKILLS list in the instructions): how the team does that part of an edit. Load it before working on that part, once per conversation. edit-workflow is the whole edit in one go, and also starts watching the footage in the background.",
     "inputSchema": {
       "properties": {
@@ -4710,7 +4732,7 @@
     "name": "check_removal"
   },
   {
-    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Their subtitles and text get a blur tracked tight over their words, in every section; their watermarks come out. For a channel taught to take their text out, it's also how you mark it: only stretches you mark are blurred, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal (the blur's with render_frame) as they're done; exports wait for them.",
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Their subtitles and text get a blur tracked tight over their words, in every section; their watermarks come out. For a channel taught to take their text out, it's also how you mark it: only stretches you mark are blurred, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. When the person wants a part stopped (\"stop the watermark removal\"), {stop: true, kinds: [\"watermarks\"]} stops just that, the rest going on (no kinds: all of it); what's done stays, and it starts again only on a new ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal (the blur's with render_frame) as they're done; exports wait for them.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4803,6 +4825,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "stop": {
+          "description": "Stop the parts named in kinds (all of them when none), the rest going on",
+          "type": "boolean"
         }
       },
       "type": "object"

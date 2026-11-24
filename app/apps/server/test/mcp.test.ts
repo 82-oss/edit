@@ -50,14 +50,16 @@ test("tool_reference_is_one_short_line_per_tool", () => {
   // add_subtitles' and repack_subtitles' burned_in (Nov 16: footage with its own subtitles burned in) a few more,
   // find_camera_time (Nov 17: a time on a bodycam's clock as the footage's seconds) one short line,
   // start_removal's marks and sections (Nov 18–19: the agent marks where their text is) a few words,
-  // remove_music and bring_back_sound (Nov 23: music under the dialogue, a lost word brought back) a line each.
-  expect(reference.length).toBeLessThan(22_950);
+  // remove_music and bring_back_sound (Nov 23: music under the dialogue, a lost word brought back) a line each,
+  // other_projects (Nov 24: another edit or script the person points at) one line.
+  expect(reference.length).toBeLessThan(23_300);
 });
 
 test("every tool takes project_id; the instructions list the skills", () => {
   // other_channels (Nov 14): a channel's agent reaching into another channel; find_camera_time (Nov 17); teach_removal and check_removal (Nov 17); start_removal (Nov 17);
-  // addons and set_addon (Nov 21); note_lesson gone (Nov 21: Sphe, "completely remove the lessons inbox system"); remove_effect_files, draft_teaching and teach_drafted (Nov 22); remove_music and bring_back_sound (Nov 23).
-  expect(TOOLS.length).toBe(133);
+  // addons and set_addon (Nov 21); note_lesson gone (Nov 21: Sphe, "completely remove the lessons inbox system"); remove_effect_files, draft_teaching and teach_drafted (Nov 22); remove_music and bring_back_sound (Nov 23);
+  // other_projects (Nov 24: JJ, "do it in the same way as we just did with XYZ edit").
+  expect(TOOLS.length).toBe(134);
   for (const tool of TOOLS) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.properties.project_id).toEqual({

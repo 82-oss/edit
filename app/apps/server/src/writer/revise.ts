@@ -56,12 +56,12 @@ const TAUGHT_EDGES = "Anchor clip edges to exact words; the app adds breathing r
 export function systemPrompt(script: Script, format: Format, tools: boolean): string {
   const teach = tools && script.channel ? "tools" : "lesson";
   const rule = teach === "lesson" ? `\n${LESSON_RULE}` : "";
-  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false)}`;
+  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false, script.style ?? null)}`;
   const cases = format.compilation ? Math.max(caseCount(script.parts), 1) : 1;
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
   let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt + lanes.section(script.channel, "script", teach);
+  return prompt + lanes.section(script.channel, "script", teach, true, script.style ?? null);
 }
 
 const SCHEMA = {
@@ -167,11 +167,17 @@ function inside(words: Word[], clip: Clip): [number | null, number | null] {
 
 const shown = (script: Script, index: number): string => script.corrections?.[script.words[index]!.id] ?? script.words[index]!.text;
 
-/** The script as it stands, item by item, with what the edge review flags. */
-export function current(script: Script, format: Format): string {
+/**
+ * The script as it stands, item by item, with what the edge review flags.
+ * A clip shows its first and last words ("ends": the revision has the
+ * transcript whole). For another project's agent reading it with nothing else
+ * (other_projects.ts): "all", every word of it, or "none", its times alone,
+ * for a script whose words don't fit.
+ */
+export function current(script: Script, format: Format, words: "ends" | "all" | "none" = "ends"): string {
   const clips = script.clips;
   const roles = purposes(clips, format, openingOf(clips, format));
-  const issues = tidy.boundaryIssues(clips, script.words, script.corrections ?? {});
+  const issues = words === "ends" ? tidy.boundaryIssues(clips, script.words, script.corrections ?? {}) : [];
   const length = clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0);
   const cutIns = clips.filter(isCutIn).length;
   const lines = [`CURRENT SCRIPT (the timeline in order; ${clock(length)} long, ${cutIns} cut-ins, ${pageCount(script, clips)} Letter pages)`];
@@ -196,8 +202,14 @@ export function current(script: Script, format: Format): string {
       const at = tidy.partAt(parts, clip.startMs);
       recording = parts[at]!.reuse !== undefined ? " reused case's footage" : ` recording ${at + 1}`;
     }
-    let said = " (no words)";
-    if (first !== null && last !== null) {
+    let said = words === "none" ? "" : " (no words)";
+    if (words === "none") {
+      // Its times alone.
+    } else if (first !== null && last !== null && words === "all") {
+      const all: string[] = [];
+      for (let i = first; i <= last; i++) all.push(shown(script, i));
+      said = ` w${first}–w${last} "${all.join(" ")}"`;
+    } else if (first !== null && last !== null) {
       const head: string[] = [];
       for (let i = first; i <= Math.min(last, first + 7); i++) head.push(shown(script, i));
       const tail: string[] = [];
@@ -206,7 +218,8 @@ export function current(script: Script, format: Format): string {
     }
     lines.push(`${label} clip [${clock(clip.startMs)}–${clock(clip.endMs)}${recording}]${said}`);
     for (const [at, note] of (clip.notes ?? []).entries()) lines.push(`   note ${at + 1}, the producer's comment for the editor${note.anchor ? ` on "${note.anchor.quote}"` : ""}: "${note.text.trim()}"`);
-    for (const issue of issues) if (issue.id === clip.id) lines.push(`   edge review: ${issue.end ? "end" : "start"} ${issue.issue}`);
+    // The edge review is the revision's to act on, not another project's agent's.
+    if (words === "ends") for (const issue of issues) if (issue.id === clip.id) lines.push(`   edge review: ${issue.end ? "end" : "start"} ${issue.issue}`);
   }
   return lines.join("\n");
 }

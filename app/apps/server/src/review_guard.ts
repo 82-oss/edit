@@ -11,6 +11,7 @@ import * as diag from "./diag.ts";
 /** Tools a review-fix turn may not call: other projects, the web, files off this Mac, publishing and exporting. */
 export const BLOCKED = new Set([
   "list_projects",
+  "other_projects",
   "search_web",
   "search_broll",
   "read_broll_source",

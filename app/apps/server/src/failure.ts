@@ -39,6 +39,15 @@ export class NeedsPerson extends Error {
   override readonly name = "NeedsPerson";
 }
 
+/**
+ * Work that fails the same way every time on what's already on this machine (an excerpt that comes out the wrong
+ * length even encoded, from a whole copy here): broken, never tried again by itself, so a file isn't downloaded anew
+ * for nothing; a new build tries it once.
+ */
+export class SameEveryTime extends Error {
+  override readonly name = "SameEveryTime";
+}
+
 /** Google Drive's download limit for a file is used up for the day; `retryAfterMs` when Google said when it's back. */
 export class DriveLimit extends Error {
   override readonly name = "DriveLimit";
@@ -118,6 +127,8 @@ const ROOM = /no space left on device|ENOSPC|There isn't room on this|needs? (ab
 const PASSING = /(?:<url>|https?:\/\/\S+).*failed to fill whole buffer|Empty reply from server|could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5(\d\d|XX)|\(5\d\d\)|busy|Input\/output error|No route to host|Failed to resolve hostname|Could not resolve host|Failed to connect|Stream ends prematurely|Invalid data found when processing input|Unable to connect|transfer closed with|SSL_ERROR_SYSCALL|was not closed cleanly|Broken pipe|nodename nor servname provided|\[Errno 8\]|Temporary failure in name resolution|Name or service not known|urlopen error|stood still|too slow/i;
 /** The codes Bun, Node and curl give a connection that failed or dropped: passing, whatever the words say. */
 const PASSING_CODES = new Set(["ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
+/** `SameEveryTime`'s words, as a job keeps them. */
+const SAME_EVERY_TIME = /comes out the wrong length every time/i;
 /** No sign-in at all, in an older build's words kept in a job. */
 const SIGNIN = /Sign in to Edit to go on|needs? you signed in to Edit/i;
 
@@ -156,6 +167,7 @@ export function kindOf(error: unknown): Kind {
 export function surely(error: unknown): Kind | null {
   for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
     if (at instanceof NeedsPerson) return "person";
+    if (at instanceof SameEveryTime) return "broken";
     if (at instanceof DriveLimit) return "limit";
     if (at instanceof NoRoom) return "room";
     if (at instanceof SignedOut) return "signin";
@@ -195,6 +207,7 @@ export function surely(error: unknown): Kind | null {
   if (typeof error !== "string" && isBug(error)) return "broken";
   const words = typeof error === "string" ? error : diag.messageOf(error);
   if (OUR_QUEUE.test(words)) return "passing";
+  if (SAME_EVERY_TIME.test(words)) return "broken";
   if (ROOM.test(words)) return "room";
   if (DRIVE_LIMIT.test(words)) return "limit";
   if (QUOTA.test(words)) return "quota";

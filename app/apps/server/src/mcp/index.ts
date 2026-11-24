@@ -10,6 +10,7 @@ import * as reviewGuard from "../review_guard.ts";
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import { extensionOf, keepPicture, pruneToolPictures, TOOL_PICTURES } from "../chat_pictures.ts";
+import * as otherProjects from "../other_projects.ts";
 import { join } from "../paths.ts";
 import { isBug, crashed } from "../guard.ts";
 import { empty, json, text as plain } from "../http/errors.ts";
@@ -257,3 +258,5 @@ export async function once(key: string, name: string, work: () => Promise<Conten
 
 // list_projects answers before any project is resolved (it works with none).
 registerTool("list_projects", ({ app }) => text(JSON.stringify(app.store.visible(), null, 2)), { noProject: true });
+// Another project the person points at (other_projects.ts): read only, never this one.
+registerTool("other_projects", ({ app, args, projectId }) => text(otherProjects.answer(app.store, args, projectId, "edit")));

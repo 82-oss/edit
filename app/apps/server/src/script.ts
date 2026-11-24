@@ -2467,11 +2467,15 @@ let nextCut = 0;
  * Ogg), then M4A. The cut always encodes the sound as AAC, and AAC written
  * into a .wav reads back as garbage (Nov 1: a µ-law 911 call's 0–55 s excerpt
  * came out a 27.6 s .wav no proxy could decode, so that import waited all day
- * on "1 of 12 files couldn't be downloaded").
+ * on "1 of 12 files couldn't be downloaded"). An ASF (a WMV) goes to MP4 too:
+ * the ASF muxer writes its preroll into the length, so every cut read back 1 to
+ * 2 s long and was refused as wrong (Nov 24, JJ's "Cops Catch Killer at
+ * Airport": three H.264 .asf bodycam files each downloaded whole, refused, and
+ * downloaded again on every retry for hours).
  */
 export function excerptExtension(ext: string): string {
   const lower = ext.toLowerCase();
-  if (["vob", "mpg", "mpeg", "m2p", "ps", "dat", "webm", "ogv"].includes(lower)) return "mp4";
+  if (["vob", "mpg", "mpeg", "m2p", "ps", "dat", "webm", "ogv", "asf", "wmv"].includes(lower)) return "mp4";
   if (["wav", "wave", "aif", "aiff", "aifc", "flac", "mp3", "ogg", "oga", "opus", "wma", "amr", "au", "snd", "ac3", "dts"].includes(lower)) return "m4a";
   return ext;
 }
@@ -2517,12 +2521,57 @@ export async function excerpts(source: string, ranges: [number, number][], onCut
  * Cuts `start`..`to` seconds of `source` (a file or a presigned URL: FFmpeg
  * seeks before reading, so only that stretch is fetched) into `out`: picture
  * copied from the keyframe at `start`, sound re-encoded to start with it.
+ *
+ * From a file on this disk, a copied cut that FFmpeg refused or that came out
+ * the wrong length is cut once more with its picture encoded, which is exact
+ * in any container; one still wrong then is wrong every time
+ * (`failure.SameEveryTime`), never tried again by downloading the footage
+ * anew. Nov 24, JJ's "Cops Catch Killer at Airport": three ASF files, each
+ * downloaded whole for up to an hour, cut a second long, refused, and
+ * downloaded again on every retry.
  */
 export async function cut(source: string, start: number, to: number, out: string): Promise<void> {
+  const copy = await picturePasses(source, out);
+  try {
+    await cutOnce(source, start, to, out, copy);
+  } catch (error) {
+    if (tools.isUrl(source) || !(error instanceof CutRefused)) throw error;
+    if (!copy) throw lasting(error);
+    diag.warn("script", `cutting an excerpt: ${error.message.replace(/\.$/u, "")}; cut again with its picture encoded`);
+    try {
+      await cutOnce(source, start, to, out, false);
+    } catch (again) {
+      throw lasting(again);
+    }
+  }
+}
+
+/**
+ * An encoded cut from a file here measured the wrong length: wrong every time (`failure.SameEveryTime`). Anything
+ * else (FFmpeg refusing it, an excerpt whose length couldn't be read, perhaps a probe out of time) stays as it was.
+ */
+function lasting(error: unknown): unknown {
+  if (!(error instanceof CutRefused) || error.wrong === null || error.wrong === UNREADABLE) return error;
+  return new failure.SameEveryTime(`This footage can't be cut: its excerpt comes out the wrong length every time it's cut (${error.wrong}).`);
+}
+
+/** A cut FFmpeg refused, or one that came out wrong (`wrong` says how). Its words are what `cloud_media.cutsBetterHere` reads. */
+class CutRefused extends Error {
+  constructor(
+    message: string,
+    readonly wrong: string | null,
+  ) {
+    super(message);
+  }
+}
+
+/** One cut of `cut`'s: its picture copied, or encoded (odd sizes padded a pixel: 4:2:0 H.264 takes even sizes only). */
+async function cutOnce(source: string, start: number, to: number, out: string, copy: boolean): Promise<void> {
   let output: { ok: boolean; stderr: string };
   // From the cloud's address: cut for as long as the excerpt's file grows. From a file here: within a fixed time.
   const remote = tools.isUrl(source);
   try {
+    const picture = copy ? ["-c:v", "copy"] : ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
     const command = [
       tools.ffmpeg(),
       "-v",
@@ -2543,8 +2592,7 @@ export async function cut(source: string, start: number, to: number, out: string
       "0:v:0?",
       "-map",
       "0:a?",
-      "-c:v",
-      "copy",
+      ...picture,
       "-c:a",
       "aac",
       "-b:a",
@@ -2567,15 +2615,51 @@ export async function cut(source: string, start: number, to: number, out: string
       const need = await bitRateOf(source).then((rate) => (rate === null ? 0 : Math.ceil(((to - start) * rate) / 8 / 1e6) * 1e6), () => 0);
       throw new failure.NoRoom(need, need > 0 ? `Needs ${need >= 1e9 ? `${(need / 1e9).toFixed(1)} GB` : `${Math.round(need / 1e6)} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.` : "This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.");
     }
-    throw new Error("Couldn't cut an excerpt from the footage.");
+    throw new CutRefused("Couldn't cut an excerpt from the footage.", null);
   }
   const problem = await excerptProblem(source, start, to, out);
   if (problem !== null) {
     fs.rmSync(out, { force: true });
     diag.warn("script", `cutting an excerpt: ${problem}`);
-    throw new Error(`The excerpt cut from the footage came out wrong (${problem}).`);
+    throw new CutRefused(`The excerpt cut from the footage came out wrong (${problem}).`, problem);
   }
 }
+
+/** Pictures an MP4 takes as they are: an excerpt moved into one from another container copies only these. */
+const MP4_PICTURES = ["h264", "hevc", "mpeg4", "mpeg2video", "mpeg1video", "av1", "vp9", "mjpeg"];
+
+/**
+ * Whether `source`'s picture is copied into `out` as it is: always when the excerpt keeps its own container; into an
+ * MP4 from another (`excerptExtension`) only a picture MP4 holds. Windows Media video (WMV2, WMV3, VC-1) in an ASF is
+ * encoded instead: MP4 can't hold it, and kept in ASF the excerpt reads seconds long (Nov 24, the ASF preroll).
+ */
+async function picturePasses(source: string, out: string): Promise<boolean> {
+  const to = (pathExtension(out) ?? "").toLowerCase();
+  // An address ends in the original's name: the cloud's key (an ASF read from there when its download here failed) or
+  // this Mac's reader's (an MP4 or MOV read in place, `cloud_media.readsInPlace`, so copied as before).
+  const from = (pathExtension(tools.isUrl(source) ? addressPath(source) : source) ?? "").toLowerCase();
+  if (to !== "mp4" || from === "" || from === to) return true;
+  const output = await runTool(
+    [tools.ffprobe(), "-v", "error", "-protocol_whitelist", tools.protocols(source), "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", ...tools.urlArgs(source), source],
+    steps.probeLimit(source),
+    "Reading the footage's picture",
+  );
+  const codec = trim(output.stdout).split("\n")[0] ?? "";
+  // No picture (sound alone) or one MP4 holds: copied.
+  return codec === "" || MP4_PICTURES.includes(codec);
+}
+
+/** An address's path, decoded, without its query (a signature); "" when it isn't one. */
+function addressPath(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return "";
+  }
+}
+
+/** `excerptProblem`'s words for an excerpt whose length couldn't be read (never a length measured wrong). */
+const UNREADABLE = "it can't be read back";
 
 /**
  * Why a fresh excerpt isn't the stretch it was cut from, or null: it reads
@@ -2587,7 +2671,7 @@ export async function cut(source: string, start: number, to: number, out: string
 export async function excerptProblem(source: string, start: number, to: number, out: string): Promise<string | null> {
   const asked = to - start;
   const got = await secondsOf(out);
-  if (got === null) return "it can't be read back";
+  if (got === null) return UNREADABLE;
   const leeway = Math.max(0.5, asked * 0.02);
   // Copied picture runs on past the end by its reorder delay: FFmpeg stops at the last frame decoded by then, and with
   // B-frames frames shown later come with it (Nov 18, JJ's Axon bodycam MartyBlank_202604201718: a 0.6 s delay, its
@@ -2596,7 +2680,9 @@ export async function excerptProblem(source: string, start: number, to: number, 
   if (got >= asked - leeway) return null;
   // Shorter than asked is right only when the footage itself ends sooner.
   const whole = await secondsOf(source);
-  if (whole !== null && whole - start <= got + leeway) return null;
+  // The footage's own length unread (perhaps a probe out of time) decides nothing: never a length measured wrong.
+  if (whole === null) return UNREADABLE;
+  if (whole - start <= got + leeway) return null;
   return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
 }
 

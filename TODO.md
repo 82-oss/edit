@@ -71,6 +71,7 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **The end-of-turn check ran in a real Edit on Nov 22**: it read the files, found a quarter-second flash and started the agent again by itself. Since then "Changes are done" comes once, after the check and any turn it started (removal's wake too). Known: each audit runs on the server's thread, as every change's does.
 - **Text removal, from the Boyfriends edit**: the bottom ARRESTFLIX mark is never found; a short "No" in the 0.80× copy reads as no words; a subtitle under the glitch transition isn't planned. All wait on the bake-off of mark finders.
 - **Cuffed & Caught's cleanup**: a new render after the strip-stacking fix was never checked on prod.
+- **Script styles learned from references (Nov 24, JJ: "put in a Dr Insanity script for it to understand the writing style")**: tried in dev Edit on Sam's Interrogations (channel only, hidden AB script): one Dr Insanity video learned, the script's narration rewritten in it, switched back with use_style. Not yet seen live: two or three links at once, a channel's link, a pasted script or a Doc, a first build whose note names a style, making one the default, and a run on a Mac. A pasted script in New project's first message is cut at 4,000 characters (`firstBuild`).
 
 ## The cloud and storage
 

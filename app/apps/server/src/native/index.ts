@@ -118,6 +118,13 @@ export interface WatermarkRemoved {
   took: number;
 }
 
+/** What the still clean of a stretch said (still.rs `clean`): its strip written to the job's `out` (its box in shares, null with no words), or why the stretch isn't a still shot it cleans. */
+export interface StillAnswer {
+  still: boolean;
+  box?: Box | null;
+  why?: string;
+}
+
 export interface RenderRequest {
   project: ProjectInput;
   frames: number[];
@@ -309,6 +316,8 @@ export interface Native {
   watermarkLearn?(source: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], onProgress: (progress: number) => void): Promise<string>; // A
   /** A piece of footage's watermark taken out into a stacked strip at `piece.out` (watermark.rs `remove`); null when the mark isn't there. Missing from an addon built before it. */
   watermarkRemove?(piece: WatermarkPiece, onProgress: (progress: number) => void): Promise<WatermarkRemoved | null>; // A
+  /** Their captions out of a still camera's stretch (still.rs `clean`), from found.ts `stillClean`'s job (JSON). Missing from an addon built before it. */
+  stillClean?(job: string): Promise<StillAnswer>; // A
   censorIssues(project: ProjectInput, start: boolean): { issues: unknown[]; pending: string[] }; // S (+BG)
   censorWarm(path: string, read?: string | null): void; // BG
   /** Whether a person is watching a play here (playing.ts): background analysis's FFmpeg stops while one is. Missing from an addon built before it (a dev server's). */
