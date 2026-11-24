@@ -25,7 +25,7 @@
  * it's on and the key, the queue and R2 are here.
  */
 import { allow, burstKey, type AuthEnv } from "./auth";
-import { objectUrl, r2Config, validKey, type CloudEnv } from "./cloud";
+import { objectUrl, r2Config, r2Fetch, validKey, type CloudEnv } from "./cloud";
 import { BOOTSTRAP_B64, CPU_B64, CPU_BOOT_B64, POD_B64 } from "./remover_kit";
 import { RUNTIME } from "./remover_runtime";
 
@@ -48,12 +48,14 @@ const URL_SECONDS = 6 * 3600;
 const OUT_PREFIX = "edit/cleaned/work/";
 /** The marks' models Edit puts up for the watermark jobs (remover_cloud.ts `modelKey`). */
 const MODEL_PREFIX = "edit/cleaned/models/";
+/** Parent finder state Edit puts up for slowed-copy find jobs (remover_cloud.ts `parentStateKey`). */
+const FINDER_PREFIX = "edit/cleaned/finder/";
 const MAX_FRAMES = 36_000;
 const MAX_WORKER = 200_000;
 
-type Kind = "clean" | "learn" | "watermark" | "track";
+type Kind = "clean" | "learn" | "watermark" | "track" | "find";
 type Pool = "gpu" | "cpu";
-const poolOf = (kind: Kind): Pool => (kind === "clean" ? "gpu" : "cpu");
+const poolOf = (kind: Kind): Pool => (kind === "clean" || kind === "find" ? "gpu" : "cpu");
 
 /**
  * Machines rented at once a pool. One GPU, the cheapest way (Sphe, Nov 20: "lets go ahead and do it the cheap way":
@@ -71,6 +73,10 @@ export const MAX_PODS: Record<Pool, number> = { gpu: 16, cpu: 2 };
  */
 const GPU_WORK_EACH_S = 15 * 60;
 const GPU_S_A_FOOTAGE_S = 8;
+/** Weight of one finder job when deciding how many GPUs to rent: ~1 s of card weight per footage second plus 60 s overhead,
+ * so one short file or a handful of tiny clips share a card while several long files rent cards in parallel (and stay warm for cleans). */
+const FIND_S_A_FOOTAGE_S = 1;
+const FIND_OVERHEAD_S = 60;
 /** Jobs a CPU machine does at once (cpu.ts LANES on 32 cores): how many waiting jobs one machine covers. */
 const CPU_LANES = 5;
 /** A rented machine that hasn't asked for work by now (booting: pulling the image, installing, loading) is let go. */
@@ -145,6 +151,13 @@ export function readRequest(kind: Kind, value: unknown): Record<string, unknown>
     if (!validKey(r.model) || !(r.model as string).startsWith(MODEL_PREFIX)) return null;
     return { input: r.input, size: r.size, fps: r.fps, from: r.from, to: r.to, model: r.model, keep: r.keep ?? [] };
   }
+  if (kind === "find") {
+    if (!Array.isArray(r.spans) || r.spans.length === 0 || r.spans.length > 2000) return null;
+    if (!r.spans.every((span) => Array.isArray(span) && span.length === 2 && num(span[0], 0, 1e6) && num(span[1], 0, 1e6) && (span[1] as number) >= (span[0] as number))) return null;
+    const parent = r.parent === undefined || r.parent === null ? null : validKey(r.parent) && String(r.parent).startsWith(FINDER_PREFIX) ? String(r.parent) : undefined;
+    if (parent === undefined) return null;
+    return { input: r.input, spans: r.spans, ...(parent === null ? {} : { parent }) };
+  }
   // track
   const plan = r.plan as Record<string, unknown> | undefined;
   if (!isSize(r.size) || !num(r.fps, 1, 240) || !num(r.from, 0, 1e6) || !num(r.to, 0, 1e6) || !(r.to > r.from) || !isBox(r.region)) return null;
@@ -189,15 +202,15 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
     }
     // Builds before kinds sent a clean alone.
     const kind = (body.kind ?? "clean") as Kind;
-    if (!["clean", "learn", "watermark", "track"].includes(kind)) return json(400, { error: "kind is clean, learn, watermark or track." });
-    if (kind === "clean" && (typeof body.worker !== "string" || body.worker.length === 0 || body.worker.length > MAX_WORKER)) return json(400, { error: "worker must be the worker's code." });
+    if (!["clean", "learn", "watermark", "track", "find"].includes(kind)) return json(400, { error: "kind is clean, learn, watermark, track or find." });
+    if ((kind === "clean" || kind === "find") && (typeof body.worker !== "string" || body.worker.length === 0 || body.worker.length > MAX_WORKER)) return json(400, { error: "worker must be the worker's code." });
     const job = readRequest(kind, body.request);
     if (job === null) return json(400, { error: `request isn't a ${kind} job.` });
     if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `remover:${burstKey(request, found)}` })).success) return json(429, { error: "Too many jobs at once; try again in a minute." });
     const id = crypto.randomUUID();
-    const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" ? "json" : "mp4"}`;
+    const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" || kind === "find" ? "json" : "mp4"}`;
     const backlog = typeof body.backlog === "number" && Number.isFinite(body.backlog) ? Math.min(Math.max(0, body.backlog), 86_400) : 0;
-    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" ? body.worker : undefined, request: job, relay: url.origin, backlog });
+    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" || kind === "find" ? body.worker : undefined, request: job, relay: url.origin, backlog });
     if (!answer.ok) return answer;
     // The same job already queued or under way (Edit restarted mid-job and sent it again): that one, not a twin.
     const twin = (await answer.json()) as { id?: string; out?: string };
@@ -229,6 +242,12 @@ interface Job {
   at: number;
   /** Its request's hash: the same job sent again is this one while it's queued or under way. */
   twin?: string;
+  /** Active callers waiting on this job (incremented on twin dedup, decremented on cancel). */
+  subs?: number;
+  /** True once more than one caller attached via twin dedup: clients leave `out` on R2 and tend() cleans it later. */
+  shared?: boolean;
+  /** True once tend() has deleted a shared job's `out` object on R2. */
+  outCleaned?: boolean;
 }
 
 interface Pod {
@@ -239,6 +258,8 @@ interface Pod {
   rentedAt: number;
   seenAt: number | null;
   jobs: string[];
+  /** True on GPU pods booted with the pod.py that handles kind "find" (older pods only understand "clean"). */
+  canFind?: boolean;
 }
 
 interface Storage {
@@ -294,20 +315,30 @@ export class RemoverPods {
     return (await this.storage().get<string[]>(`order:${pool}`)) ?? (pool === "gpu" ? ((await this.storage().get<string[]>("order")) ?? []) : []);
   }
 
-  /** GPU seconds the waiting cleans come to (their frames, and what Edit said it holds back, at ~5 s a footage second). */
-  private async gpuWork(): Promise<number> {
+  /** GPU seconds waiting in the queue (total across cleans + backlog + finds, plus find-only work and count). */
+  private async gpuWork(): Promise<{ total: number; find: number; waitingFind: number }> {
     const ids = await this.order("gpu");
     const held = await this.storage().get<{ seconds: number; at: number }>("backlog:gpu");
-    let seconds = held !== undefined && Date.now() - held.at < 5 * 60_000 ? held.seconds * GPU_S_A_FOOTAGE_S : 0;
+    let clean = held !== undefined && Date.now() - held.at < 5 * 60_000 ? held.seconds * GPU_S_A_FOOTAGE_S : 0;
+    let find = 0;
+    let waitingFind = 0;
     for (let at = 0; at < ids.length; at += 128) {
       const jobs = await this.storage().get<Job>(ids.slice(at, at + 128).map((id) => `j:${id}`));
       for (const job of jobs.values()) {
-        const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
-        const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
-        seconds += (frames / fps) * GPU_S_A_FOOTAGE_S;
+        if (job.state !== "queued") continue;
+        if (job.kind === "find") {
+          const spans = Array.isArray(job.request.spans) ? (job.request.spans as [number, number][]) : [];
+          const shown = spans.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
+          find += shown * FIND_S_A_FOOTAGE_S + FIND_OVERHEAD_S;
+          waitingFind += 1;
+        } else {
+          const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
+          const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
+          clean += (frames / fps) * GPU_S_A_FOOTAGE_S;
+        }
       }
     }
-    return seconds;
+    return { total: clean + find, find, waitingFind };
   }
 
   private async setOrder(pool: Pool, order: string[]): Promise<void> {
@@ -325,8 +356,13 @@ export class RemoverPods {
     const twin = [...new Uint8Array(digest)].slice(0, 16).map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const earlier = await this.storage().get<string>(`twin:${twin}`);
     const before = earlier === undefined ? undefined : await this.storage().get<Job>(`j:${earlier}`);
-    if (before !== undefined && (before.state === "queued" || before.state === "running")) return json(200, { ok: true, id: before.id, out: before.out });
-    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now(), twin };
+    if (before !== undefined && (before.state === "queued" || before.state === "running")) {
+      before.subs = (before.subs ?? 1) + 1;
+      before.shared = true;
+      await this.storage().put(`j:${before.id}`, before);
+      return json(200, { ok: true, id: before.id, out: before.out });
+    }
+    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now(), twin, subs: 1 };
     await this.storage().put(`j:${job.id}`, job);
     await this.storage().put(`twin:${twin}`, job.id);
     await this.setOrder(poolOf(kind), [...(await this.order(poolOf(kind))), job.id]);
@@ -338,7 +374,7 @@ export class RemoverPods {
   private async status(id: string): Promise<Response> {
     const job = await this.storage().get<Job>(`j:${id}`);
     if (job === undefined) return json(404, { error: "no such job" });
-    if (job.state === "done") return json(200, job.output ?? { ok: true });
+    if (job.state === "done") return json(200, { ...(job.output ?? { ok: true }), ...(job.shared ? { shared: true } : {}) });
     if (job.state === "failed") return json(502, { error: `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
     if (job.state === "cancelled") return json(502, { error: "stopped" });
     return json(202, { pending: true, status: job.state });
@@ -347,10 +383,14 @@ export class RemoverPods {
   private async cancel(id: string): Promise<Response> {
     const job = await this.storage().get<Job>(`j:${id}`);
     if (job !== undefined && (job.state === "queued" || job.state === "running")) {
-      job.state = "cancelled";
+      const left = (job.subs ?? 1) - 1;
+      job.subs = Math.max(0, left);
+      if (left <= 0) {
+        job.state = "cancelled";
+        const pool = poolOf(job.kind ?? "clean");
+        await this.setOrder(pool, (await this.order(pool)).filter((one) => one !== id));
+      }
       await this.storage().put(`j:${id}`, job);
-      const pool = poolOf(job.kind ?? "clean");
-      await this.setOrder(pool, (await this.order(pool)).filter((one) => one !== id));
     }
     return json(200, { ok: true });
   }
@@ -391,14 +431,21 @@ export class RemoverPods {
       await this.storage().put("pods", pods);
       return json(200, { ok: true });
     }
-    // next: the next job waiting for its kind of machine.
+    // next: the next job waiting for its kind of machine (pre-find GPU pods only take "clean" jobs).
     const order = await this.order(pod.pool);
+    const keep: string[] = [];
     let job: Job | undefined;
     while (order.length > 0 && job === undefined) {
-      const next = await this.storage().get<Job>(`j:${order.shift()!}`);
-      if (next !== undefined && next.state === "queued") job = next;
+      const nextId = order.shift()!;
+      const next = await this.storage().get<Job>(`j:${nextId}`);
+      if (next === undefined || next.state !== "queued") continue;
+      if (pod.pool === "gpu" && next.kind === "find" && pod.canFind !== true) {
+        keep.push(nextId);
+        continue;
+      }
+      job = next;
     }
-    await this.setOrder(pod.pool, order);
+    await this.setOrder(pod.pool, [...keep, ...order]);
     if (job !== undefined) {
       Object.assign(job, { state: "running", pod: id, startedAt: Date.now() });
       await this.storage().put(`j:${job.id}`, job);
@@ -418,6 +465,10 @@ export class RemoverPods {
     if ((job.kind ?? "clean") === "clean") {
       const beneath = await Promise.all(((r.beneath as Beneath[] | undefined) ?? []).map(async (one) => ({ file: await get(one.key), from: one.from, box: one.box })));
       return { ...base, worker: job.worker, beneath, from: r.from, fps: r.fps, width: r.width, height: r.height, matrix: r.matrix, masks: r.masks };
+    }
+    if (job.kind === "find") {
+      const parentUrl = typeof r.parent === "string" ? await get(r.parent) : null;
+      return { ...base, worker: job.worker, spans: r.spans, ...(parentUrl === null ? {} : { parent_url: parentUrl }) };
     }
     if (job.kind === "watermark") return { ...base, size: r.size, fps: r.fps, from: r.from, to: r.to, keep: r.keep, model_url: await get(String(r.model)) };
     if (job.kind === "learn") return { ...base, size: r.size, duration: r.duration, hint: r.hint, avoid: r.avoid };
@@ -484,18 +535,26 @@ export class RemoverPods {
         await this.storage().put(`bootFailures:${pool}`, 0);
         console.log(JSON.stringify({ route: "remover/tend", pool, stopped: "machines aren't starting" }));
       }
-      const waiting = (await this.order(pool)).length;
+      const waitingIds = await this.order(pool);
+      const waiting = waitingIds.length;
       const mine = Object.values(pods).filter((pod) => pod.pool === pool);
       // A GPU does one job at a time; a CPU machine CPU_LANES.
       const lanes = pool === "gpu" ? 1 : CPU_LANES;
       const free = mine.reduce((sum, pod) => sum + Math.max(0, lanes - pod.jobs.length), 0);
-      const needed =
-        pool === "gpu"
-          ? waiting > free
-            ? Math.max(1, Math.ceil((await this.gpuWork()) / GPU_WORK_EACH_S)) - mine.length
-            : 0
-          : Math.ceil(Math.max(0, waiting - free) / lanes);
-      const want = Math.min(MAX_PODS[pool] - mine.length, needed);
+      let needed: number;
+      if (pool === "gpu") {
+        // Pre-find GPU pods cannot run "find" jobs: evaluate general GPU demand and find-only demand independently
+        // so legacy pods neither block finder rentals nor inflate find-only rentals with clean work.
+        const work = await this.gpuWork();
+        const canFindPods = mine.filter((pod) => pod.canFind === true);
+        const freeCanFind = canFindPods.reduce((sum, pod) => sum + Math.max(0, 1 - pod.jobs.length), 0);
+        const generalNeeded = waiting > free ? Math.max(1, Math.ceil(work.total / GPU_WORK_EACH_S)) - mine.length : 0;
+        const findNeeded = work.waitingFind > freeCanFind ? Math.max(1, Math.ceil(work.find / GPU_WORK_EACH_S)) - canFindPods.length : 0;
+        needed = Math.max(generalNeeded, findNeeded);
+      } else {
+        needed = Math.ceil(Math.max(0, waiting - free) / lanes);
+      }
+      const want = Math.min(MAX_PODS[pool] - mine.length, Math.max(0, needed));
       for (let n = 0; n < want; n++) {
         const rented = await this.rent(pool);
         if (rented === null) break;
@@ -504,14 +563,43 @@ export class RemoverPods {
       if (mine.length > 0 || waiting > 0 || want > 0) busy = true;
     }
     await this.storage().put("pods", pods);
-    // Jobs a day old are forgotten (Edit has long taken what they made).
+    // Shared outputs are cleaned 10 min after completion (giving every deduplicated caller time to read them);
+    // jobs a day old are forgotten once any shared R2 output has been deleted.
+    const SHARED_OUT_TTL_MS = 10 * 60_000;
+    let nextCleanupAt: number | null = null;
+    const r2 = r2Config(this.env);
     const jobs = await this.storage().list<Job>({ prefix: "j:" });
     for (const [key, job] of jobs) {
+      if (job.state === "done" && job.shared && !job.outCleaned && r2 !== null) {
+        const dueAt = job.at + SHARED_OUT_TTL_MS;
+        if (now >= dueAt) {
+          try {
+            await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
+            job.outCleaned = true;
+            await this.storage().put(key, job);
+          } catch {
+            nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
+          }
+        } else {
+          nextCleanupAt = nextCleanupAt === null ? dueAt : Math.min(nextCleanupAt, dueAt);
+        }
+      }
       if (!((job.state === "done" || job.state === "failed" || job.state === "cancelled") && now - job.at > 86400_000)) continue;
+      if (job.shared && !job.outCleaned && r2 !== null) {
+        if (job.state === "done") continue;
+        try {
+          await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
+          job.outCleaned = true;
+        } catch {
+          nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
+          continue;
+        }
+      }
       await this.storage().delete(key);
       if (job.twin !== undefined) await this.storage().delete(`twin:${job.twin}`);
     }
     if (busy || Object.keys(pods).length > 0) await this.storage().setAlarm(now + 30_000);
+    else if (nextCleanupAt !== null) await this.storage().setAlarm(Math.max(now + 1_000, nextCleanupAt));
     else await this.storage().deleteAlarm();
   }
 
@@ -530,7 +618,7 @@ export class RemoverPods {
               gpu: { id: gpu.id, count: 1, minCudaVersion: "12.8" },
               image: GPU_IMAGE,
               cmd: ['mkdir -p /tmp/remover && echo "$BOOTSTRAP_B64" | base64 -d > /tmp/remover/bootstrap.sh && echo "$POD_B64" | base64 -d > /tmp/remover/pod.py && exec bash /tmp/remover/bootstrap.sh'],
-              disk: 30,
+              disk: 40,
               env: { BOOTSTRAP_B64, POD_B64, REMOVER_RELAY: relay, REMOVER_TOKEN: token },
             },
           }))
@@ -570,7 +658,7 @@ export class RemoverPods {
       const id = (JSON.parse(text) as { id?: unknown }).id;
       if (typeof id !== "string") continue;
       console.log(JSON.stringify({ route: "remover/rent", pool, pod: id, machine: one.machine, cloud: one.cloud }));
-      return { id, pod: { pool, token, machine: one.machine, cloud: one.cloud, rentedAt: Date.now(), seenAt: null, jobs: [] } };
+      return { id, pod: { pool, token, machine: one.machine, cloud: one.cloud, rentedAt: Date.now(), seenAt: null, jobs: [], ...(pool === "gpu" ? { canFind: true } : {}) } };
     }
     return null;
   }

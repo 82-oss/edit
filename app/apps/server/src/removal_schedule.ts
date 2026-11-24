@@ -560,6 +560,7 @@ export function stop(app: App, id: string, kinds: readonly removal.Kind[] = remo
     textRemoval.stopped(id);
     textBlur.stop(id);
     textInpaint.stop(id);
+    found.stop(id);
   }
   if (all) active.delete(id);
   diag.info("removal", `${id}: ${all ? "stopped" : `${kinds.join(" and ")} stopped`} by the person`);

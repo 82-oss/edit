@@ -11,6 +11,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -65,10 +67,10 @@ def worker_for(source):
     return _loaded["module"], _loaded["model"]
 
 
-def upload(path, url):
+def upload(path, url, content_type="video/mp4"):
     with open(path, "rb") as f:
         data = f.read()
-    req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": "video/mp4", "Content-Length": str(len(data))})
+    req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": content_type, "Content-Length": str(len(data))})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
@@ -79,6 +81,98 @@ def upload(path, url):
             if attempt == 2:
                 raise
             time.sleep(2 * (attempt + 1))
+
+
+def download(url, path):
+    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "edit-remover-pod"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp, open(path, "wb") as out:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            return
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+
+
+def finder_dir(worker_json):
+    digest = hashlib.sha256(worker_json.encode()).hexdigest()[:16]
+    target = f"/tmp/remover/finder_{digest}"
+    if not os.path.isdir(target):
+        scripts = json.loads(worker_json)
+        staging = f"{target}.tmp.{os.getpid()}"
+        os.makedirs(staging, exist_ok=True)
+        for name, source in scripts.items():
+            # Keep every script flat inside the directory (no traversal).
+            base = os.path.basename(name)
+            with open(os.path.join(staging, base), "w") as f:
+                f.write(source)
+        try:
+            os.replace(staging, target)
+        except OSError:
+            if not os.path.isdir(target):
+                raise
+    return target
+
+
+def find(job):
+    started = time.time()
+    try:
+        # Free MiniMax-Remover if it was loaded earlier so the finder's ONNX CUDA workers have the whole card.
+        if _loaded["model"] is not None:
+            _loaded.update(hash=None, module=None, model=None)
+            try:
+                __import__("torch").cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+        fdir = finder_dir(job["worker"])
+        with tempfile.TemporaryDirectory() as tmp:
+            video = os.path.join(tmp, "video.mp4")
+            download(job["input_url"], video)
+            work = os.path.join(tmp, "work")
+            os.makedirs(os.path.join(work, "f", "scan"), exist_ok=True)
+            parent_args = []
+            if job.get("parent_url"):
+                parent_file = os.path.join(tmp, "parent.json")
+                download(job["parent_url"], parent_file)
+                with open(parent_file) as f:
+                    pstate = json.load(f)
+                scan_dir = os.path.join(work, "f", "scan")
+                for key, fname in (("zone", "par.zone.json"), ("marks", "par.marks.json"), ("notes", "par.notes.json"), ("cands", "par.cands.json")):
+                    with open(os.path.join(scan_dir, fname), "w") as f:
+                        json.dump(pstate[key], f)
+                if pstate.get("roamExt") is not None:
+                    with open(os.path.join(scan_dir, "par.roam.ext.json"), "w") as f:
+                        json.dump(pstate["roamExt"], f)
+                verdicts = pstate.get("verdicts") or {}
+                with open(os.path.join(work, "f", "verdicts.json"), "w") as f:
+                    json.dump({"par": verdicts.get("yes", []), "par:labels": verdicts.get("labels", [])}, f)
+                parent_args = ["--parent", "par"]
+            spans_path = os.path.join(tmp, "spans.json")
+            with open(spans_path, "w") as f:
+                json.dump(job["spans"], f)
+            pack_path = os.path.join(tmp, "pack.json")
+            env = {**os.environ, "PROCS": "4"}
+            done = subprocess.run(
+                [sys.executable, os.path.join(fdir, "find.py"), "survey", work, "m", video, spans_path, "--pack", pack_path, *parent_args],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            if done.returncode != 0:
+                msg = done.stderr.strip().splitlines()[-1] if done.stderr.strip() else (done.stdout.strip().splitlines()[-1] if done.stdout.strip() else f"exit {done.returncode}")
+                raise RuntimeError(msg)
+            upload(pack_path, job["output_url"], content_type="application/json")
+            last = done.stdout.strip().splitlines()[-1] if done.stdout.strip() else "{}"
+            summary = json.loads(last)
+            return {"ok": True, "ask": len(summary.get("ask", [])), "sheets": len(summary.get("sheets", [])), "seconds": round(time.time() - started, 1)}
+    except Exception as error:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(error).__name__}: {error}"[:400], "seconds": round(time.time() - started, 1)}
 
 
 def clean(job):
@@ -163,10 +257,15 @@ def main():
                 time.sleep(3600)
             time.sleep(3)
             continue
-        log(f"stretch {job['id']}: {len(job['masks'])} frames")
-        output = clean(job)
+        kind = job.get("kind", "clean")
+        if kind == "find":
+            log(f"find {job['id']}: {len(job.get('spans', []))} spans")
+            output = find(job)
+        else:
+            log(f"stretch {job['id']}: {len(job['masks'])} frames")
+            output = clean(job)
         call("/v1/remover/pod/done", {"id": job["id"], "output": output})
-        log(f"stretch {job['id']}: {'done' if output.get('ok') else 'failed'} in {output.get('seconds', '?')} s")
+        log(f"{kind} {job['id']}: {'done' if output.get('ok') else 'failed'} in {output.get('seconds', '?')} s")
         if not output.get("ok") and "CUDA" in output.get("error", ""):
             # Any CUDA error (unknown error, out of memory) leaves this pod failing every stretch in seconds while
             # healthy pods take minutes, so it takes most of the queue and spends both tries of each (Nov 20: one
