@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import type { ChatTurn, Script } from "@edit/types/writer";
 
+import * as accounts from "../src/accounts.ts";
 import { dispatch, TOOLS } from "../src/mcp/index.ts";
 import * as otherProjects from "../src/other_projects.ts";
 import * as reviewGuard from "../src/review_guard.ts";
@@ -18,6 +19,7 @@ import { fixtureHome } from "./helpers/home.ts";
 const SIZE = { width: 1920, height: 1080, fps: 30 };
 const KIMBERLY = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const TROOPER = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+const FOIA = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
 
 function script(id: string, title: string, updatedAt: number): Script {
   const said = ["Where", "were", "you", "that", "night?", "Home."];
@@ -144,6 +146,15 @@ test("a turn fixing a review's notes has no other_projects, and a hidden test pr
     const test = store.createAs("Test Edit", "bodycam", SIZE, false, true).project.id;
     expect(otherProjects.answer(store, { name: "kimberly" }, test, "edit")).toContain('SCRIPT "Kimberly Kessler Interrogation"');
     expect(otherProjects.answer(store, { id: KIMBERLY }, TROOPER, "script")).toContain('SCRIPT "Kimberly Kessler Interrogation"');
+    // A script of a kind the signed-in person can't write isn't offered or read, by name or by id (writer/can.ts).
+    putScript(home, { ...script(FOIA, "Kimberly Bodycam", 3), kind: "foia" });
+    accounts.signedInForTests(["scripts.interrogation"]);
+    try {
+      expect(otherProjects.answer(store, { name: "kimberly bodycam" }, TROOPER, "script")).toContain("No project here is called anything like");
+      expect(() => otherProjects.answer(store, { id: FOIA }, TROOPER, "script")).toThrow("No other project here has id");
+    } finally {
+      accounts.resetForTests();
+    }
     // Only which kind: the most recent of that kind (the test edit hidden from a person's script).
     expect(otherProjects.answer(store, { name: "the last edit" }, TROOPER, "script")).toBe("There are no other edits on this computer.");
     expect(otherProjects.answer(store, { name: "the last script" }, test, "edit")).toContain(`script "Kimberly Kessler Interrogation"`);

@@ -15,6 +15,7 @@ import type { ChatTurn, Script } from "@edit/types/writer";
 import * as channels from "./channels.ts";
 import type { ProjectSummary } from "./model.ts";
 import type { Store } from "./store.ts";
+import * as can from "./writer/can.ts";
 import * as writerChat from "./writer/chat.ts";
 import { planWithIds } from "./writer/commentary.ts";
 import { doneBrief } from "./writer/fixing.ts";
@@ -68,7 +69,8 @@ export function all(store: Store, tests: boolean): Other[] {
     .map((one): Other => ({ kind: "edit", id: one.id, title: one.name, channel: one.channel ?? null, updatedAt: one.modified_ms }));
   const scripts = writerStore
     .list(writerStore.dataDir(store.home))
-    .filter((one) => tests || one.test !== true || one.shown === true)
+    // Only the scripts the person may see (writer/can.ts), as Script mode's library lists them.
+    .filter((one) => can.sees(one) && (tests || one.test !== true || one.shown === true))
     .map((one): Other => ({ kind: "script", id: one.id, title: one.title, channel: one.channel ?? null, updatedAt: one.updatedAt }));
   return [...edits, ...scripts].sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -242,6 +244,7 @@ export function read(store: Store, one: Other, asker: Asker): string {
   const data = writerStore.dataDir(store.home);
   const dir = writerStore.scriptDir(data, one.id);
   const script = writerStore.read(dir);
+  can.requireScript(script);
   return `${head}\n\n${chatText(scriptChat(dir), "The agent")}${fixedNotes(data, script)}\n\n${cut(scriptText(script), WORK_MOST)}`;
 }
 
