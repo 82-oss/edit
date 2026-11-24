@@ -91,6 +91,14 @@ const TRIES = 2;
  * start is never paid for over and over (Nov 20: a refused first ask had the relay rent six in turn).
  */
 const BOOT_FAILURES = 3;
+/**
+ * How long a pool may have no machine at all while RunPod refuses every kind asked for (no money left on the account,
+ * none of the cards offered): then what waits fails with RunPod's own words, and Edit leaves it as it was and says why
+ * (Nov 24, the M1 Air's first run: the account was at -$0.07, every rent was refused, and the finder's jobs sat queued
+ * with Edit at "0 of 36 pieces" and nothing said, for what would have been three hours a job). A pool with a machine
+ * still working is never failed this way: its queue is only waiting its turn.
+ */
+export const RENT_REFUSED_MS = 10 * 60_000;
 const GPU_IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404";
 /** The engine is built on Ubuntu 26.04 (glibc 2.43): its machines run the same. */
 const CPU_IMAGE = "ubuntu:26.04";
@@ -375,7 +383,8 @@ export class RemoverPods {
     const job = await this.storage().get<Job>(`j:${id}`);
     if (job === undefined) return json(404, { error: "no such job" });
     if (job.state === "done") return json(200, { ...(job.output ?? { ok: true }), ...(job.shared ? { shared: true } : {}) });
-    if (job.state === "failed") return json(502, { error: `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
+    // Refused renting: no machine had it, RunPod's words say why.
+    if (job.state === "failed") return json(502, { error: job.output?.refused === true ? String(job.output.error) : `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
     if (job.state === "cancelled") return json(502, { error: "stopped" });
     return json(202, { pending: true, status: job.state });
   }
@@ -555,11 +564,16 @@ export class RemoverPods {
         needed = Math.ceil(Math.max(0, waiting - free) / lanes);
       }
       const want = Math.min(MAX_PODS[pool] - mine.length, Math.max(0, needed));
+      let refused: string | null = null;
       for (let n = 0; n < want; n++) {
         const rented = await this.rent(pool);
-        if (rented === null) break;
+        if ("refused" in rented) {
+          refused = rented.refused;
+          break;
+        }
         pods[rented.id] = rented.pod;
       }
+      await this.whileRefused(pool, refused !== null && waiting > 0 && !Object.values(pods).some((pod) => pod.pool === pool) ? refused : null, now);
       if (mine.length > 0 || waiting > 0 || want > 0) busy = true;
     }
     await this.storage().put("pods", pods);
@@ -603,8 +617,31 @@ export class RemoverPods {
     else await this.storage().deleteAlarm();
   }
 
-  /** A machine rented for `pool` on the first kind RunPod has (cheapest first), null when none is to be had now. */
-  private async rent(pool: Pool): Promise<{ id: string; pod: Pod } | null> {
+  /**
+   * `refused` (RunPod's last words) while the pool has no machine and none can be rented; once that has lasted
+   * RENT_REFUSED_MS, what waits in the pool fails with those words. Null (a machine rented, or one there): forgotten.
+   */
+  private async whileRefused(pool: Pool, refused: string | null, now: number): Promise<void> {
+    const key = `refusedSince:${pool}`;
+    if (refused === null) {
+      await this.storage().delete(key);
+      return;
+    }
+    const since = (await this.storage().get<number>(key)) ?? now;
+    await this.storage().put(key, since);
+    if (now - since < RENT_REFUSED_MS) return;
+    const error = `RunPod wouldn't rent a ${pool === "gpu" ? "GPU" : "CPU machine"} for ${Math.round((now - since) / 60_000)} minutes (${refused})`;
+    for (const id of await this.order(pool)) {
+      const job = await this.storage().get<Job>(`j:${id}`);
+      if (job !== undefined && job.state === "queued") await this.storage().put(`j:${id}`, { ...job, state: "failed", output: { ok: false, error, refused: true }, at: now });
+    }
+    await this.setOrder(pool, []);
+    await this.storage().delete(key);
+    console.log(JSON.stringify({ route: "remover/tend", pool, stopped: error }));
+  }
+
+  /** A machine rented for `pool` on the first kind RunPod has (cheapest first), or what RunPod said to the last asked. */
+  private async rent(pool: Pool): Promise<{ id: string; pod: Pod } | { refused: string }> {
     const relay = (await this.storage().get<string>("relay")) ?? "";
     const token = crypto.randomUUID();
     const r2 = r2Config(this.env)!;
@@ -644,6 +681,7 @@ export class RemoverPods {
               },
             })),
           );
+    let refused = "nothing was offered";
     for (const one of tries) {
       const answer = await fetch(`${RUNPOD}/pods`, {
         method: "POST",
@@ -653,14 +691,18 @@ export class RemoverPods {
       const text = await answer.text();
       if (!answer.ok) {
         console.log(JSON.stringify({ route: "remover/rent", pool, machine: one.machine, cloud: one.cloud, refused: answer.status, why: text.slice(0, 200) }));
+        refused = `${answer.status}: ${text.replace(/\s+/gu, " ").trim().slice(0, 160)}`;
         continue;
       }
       const id = (JSON.parse(text) as { id?: unknown }).id;
-      if (typeof id !== "string") continue;
+      if (typeof id !== "string") {
+        refused = `no machine in its answer: ${text.slice(0, 160)}`;
+        continue;
+      }
       console.log(JSON.stringify({ route: "remover/rent", pool, pod: id, machine: one.machine, cloud: one.cloud }));
       return { id, pod: { pool, token, machine: one.machine, cloud: one.cloud, rentedAt: Date.now(), seenAt: null, jobs: [], ...(pool === "gpu" ? { canFind: true } : {}) } };
     }
-    return null;
+    return { refused };
   }
 
   /** The ids of the machines RunPod has for us now (null: it couldn't say). */

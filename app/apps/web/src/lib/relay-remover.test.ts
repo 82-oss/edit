@@ -1,7 +1,7 @@
 // Relay's RunPod finder job handling (apps/relay/src/remover.ts): request validation, GPU pool routing,
 // parallel pod scaling across multiple long files, and signed payload delivery (including slowed-copy parent_url).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readRequest, RemoverPods, type RemoverEnv } from "../../../relay/src/remover";
+import { readRequest, RemoverPods, RENT_REFUSED_MS, type RemoverEnv } from "../../../relay/src/remover";
 
 class MemStorage {
   data = new Map<string, unknown>();
@@ -280,5 +280,60 @@ describe("relay RunPod finder jobs (remover.ts)", () => {
     expect(deleteAttempts).toBe(2);
     expect(await storage3.get("j:sh1")).toBeUndefined();
     expect(storage3.alarm).toBeNull();
+  });
+  it("fails what waits with RunPod's words once it has refused to rent for RENT_REFUSED_MS and the pool has no machine", async () => {
+    const env: RemoverEnv = { REMOVER: "pods", RUNPOD_API_KEY: "k", R2_ACCOUNT_ID: "a", R2_ACCESS_KEY_ID: "b", R2_SECRET_ACCESS_KEY: "c", R2_BUCKET: "d" };
+    let refuse = true;
+    const rented: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === "https://api.runpod.io/v2/pods" && init?.method === "POST") {
+        if (refuse) return new Response('{"error":"insufficient balance"}', { status: 402 });
+        rented.push(`pod-${rented.length + 1}`);
+        return Response.json({ id: rented.at(-1) });
+      }
+      if (url === "https://api.runpod.io/v2/pods") return Response.json({ pods: rented.map((id) => ({ id, name: "edit-remover-gpu-x" })) });
+      return Response.json({ ok: true });
+    });
+    const storage = new MemStorage();
+    const pods = new RemoverPods({ storage: storage as never, blockConcurrencyWhile: (fn) => fn() }, env);
+    const find = (id: string) => ({ id, kind: "find", out: `edit/cleaned/work/${id}.json`, worker: "{}", request: { input: `edit/originals/drive/${id}/v.mp4`, spans: [[0, 60]] }, relay: "https://relay.example" });
+    const status = async (id: string) => {
+      const answer = await pods.fetch(new Request("https://remover/status", { method: "POST", body: JSON.stringify({ id }) }));
+      return { status: answer.status, body: (await answer.json()) as { error?: string; status?: string } };
+    };
+    const id = "00000000-0000-4000-8000-0000000000a1";
+    const start = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(start);
+    await pods.fetch(new Request("https://remover/enqueue", { method: "POST", body: JSON.stringify(find(id)) }));
+    expect((await status(id)).status).toBe(202);
+    // Refused a while, short of the limit: still waiting, and the relay keeps asking.
+    vi.spyOn(Date, "now").mockReturnValue(start + RENT_REFUSED_MS - 30_000);
+    await pods.alarm();
+    expect(await status(id)).toEqual({ status: 202, body: { pending: true, status: "queued" } });
+    expect(storage.alarm).not.toBeNull();
+    // Past it: failed with RunPod's own words, and nothing more is asked of RunPod for it.
+    vi.spyOn(Date, "now").mockReturnValue(start + RENT_REFUSED_MS + 1000);
+    await pods.alarm();
+    const failed = await status(id);
+    expect(failed.status).toBe(502);
+    expect(failed.body.error).toBe(`RunPod wouldn't rent a GPU for 10 minutes (402: {"error":"insufficient balance"})`);
+    expect(await storage.get("order:gpu")).toEqual([]);
+
+    // A pool with a machine at work is only waiting its turn: never failed however long RunPod refuses more.
+    refuse = false;
+    const second = "00000000-0000-4000-8000-0000000000a2";
+    await pods.fetch(new Request("https://remover/enqueue", { method: "POST", body: JSON.stringify(find(second)) }));
+    expect(rented).toEqual(["pod-1"]);
+    const token = (await storage.get<Record<string, { token: string }>>("pods") as Record<string, { token: string }>)["pod-1"]!.token;
+    await pods.fetch(new Request("https://remover/pod/next", { method: "POST", body: JSON.stringify({ pod: "pod-1", token }) }));
+    expect((await status(second)).body.status).toBe("running");
+    refuse = true;
+    const third = "00000000-0000-4000-8000-0000000000a3";
+    await pods.fetch(new Request("https://remover/enqueue", { method: "POST", body: JSON.stringify(find(third)) }));
+    vi.spyOn(Date, "now").mockReturnValue(start + 3 * RENT_REFUSED_MS);
+    await pods.alarm();
+    expect(await status(third)).toEqual({ status: 202, body: { pending: true, status: "queued" } });
+    vi.restoreAllMocks();
   });
 });
