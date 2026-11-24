@@ -283,11 +283,20 @@ test("an impact shake following the footage is never cut: the span takes all of 
   for (const [shake, span] of [
     [{ preset: "none", amount: 100, envelope: "hit" }, { from: 290, to: 320 }],
     [{ preset: "none", envelope: "hit" }, { from: 300, to: 310 }],
+    // A wiggle below nothing is none (shake_offset clamps it).
+    [{ preset: "none", amount: -5, envelope: "hit" }, { from: 300, to: 310 }],
   ] as const) {
     const custom = edit();
     custom.tracks.push(v2);
     custom.clips.push(clip({ id: "own", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake, opacity: 1 } as never));
     expect(applyBringBack(custom, 300, 310, 6, false)).toMatchObject(span);
+  }
+  // No amount of its own but one keyed in: it shakes, so it's kept whole.
+  {
+    const keyed = edit();
+    keyed.tracks.push(v2);
+    keyed.clips.push(clip({ id: "keyed", type: "adjustment", track: "v2", start: 290, duration: 30, parent: "pic", grade: {}, shake: { preset: "none", envelope: "hit" }, keyframes: { shake: [{ frame: 0, value: 120, ease: "linear" }] }, opacity: 1 } as never));
+    expect(applyBringBack(keyed, 300, 310, 6, false)).toMatchObject({ from: 290, to: 320 });
   }
 });
 

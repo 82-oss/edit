@@ -588,11 +588,13 @@ function shapedOverItsLength(clip: Clip): boolean {
   if (clip.type !== "adjustment" || clip.shake === undefined) return false;
   // Resolved as the engine does (model.rs Shake::resolved): each number given, else the preset's ("none" gives none).
   const { preset } = clip.shake;
-  const amount = clip.shake.amount ?? SHAKE_AMOUNT[preset];
-  const rotation = clip.shake.rotation ?? SHAKE_ROTATION[preset];
-  if (amount === 0 && Math.abs(rotation) <= 0) return false;
   const envelope = clip.shake.envelope ?? (preset === "impact" ? "hit" : "steady");
   const motion = clip.shake.motion ?? (preset === "vertical" || preset === "horizontal" ? "drop" : "wiggle");
+  // The amount as it's animated (its "shake" keys), a wiggle's never below nothing (shake_offset).
+  const amounts = [clip.shake.amount ?? SHAKE_AMOUNT[preset], ...(clip.keyframes?.shake ?? []).map((key) => key.value)];
+  const moves = motion === "drop" ? amounts.some((one) => one !== 0) : amounts.some((one) => one > 0);
+  const rotation = clip.shake.rotation ?? SHAKE_ROTATION[preset];
+  if (!moves && Math.abs(rotation) <= 0) return false;
   return envelope !== "steady" || motion === "drop";
 }
 
