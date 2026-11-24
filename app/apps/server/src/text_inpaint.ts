@@ -540,11 +540,13 @@ export function current(project: { media: Media[] }, media: string, from: number
 }
 
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
-async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined): Promise<void> {
+async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined, stands: () => boolean = () => true): Promise<void> {
   const probed = await probe(file);
-  await playing.whenIdle();
+  await playing.whenIdle(() => !stands());
+  // Its plan gone stale meanwhile (a Stop of their text): not laid, here or once the store's turn comes.
+  if (!stands()) return;
   await app.store.update(id, "text removal", (project) => {
-    if (!project.media.some((one) => one.id === footage.id)) return;
+    if (!stands() || !project.media.some((one) => one.id === footage.id)) return;
     // A current-VERSION strip always replaces an older PREV_VERSION strip; only skip if current-VERSION (or legacy Vmake) is already placed.
     const already =
       version === VERSION
@@ -589,10 +591,12 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined, stands: () => boolean = () => true): Promise<void> {
   // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
   // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
-  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf, rangeOf));
+  // `stands`: the plan still stands (text_removal: no Stop of their text since it began), when its turn comes and
+  // after each wait in it.
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => (stands() ? ensureNow(app, id, given, masksOf, rangeOf, stands) : undefined));
   const settledRun = run.catch(() => {});
   ensuring.set(id, settledRun);
   void settledRun.finally(() => {
@@ -603,7 +607,7 @@ export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: Mask
 
 const ensuring = new Map<string, Promise<void>>();
 
-async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf): Promise<void> {
+async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf, stands: () => boolean = () => true): Promise<void> {
   if (!available()) return;
   const live = app.store.get(id);
   if (live === null) return;
@@ -646,9 +650,11 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
         continue;
       }
       const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
+      if (!stands()) return;
       if (kept !== null) {
         piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange);
+        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
+        if (!stands()) return;
         continue;
       }
       // Only expand per-frame masks when we actually need to queue work.
