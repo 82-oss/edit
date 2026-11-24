@@ -9,6 +9,7 @@
 // file for viruses" page is skipped with `confirm=t`, or by following its form.
 
 import * as fs from "node:fs";
+import { cleanedInfo } from "./music_removed.ts";
 
 import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
@@ -2699,7 +2700,8 @@ function isSome<T>(value: T | null | undefined): value is T {
 /** Audio in the project that isn't on the timeline: a voice-over recording given with the script. */
 function unplacedAudio(project: Project): boolean {
   const used = new Set(project.clips.flatMap((clip) => ("media" in clip && typeof clip.media === "string" ? [clip.media] : [])));
-  return project.media.some((media) => media.kind === "audio" && !used.has(media.id));
+  // A cleaned copy of footage's sound (music_removed.ts) is no recording, used or not.
+  return project.media.some((media) => media.kind === "audio" && !used.has(media.id) && cleanedInfo(media) === null);
 }
 
 /** What the agent is asked once a script is first laid out. */

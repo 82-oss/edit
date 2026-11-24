@@ -1797,7 +1797,7 @@ export function soundEffectsLateHit(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio" || !/shutter|camera|click|impact|\bhit\b|boom|thud|slam|stinger/iu.test(`${clip.name ?? ""} ${media.name}`) || /whoosh|swoosh|riser|build/iu.test(media.name)) continue;
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video" || !/shutter|camera|click|impact|\bhit\b|boom|thud|slam|stinger/iu.test(`${clip.name ?? ""} ${media.name}`) || /whoosh|swoosh|riser|build/iu.test(media.name)) continue;
     const hit = (media.markers ?? []).find((one) => one.name === sfx.HIT)?.time;
     if (hit === undefined || hit - clip.source_in <= LATE_HIT) continue;
     const late = Math.round(((hit - clip.source_in) / clip.speed) * fps);
@@ -1860,7 +1860,7 @@ export function risersOffCut(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio" || !RISER.test(`${clip.name ?? ""} ${media.name}`) || media.duration >= 45) continue;
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video" || !RISER.test(`${clip.name ?? ""} ${media.name}`) || media.duration >= 45) continue;
     if ((clip.duration / fps) * clip.speed > 6) continue;
     const hit = (media.markers ?? []).find((one) => one.name === sfx.HIT)?.time;
     const playedTo = clip.source_in + (clip.duration / fps) * clip.speed;
