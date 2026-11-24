@@ -12,6 +12,7 @@ import * as accounts from "../src/accounts.ts";
 import { dispatch, TOOLS } from "../src/mcp/index.ts";
 import * as otherProjects from "../src/other_projects.ts";
 import * as reviewGuard from "../src/review_guard.ts";
+import { withNoteProjects } from "../src/writer/scripting.ts";
 import * as writerStore from "../src/writer/store.ts";
 import * as turnTools from "../src/writer/turn_tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -231,6 +232,50 @@ test("a script too long to read with its clips' words still gives every cut-in, 
     expect(said).toContain("i800 clip [");
     expect(said).not.toContain("word15999");
   } finally {
+    cleanup();
+  }
+});
+
+test("a new script's note that points at another project gives the build that project, read for every phase (JJ: \"build it out like this script\")", async () => {
+  const { app, home, store, cleanup } = fixtureHome("other-note");
+  const pick = otherProjects.hooks.pick;
+  try {
+    putScript(home, script(TROOPER, "Trooper Stops Wrong Car", 1));
+    putScript(home, script(KIMBERLY, "Kimberly Kessler Interrogation", 2), [
+      { role: "producer", text: "Open on her lie, and keep every cut-in under 40 words.", at: Date.UTC(2026, 10, 24) },
+      { role: "editor", text: "Moved her lie to the top.", at: 0, workedMs: 9_000 },
+    ]);
+    const asked: string[][] = [];
+    otherProjects.hooks.pick = async (_note, candidates) => {
+      asked.push(candidates.map((one) => one.id));
+      return [KIMBERLY, "not-a-candidate"];
+    };
+    const found = { articles: [], queries: [], at: 0 };
+    // A note naming no project's word asks nothing.
+    expect(await withNoteProjects(app, "Focus on the chase and keep it tight.", found, TROOPER, "Trooper")).toBe(found);
+    expect(asked).toEqual([]);
+    // One that does: the model picks among those it names, and the build is given the one it picked.
+    const given = await withNoteProjects(app, "Build it out like the Kimberly script.", found, TROOPER, "Trooper");
+    expect(asked).toEqual([[KIMBERLY]]);
+    expect(given.articles).toHaveLength(1);
+    const reference = given.articles[0]!;
+    expect(reference.title).toBe('The producer\'s reference: the script "Kimberly Kessler Interrogation"');
+    expect(reference.outlet).toContain("never take its facts");
+    expect(reference.summary).toContain("Open on her lie, and keep every cut-in under 40 words.");
+    expect(reference.summary).toContain('"She said she was home."');
+    // The model answering none: nothing given.
+    otherProjects.hooks.pick = async () => [];
+    expect(await withNoteProjects(app, "Interview Kimberly's neighbour first.", found, TROOPER, "Trooper")).toEqual(found);
+    // The model failing: the build goes on as it would.
+    otherProjects.hooks.pick = async () => {
+      throw new Error("Claude is busy");
+    };
+    expect(await withNoteProjects(app, "Build it out like the Kimberly script.", found, TROOPER, "Trooper")).toBe(found);
+    // The asking script is never offered, though its own title shares the word.
+    otherProjects.hooks.pick = async (_note, candidates) => candidates.map((one) => one.id);
+    expect((await otherProjects.pointedAt(store, "Same as the Trooper one", TROOPER)).map(({ one }) => one.id)).toEqual([]);
+  } finally {
+    otherProjects.hooks.pick = pick;
     cleanup();
   }
 });

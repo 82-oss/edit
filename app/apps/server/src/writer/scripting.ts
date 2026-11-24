@@ -9,6 +9,7 @@ import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/typ
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import * as lanes from "../lanes.ts";
+import * as otherProjects from "../other_projects.ts";
 import { join } from "../paths.ts";
 import { probe as probeFile } from "../media.ts";
 import { isFile } from "../paths.ts";
@@ -151,6 +152,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   }
   found = casefiles.withDocuments(dir, found);
   found = await withNoteDocs(note, found, id, script.title);
+  found = await withNoteProjects(app, note, found, id, script.title, job.signal);
   // The day the camera burned into its picture: the case opening's verified date when no report gives one.
   job.stage("Reading the footage's date");
   const stamps = await footageStamps(data, dir, script, job.signal);
@@ -259,6 +261,35 @@ export async function withNoteDocs(note: string, found: Research, id: string, ti
     }
   }
   return { ...found, articles };
+}
+
+/**
+ * Another of the team's projects the build's note points at ("build it out
+ * like the Kimberly script", other_projects.ts `pointedAt`), given to the
+ * builder beside the research as the producer's reference, as a linked Doc
+ * is: every phase of the build reads it. Its case is another's: its shape and
+ * what was asked there, never its facts. Not read, the build goes on without it.
+ */
+export async function withNoteProjects(app: App, note: string, found: Research, id: string, title: string, signal?: AbortSignal): Promise<Research> {
+  let pointed: { one: otherProjects.Other; text: string }[];
+  try {
+    pointed = await otherProjects.pointedAt(app.store, note, id, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    diag.warn("writer", `${named(id, title)}: which project the note points at couldn't be read: ${diag.messageOf(error)}`);
+    return found;
+  }
+  if (pointed.length === 0) return found;
+  diag.info("writer", `${named(id, title)}: the note points at ${pointed.map(({ one }) => `${one.kind} ${one.id}`).join(", ")}`);
+  const articles = pointed.map(({ one, text }) => ({
+    title: `The producer's reference: the ${one.kind} "${one.title}"`,
+    outlet: "Another of the team's projects the producer's note points at: follow what they asked for there and how it's built, as the note says; its case is another's, so never take its facts, names or words",
+    published: null,
+    url: "",
+    summary: text,
+    facts: [],
+  }));
+  return { ...found, articles: [...found.articles, ...articles] };
 }
 
 /**
