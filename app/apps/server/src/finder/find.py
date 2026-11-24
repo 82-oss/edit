@@ -118,7 +118,11 @@ def finish(mid, verdicts, parent):
     out = [[max(0, int(m[0])), min(last, int(m[1])), int(m[2]), int(m[3]), int(m[4]), int(m[5]), "note" if m[6] == "note" else m[6]] for m in masks if m[1] >= 0 and m[0] <= last and m[4] > m[2] and m[5] > m[3]]
     sys.path.insert(0, HERE)
     import assemble
-    out = assemble.off_titles(out, Z["W"], Z["H"])
+    reads = []
+    if os.path.exists(f"{TAG}/scan/{mid}.jsonl"):
+        for line in open(f"{TAG}/scan/{mid}.jsonl"):
+            reads += json.loads(line)["lines"]
+    out = assemble.off_caption_labels(assemble.off_titles(out, Z["W"], Z["H"], reads), reads)
     found = {"version": 1, "width": Z["W"], "height": Z["H"], "fps": fps, "covered": load(f"{TAG}/shown.json", {}).get(mid, []), "masks": out}
     tmp = f"{TAG}/found/{mid}.json.tmp"; json.dump(found, open(tmp, "w")); os.replace(tmp, f"{TAG}/found/{mid}.json")
     kinds = {}
