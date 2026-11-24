@@ -13,6 +13,7 @@ import type { Media, Project, Rgba, TextStyle } from "./model.ts";
 import { covers, joined } from "./names.ts";
 import * as seams from "./seams.ts";
 import { charCount, f32, F32_MAX, parseHex, serdeParse, splitWhitespace, trim } from "./rust.ts";
+import { soundSource } from "./music_removed.ts";
 import { soundUses } from "./project.ts";
 import { asKept } from "./kept_hearing.ts";
 import { hearsAll, type Transcript } from "./transcribe.ts";
@@ -38,6 +39,9 @@ const reheard = new Set<string>();
  * "John Rutten" and "John Bruton" for John Ruetten, who's in every article.
  */
 export async function transcriptOf(app: App, media: Media, project?: Project, refine = true): Promise<Transcript> {
+  // Sound with its music taken out is its footage's (music_removed.ts): the words, heard and refined, are the source's.
+  const source = project === undefined ? media : soundSource(project, media);
+  if (source !== media) return transcriptOf(app, source, project, refine);
   const path = media.path;
   // Not a voice-over: it's read from the script, whose words it already has
   // (the interrogation's takes heard again took 11 minutes behind the relay's limit).

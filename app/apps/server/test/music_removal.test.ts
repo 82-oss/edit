@@ -7,7 +7,9 @@ import { beforeEach, expect, test } from "bun:test";
 import type { Clip, Project } from "../src/model.ts";
 import { applyBringBack, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
+import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
+import { setsSegments } from "../src/watch.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
 beforeEach(stubNative);
@@ -305,6 +307,17 @@ test("cleaned sound is still the footage's sound, so its lines are still subtitl
   expect(footageSound(project, 0, 1800).map((one) => one.id)).toEqual(["snd"]);
   // Its words, faces, speakers and the words kept unmuted are all looked up on the video it came from.
   expect([soundSourceId(project, "m2"), soundSourceId(project, "m1"), soundSourceId(project, "gone")]).toEqual(["m1", "m1", "gone"]);
+});
+
+test("cleaned sound is watched, heard and segmented as its footage", () => {
+  const project = edit();
+  const sound = audio(project)[0]!;
+  expect(footageOf(project, sound)).toBe("m1");
+  // Where the source's words are needed includes what plays through the cleaned file; the cleaned file needs none of its own.
+  expect(soundUses(project, "m1")).toEqual([[10, 70]]);
+  expect(soundUses(project, "m2")).toEqual([]);
+  // A video of nothing but footage still has its segments set by the watcher.
+  expect(setsSegments(project)).toBe(true);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {

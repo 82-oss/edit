@@ -20,6 +20,7 @@ import type {
   Track,
   TrackKind,
 } from "./model.ts";
+import { soundSourceId } from "./music_removed.ts";
 import { native } from "./native/index.ts";
 import { jsonForSerde } from "./rust.ts";
 
@@ -388,7 +389,8 @@ export function clipEnd(clip: Clip): number {
 export function soundUses(project: Project, mediaId: string): [number, number][] {
   const rate = fps(project);
   return project.clips.flatMap((clip): [number, number][] =>
-    clip.type === "audio" && clip.media === mediaId && trackOf(project, clip.track)?.muted !== true ? [[clip.source_in, clip.source_in + (clip.duration / rate) * clip.speed]] : [],
+    // Sound with its music taken out plays its source's words (music_removed.ts).
+    clip.type === "audio" && soundSourceId(project, clip.media) === mediaId && trackOf(project, clip.track)?.muted !== true ? [[clip.source_in, clip.source_in + (clip.duration / rate) * clip.speed]] : [],
   );
 }
 
@@ -410,6 +412,12 @@ export function marksCut(clip: Clip, frame: number): boolean {
 /** The media a video or audio clip plays. */
 export function clipMedia(clip: Clip): string | null {
   return clip.type === "video" || clip.type === "audio" ? clip.media : null;
+}
+
+/** The footage a clip plays: its media, or for sound with its music taken out, the source it was cleaned from. */
+export function footageOf(project: Project, clip: Clip): string | null {
+  const id = clipMedia(clip);
+  return id === null ? null : soundSourceId(project, id);
 }
 
 /** How long a mute takes to fade out and back in, outside its stretch (seconds). */
