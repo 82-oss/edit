@@ -265,6 +265,8 @@ interface Request {
   inputKey?: string;
   /** The piece it's for (a Stop cancels its RunPod job). */
   piece?: string;
+  /** Whether the piece is still wanted: false once the person stopped it, even while its job was on the way (its id not back yet). */
+  wanted?: () => boolean;
   input: string;
   input_args: string[];
   from: number;
@@ -416,6 +418,12 @@ class RunPod implements Cleaner {
     let misses = 0;
     try {
       for (;;) {
+        // Stopped while the job was on the way (Nov 24: a Stop then had no id to cancel, and nine stopped stretches
+        // each kept a lane, asking after their jobs until RunPod's refusal ten minutes later), or since: let go.
+        if (request.wanted?.() === false) {
+          await this.cancel(job.id);
+          return { ok: false, error: "stopped" };
+        }
         await Bun.sleep(timing.pollMs);
         if (request.piece !== undefined && !this.jobs.has(request.piece)) return { ok: false, error: "stopped" };
         if (Date.now() - started > timing.deadlineMs) {
@@ -696,14 +704,15 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
       piece.why = "stopped";
       return;
     }
-    const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, ...request }));
-    if (!answer.ok) throw new Error(answer.error ?? "the model failed");
-    const box = answer.box ?? null;
+    const answer: Answer = still ?? (await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, wanted, ...request }));
+    // Stopped meanwhile: nothing it made is laid, and no failure is said of it.
     if (!wanted()) {
       piece.state = "failed";
       piece.why = "stopped";
       return;
     }
+    if (!answer.ok) throw new Error(answer.error ?? "the model failed");
+    const box = answer.box ?? null;
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
     if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file, under);
     piece.state = "done";
