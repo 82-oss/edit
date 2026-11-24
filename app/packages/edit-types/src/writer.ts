@@ -135,6 +135,8 @@ export type Script = {
   compilation?: boolean;
   /** The YouTube channel it's for (Edit's channels.ts): its writer is taught that channel's Script lane. Absent: none. */
   channel?: string;
+  /** The channel's script style it's written in (script_styles.ts: a `style-<name>` lesson), picked by saying so; absent: the channel's default style, if it has one. */
+  style?: string;
   createdBy?: Creator;
   /** Who each voice is, "Name (Role)" or a role, by speaker ID. */
   speakers?: Record<string, string>;

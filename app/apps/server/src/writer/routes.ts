@@ -44,6 +44,7 @@ import { audit } from "./plan.ts";
 import * as scripting from "./scripting.ts";
 import { readText } from "./sources.ts";
 import * as store from "./store.ts";
+import * as styleLearn from "./style_learn.ts";
 import * as missing from "./missing.ts";
 import * as trello from "./trello.ts";
 import * as versions from "./versions.ts";
@@ -646,6 +647,8 @@ export function routes(router: Router<App>): void {
         const waits = await waitsForTeaching(script, note);
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
+        // A note that asks to write in a style it brings (videos, a Doc, a script pasted in) learns it first (style_learn.ts).
+        if (script.channel && styleLearn.mayAsk(note)) return startJob(context.app, id(context), { kind: "style", request: note, focus: NO_FOCUS, build: true, ...(given.files ? { files: given.files.map(String) } : {}) });
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
         const adding = footageOf(dataOf(context.app), script, note, given.files);
         if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
@@ -660,8 +663,14 @@ export function routes(router: Router<App>): void {
       return answer(() => {
         const request = String(given.request ?? "").trim();
         if (request === "") throw new Error("Say what to change.");
-        if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
         const focus = given.focus ?? NO_FOCUS;
+        // One that asks to learn a style from the videos, Docs or script it brings goes there before its links are read as footage (style_learn.ts); a pasted script may be long.
+        const asked = readFor(dataOf(context.app), id(context));
+        if (asked.channel && styleLearn.mayAsk(request)) {
+          if ([...request].length > 100_000) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
+          return startJob(context.app, id(context), { kind: "style", request, focus, ...(given.files ? { files: given.files.map(String) } : {}) });
+        }
+        if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
         // Footage linked in the message, or attached to it, comes into the script first, then the revision places it (links.ts).
         const script = readFor(dataOf(context.app), id(context));
         const adding = footageOf(dataOf(context.app), script, request, given.files);
@@ -872,6 +881,10 @@ imports.hooks.build = (app, id, note) => {
   // A first message that asks for more of the case's footage finds it first, then writes, as the Build button's does
   // (Nov 18: a card imported with "find more courtroom and bodycam footage, then write" was written without looking).
   const script = readFor(dataOf(app), id);
+  if (script.channel && styleLearn.mayAsk(note)) {
+    startJob(app, id, { kind: "style", request: note, focus: NO_FOCUS, build: true });
+    return;
+  }
   if (!script.commentary && finder.mayAsk(note)) {
     startJob(app, id, { kind: "hunt", request: note, focus: NO_FOCUS, build: true });
     return;

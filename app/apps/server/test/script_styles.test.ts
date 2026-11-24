@@ -1,0 +1,101 @@
+// script_styles.ts and its place in a channel's Script lane (Sphe, Nov 24):
+// many styles a channel, each a `style-<name>` lesson with its guide and its
+// references as examples; a script written in the one it names, else the
+// channel's default, and only that one in its writer's instructions.
+
+import { afterEach, expect, test } from "bun:test";
+
+import * as channels from "../src/channels.ts";
+import * as lanes from "../src/lanes.ts";
+import * as styles from "../src/script_styles.ts";
+import * as v2cloud from "../src/v2_cloud.ts";
+
+const CHANNEL = {
+  key: "tedcases", youtubeId: "UC" + "a".repeat(22), handle: "inspectorted", title: "Inspector Ted", description: "", avatar: null, banner: null, uploads: null, subscribers: 1, videos: 1, views: 1, country: null, publishedAt: null, fetchedAt: 0,
+  narration: { kind: "voice" as const, id: "v123", name: "House" }, compilation: false, lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, archived: false, addedBy: null, at: 0,
+};
+
+const insanity = styles.compose("Dr Insanity", "Calm, clinical voice. Open on the suspect's worst line.", ['Dr Insanity, "The Killer Who…" (39:50) https://youtu.be/abc\n[0:00] NARRATION\nThis is the moment he knew.']);
+const classic = styles.compose("Classic", "Plain storytelling.", []);
+const lesson = (name: string, text: string, note?: string) => ({ name, text, key: `skill:@tedcases--script/${name}`, ...(note ? { note } : {}) });
+
+afterEach(() => {
+  v2cloud.useSkillsForTests([]);
+  channels.useChannelsForTests([]);
+});
+
+test("a style is kept as its title, its guide and its examples, newest first, and read back the same", () => {
+  const text = styles.compose("Dr Insanity", "The guide.", ["second ref\nwords", "first ref\nwords"]);
+  const read = styles.parse({ name: "style-dr-insanity", text });
+  expect(read).toEqual({ name: "style-dr-insanity", title: "Dr Insanity", guide: "The guide.", examples: ["second ref\nwords", "first ref\nwords"] });
+  // Past its most, the oldest examples give way; the guide stays whole, and one example alone too long is cut.
+  const long = styles.compose("Long", "The guide.", ["a".repeat(6_000), "b".repeat(6_000)], 9_000);
+  expect(long.length).toBeLessThanOrEqual(9_000);
+  expect(styles.parse({ name: "style-long", text: long }).examples).toHaveLength(2);
+  expect(long).toContain("the rest left out for room");
+  expect(styles.nameFor("Dr. Insanity")).toBe("style-dr-insanity");
+  expect(styles.nameFor("default")).toBe("");
+});
+
+test("a script is written in the style it names, else the channel's default, else its only style when nothing else is taught", () => {
+  const both = [lesson("style-dr-insanity", insanity, "A script style"), lesson("style-classic", classic, "A script style")];
+  expect(styles.chosen(both, "style-classic")?.title).toBe("Classic");
+  expect(styles.chosen(both, "Dr Insanity")?.title).toBe("Dr Insanity");
+  // Two styles and no default: a script that names none has none.
+  expect(styles.chosen(both, null)).toBeNull();
+  expect(styles.chosen([...both, lesson("style-default", "style-classic")], null)?.title).toBe("Classic");
+  // A default naming a style that's gone is no default.
+  expect(styles.defaultIn([...both, lesson("style-default", "style-gone")])).toBeNull();
+  // Taught by a reference alone: that style is the channel's.
+  expect(styles.defaultIn([both[0]!])).toBe("style-dr-insanity");
+  // With other lessons beside it, it's written in only when asked for.
+  expect(styles.defaultIn([both[0]!, lesson("names-first", "Names first.")])).toBeNull();
+  // A style picked that's been put away falls back to the default.
+  expect(styles.chosen([...both, lesson("style-default", "style-classic")], "style-gone")?.title).toBe("Classic");
+});
+
+test("a build note names a style by its title or its name", () => {
+  const both = [lesson("style-dr-insanity", insanity), lesson("style-classic", classic)];
+  expect(styles.namedIn(both, "Write this one in the Dr Insanity style please")?.name).toBe("style-dr-insanity");
+  expect(styles.namedIn(both, "dr-insanity style")?.name).toBe("style-dr-insanity");
+  expect(styles.namedIn(both, "keep it classic")?.name).toBe("style-classic");
+  expect(styles.namedIn(both, "tighten the intro")).toBeNull();
+  // A word inside another isn't the name.
+  expect(styles.namedIn(both, "neoclassical")).toBeNull();
+});
+
+test("a script's writer reads its own style whole and only the others' names, beside the channel's lessons", () => {
+  channels.useChannelsForTests([CHANNEL]);
+  v2cloud.useSkillsForTests([
+    lesson("names-first", "Say the suspect's name first."),
+    lesson("style-dr-insanity", insanity, "A script style"),
+    lesson("style-classic", classic, "A script style"),
+    lesson("style-default", "style-classic"),
+  ]);
+  const picked = lanes.section("tedcases", "script", "none", false, "style-dr-insanity");
+  expect(picked).toContain("- names-first: Say the suspect's name first.");
+  expect(picked).toContain("THIS SCRIPT'S STYLE: Dr Insanity.");
+  expect(picked).toContain("Calm, clinical voice.");
+  expect(picked).toContain("This is the moment he knew.");
+  expect(picked).toContain("never copied");
+  expect(picked).not.toContain("Plain storytelling.");
+  expect(picked).toContain("The channel's other script styles, not this script's unless the producer asks for one: Classic.");
+  // Neither a style nor the default is a lesson or a part of its own.
+  expect(picked).not.toContain("- style-default");
+  expect(picked).not.toContain("## style-dr-insanity");
+  // Naming none: the default.
+  const fallback = lanes.section("tedcases", "script", "none", false, null);
+  expect(fallback).toContain("THIS SCRIPT'S STYLE: Classic (the channel's default).");
+  expect(fallback).not.toContain("Calm, clinical voice.");
+  // The other lanes never see a script's styles.
+  expect(lanes.section("tedcases", "ideas")).not.toContain("SCRIPT'S STYLE");
+});
+
+test("a channel with no styles is said as before", () => {
+  channels.useChannelsForTests([CHANNEL]);
+  v2cloud.useSkillsForTests([lesson("names-first", "Say the suspect's name first.")]);
+  const text = lanes.section("tedcases", "script", "none", false, "style-dr-insanity");
+  expect(text).toContain("- names-first");
+  expect(text).not.toContain("STYLE:");
+  expect(text).not.toContain("other script styles");
+});

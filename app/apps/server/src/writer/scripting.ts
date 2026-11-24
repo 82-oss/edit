@@ -9,6 +9,7 @@ import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/typ
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import * as lanes from "../lanes.ts";
+import * as styles from "../script_styles.ts";
 import { join } from "../paths.ts";
 import { probe as probeFile } from "../media.ts";
 import { isFile } from "../paths.ts";
@@ -114,9 +115,22 @@ async function pickReused(dir: string, script: Script, job: Job): Promise<Script
  * script is read again afterwards, so an edit made during the build to
  * anything but the timeline stays.
  */
+/**
+ * A build note that names one of the channel's script styles ("…in the Dr Insanity style") writes the script in it
+ * from now on (script_styles.ts), as its default would be without one.
+ */
+async function styleNamed(dir: string, script: Script, note: string): Promise<Script> {
+  if (!script.channel || note.trim() === "") return script;
+  await lanes.refresh();
+  const named = styles.namedIn(lanes.lessonsOf({ channel: script.channel, lane: "script" }), note);
+  if (named === null || named.name === script.style) return script;
+  diag.info("writer", `${named.title} style asked for in the note: ${script.title} is written in it`);
+  return store.update(dir, (now) => void (now.style = named.name), true);
+}
+
 export async function buildOnce(app: App, data: string, id: string, note: string, kind: Kind | undefined, job: Job): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
-  let script = store.read(dir);
+  let script = await styleNamed(dir, store.read(dir), note);
   if (script.commentary) return buildCommentary(data, dir, script, note, job);
   if (kind !== undefined && kind !== script.kind) {
     script.kind = kind;
@@ -159,7 +173,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   // The sound, so pauses with speech the transcript missed are kept.
   const peaks = await peaksOf(dir, script, job.signal);
   job.stage("Writing the script");
-  chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
+  if (!job.asked) chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
   let built: build.Built;
   try {
     // Its progress kept beside it, so a restart carries on from the last phase done, not from the outline.
@@ -401,7 +415,7 @@ export async function reviseWith(data: string, id: string, request: string, said
   if (script.commentary) return reviseCommentary(data, dir, script, request, said, job, turn);
   if (!script.clips.some((clip) => clip.kind === "cut-in")) throw new Error("Build the script first; then ask for changes.");
   const earlier = chat.recent(dir);
-  chat.asked(dir, said, job.resumed);
+  if (!job.asked) chat.asked(dir, said, job.resumed);
   script = await pickReused(dir, script, job);
   const peaks = await peaksOf(dir, script, job.signal);
   const found = casefiles.withDocuments(dir, research.load(dir) ?? { articles: [], queries: [], at: 0 });
@@ -448,7 +462,7 @@ export async function reviseCommentary(data: string, dir: string, given: Script,
   // Edits name paragraphs by id: a script never shared gets them now.
   const script = structuredClone(given);
   if (script.commentary?.draft && ensureIds(script.commentary.draft)) store.write(dir, script);
-  chat.asked(dir, said, job.resumed);
+  if (!job.asked) chat.asked(dir, said, job.resumed);
   return withTools(data, script.id, turn, async (tools, settle) => {
     let done: commentary.Revised;
     try {

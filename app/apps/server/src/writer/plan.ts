@@ -50,7 +50,7 @@ function taughtShape(format: Format): string {
 /** The system prompt every footage build reads: Repack's editor prompt, the format's shape, length and writing sequence, and the guides; a channel's, how a plan is written and what the channel was taught. */
 export function systemPrompt(script: Script, format: Format): string {
   if (format.taught) {
-    return `${TAUGHT_HEAD}\n${TAUGHT_FOOT.replace("{shape_rule}", taughtShape(format))}\nProject title: ${script.title}\nSource duration: ${script.durationMs}ms${lanes.section(script.channel, "script", "none", false)}`;
+    return `${TAUGHT_HEAD}\n${TAUGHT_FOOT.replace("{shape_rule}", taughtShape(format))}\nProject title: ${script.title}\nSource duration: ${script.durationMs}ms${lanes.section(script.channel, "script", "none", false, script.style ?? null)}`;
   }
   const cases = format.compilation ? Math.max(caseCount(script.parts), 1) : 1;
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
@@ -61,7 +61,7 @@ export function systemPrompt(script: Script, format: Format): string {
       : "A full script starts with footage, has footage before each cut-in, and ends with a written outro; include at least an intro and an outro.";
   let prompt = `${EDITOR_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${EDITOR_FOOT.replace("{shape_rule}", shapeRule)}\nProject title: ${script.title}\nSource duration: ${script.durationMs}ms\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt + lanes.section(script.channel, "script", "none");
+  return prompt + lanes.section(script.channel, "script", "none", true, script.style ?? null);
 }
 
 /** The shape of a whole plan, as a one-answer build gives it. */
