@@ -426,8 +426,15 @@ def clean(job):
             start = int(round(float(job["from"]) * every))
             labels = [m for m in found["masks"] if m[6] == "label"]
             def blurred(box, at):
-                area = max(1.0, (box[2] - box[0]) * (box[3] - box[1]))
-                return any(m[0] <= at <= m[1] and max(0, min(box[2], m[4]) - max(box[0], m[2])) * max(0, min(box[3], m[5]) - max(box[1], m[3])) >= 0.5 * area for m in labels)
+                # Wholly under the labels up at that frame: any part outside would show once the caption blur comes off.
+                x0, y0, x1, y1 = (int(v) for v in box)
+                if x1 <= x0 or y1 <= y0:
+                    return True
+                under = np.zeros((y1 - y0, x1 - x0), bool)
+                for m in labels:
+                    if m[0] <= at <= m[1]:
+                        under[max(0, m[3] - y0):max(0, m[5] - y0), max(0, m[2] - x0):max(0, m[4] - x0)] = True
+                return bool(under.all())
             for index, boxes in enumerate(masks):
                 for box in boxes:
                     if not inside(box) and not blurred(box, start + int(round(index * every / fps))):
@@ -482,6 +489,7 @@ def clean(job):
         place_rows = None
         if where is not None and where[3] > y0 and where[1] < y1:
             place_rows = [where[0], max(y0, where[1]), where[2], min(y1, where[3])]
+        wanted = total
         off, checked, written, next_frame, boxed, empty = 0, 0, 0, 0, 0, 0
         blind = [0, 0]
         none = np.zeros((rows, W), bool)
@@ -540,13 +548,17 @@ def clean(job):
         # Boxes with no letters we can see in most of their frames: a style this doesn't know, for the model.
         unread = boxed > 0 and empty / boxed > 0.6
         unseen = blind[1] > 0 and blind[0] / blind[1] > BLIND
-        if unread or unseen or (checked > 0 and job.get("_off", 0) / checked > OFF_PLATE):
+        # The footage ended before the stretch did: its last frames would keep their captions.
+        short = total < wanted
+        if short or unread or unseen or (checked > 0 and job.get("_off", 0) / checked > OFF_PLATE):
             strip.proc.stdin.close()
             strip.proc.wait()
             for one in (out, f"{out}.partial.mp4"):
                 if os.path.exists(one):
                     os.remove(one)
             strip = None
+            if short:
+                return {"still": False, "why": f"the footage ended {wanted - total} frames before the stretch did"}
             if unseen:
                 return {"still": False, "why": f"{round(100 * blind[0] / blind[1])}% of the caption's spot is never seen clear"}
             return {"still": False, "why": f"{empty} of {boxed} captioned frames without letters" if unread else f"{job['_off']} of {checked} looks off the room's picture"}

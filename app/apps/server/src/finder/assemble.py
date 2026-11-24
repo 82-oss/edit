@@ -92,10 +92,13 @@ def off_caption_labels(masks,reads=()):
         for c in caps:
             if c[0]<=m[1] and m[0]<=c[1] and max(0,min(c[4],m[4])-max(c[2],m[2]))*max(0,min(c[5],m[5])-max(c[3],m[3]))>=0.5*area:
                 spans.append((max(c[0],m[0]),min(c[1],m[1])))
-        held=0; end=m[0]-1
+        # Covered all but a fade at either end of each caption: a logo there shows between captions, longer than that.
+        held=0; end=m[0]-1; gap=0
         for a0,a1 in sorted(spans):
+            if a0>end+1: gap=max(gap,a0-end-1)
             if a1>end: held+=a1-max(a0,end+1)+1; end=a1
-        return held>=0.8*(m[1]-m[0]+1)
+        gap=max(gap,m[1]-end)
+        return held>=0.95*(m[1]-m[0]+1) and gap<=8
     return [m for m in masks if not (m[6]=='label' and m[2]>=x0 and m[3]>=y0 and m[4]<=x1 and m[5]<=y1 and (changing(m) or worn(m)))]
 
 def off_stamps(box,stamps):
