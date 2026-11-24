@@ -124,6 +124,27 @@ describe.skipIf(real === null)("a script and its edit, kept in step", () => {
     expect(editSide(project, "a")).toEqual({ head: 0, tail: 3, text: null });
   });
 
+  test("a trim across a stretch cut out of a range keeps just what's asked, the cut-out time playing nothing", () => {
+    // Pieces at 0–4 s (1x) and 6–10 s (2x): 4–6 s of the call was cut out of the edit.
+    const [project, given] = cleanedCall(script());
+    const sounds = project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).sort((a, b) => a.start - b.start);
+    const [a, middle, b] = sounds as [Extract<typeof sounds[number], { type: "audio" }>, Extract<typeof sounds[number], { type: "audio" }>, Extract<typeof sounds[number], { type: "audio" }>];
+    project.clips = project.clips.filter((clip) => clip !== middle);
+    b.start = 120;
+    b.speed = 2;
+    b.duration = 60;
+    for (const clip of project.clips) if (clip.type !== "audio" && clip.start === 0 && clipEnd(clip) === 300) clip.duration = 180;
+    for (const clip of project.clips) if (clip.start >= 300) clip.start -= 120;
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    const now = structuredClone(given);
+    now.clips[0]!.endMs = 2_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    // 0–2 s of the first piece stays: 60 frames of its sound, the rest of the run gone.
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 2, text: null });
+    const kept = project.clips.filter((clip) => clip.type === "audio" && clip.start < 60);
+    expect(kept.map((clip) => [clip.start, clip.duration, clip.type === "audio" && clip.source_in])).toEqual([[0, 60, a.source_in]]);
+  });
+
   test("two ranges of one recording back to back stay two, though one file plays through both", () => {
     const given = script();
     given.clips = [

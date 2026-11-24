@@ -125,15 +125,33 @@ function run(project: Project, block: ScriptBlock): Played[] {
     .sort((a, b) => a.start - b.start);
 }
 
-/** Timeline frames from a run's start (or its end, given the pieces last first) that play `seconds` of its source, piece by piece at each one's speed. */
-function throughRun(pieces: readonly Played[], seconds: number, fps: number): number {
-  let left = seconds;
+/** Where a piece is in its file (seconds), start and end. */
+const inFile = (piece: Played, fps: number): [number, number] => [piece.source_in, piece.source_in + (piece.duration / fps) * piece.speed];
+
+/**
+ * Timeline frames at a run's start that play its file before `upTo` (seconds
+ * into the file): each piece at its own speed, and a gap between pieces (cut
+ * out of the edit) plays nothing, so takes no frames.
+ */
+function framesBefore(pieces: readonly Played[], upTo: number, fps: number): number {
   let frames = 0;
   for (const piece of pieces) {
-    const plays = (piece.duration / fps) * piece.speed;
-    if (left <= plays) return frames + Math.round((left / piece.speed) * fps);
+    const [from, to] = inFile(piece, fps);
+    if (upTo <= from) return frames;
+    if (upTo < to) return frames + Math.round(((upTo - from) / piece.speed) * fps);
     frames += piece.duration;
-    left -= plays;
+  }
+  return frames;
+}
+
+/** Timeline frames at a run's end that play its file after `from` (seconds into the file), as framesBefore. */
+function framesAfter(pieces: readonly Played[], from: number, fps: number): number {
+  let frames = 0;
+  for (const piece of [...pieces].reverse()) {
+    const [start, end] = inFile(piece, fps);
+    if (from >= end) return frames;
+    if (from > start) return frames + Math.round(((end - from) / piece.speed) * fps);
+    frames += piece.duration;
   }
   return frames;
 }
@@ -238,16 +256,16 @@ export function applyToEdit(project: Project, given: WriterScript, change: Chang
       const left = (mediaOf(project, tail.media)?.duration ?? Number.POSITIVE_INFINITY) - (tail.source_in + (tail.duration / fps) * tail.speed);
       const by = frames(Math.min(moveTail, moveTail > 0 ? left : Number.POSITIVE_INFINITY) / tail.speed);
       if (moveTail > 0) insertTime(project, end, by, new Set(linked(project, tail)), new Set());
-      // Back from its end through the range's pieces, each at its own speed.
-      else cutTime(project, Math.max(end - throughRun([...tailRun].reverse(), -moveTail, fps), tailRun[0]!.start), end);
+      // What plays after the new end in the file, back through the range's pieces.
+      else cutTime(project, Math.max(end - framesAfter(tailRun, inFile(tail, fps)[1] + moveTail, fps), tailRun[0]!.start), end);
     }
     const headRun = run(project, first);
     const head = headRun[0];
     const moveHead = (clip.startMs - kept.startMs) / 1000;
     if (head !== undefined && moveHead !== 0) {
       if (moveHead < 0) insertTime(project, head.start, frames(Math.max(moveHead, -head.source_in) / head.speed), new Set(), new Set(linked(project, head)));
-      // As far as the trim goes through the range's pieces (music removal cuts a recording into several), each at its own speed.
-      else cutTime(project, head.start, Math.min(head.start + throughRun(headRun, moveHead, fps), clipEnd(headRun.at(-1)!)));
+      // What plays before the new start in the file, through the range's pieces (music removal cuts a recording into several).
+      else cutTime(project, head.start, Math.min(head.start + framesBefore(headRun, head.source_in + moveHead, fps), clipEnd(headRun.at(-1)!)));
     }
     // The script's times, as the edit's script shows them.
     const now = blocksOf(project, kept.id);
