@@ -229,7 +229,9 @@ export function spanFrames(rate: number, from: number | null, to: number | null)
 export async function removeMusic(app: App, id: string, from: number | null, to: number | null, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const live = app.store.get(id);
   if (live === null) throw new Error("no such project");
-  const [first, last] = spanFrames(fpsOf(live.project), from, to);
+  const [asked, until] = spanFrames(fpsOf(live.project), from, to);
+  const first = from === null ? asked : outOfFades(live.project, asked, "start");
+  const last = to === null ? until : outOfFades(live.project, until, "end");
   const groups = soundsToClean(live.project, first, last);
   const sided = oneSidedIn(live.project, first, last);
   if (groups.size === 0) throw new Error(sided > 0 ? "the footage sound there plays one side of its source (left or right), which music removal can't keep apart" : "there's no footage sound in that span");
@@ -481,8 +483,10 @@ function setSeams(media: Media, seams: Record<string, number>): void {
  * asking again with other times makes it longer or shorter. `undo`: the span
  * goes back to the cleaned sound.
  */
-export function applyBringBack(project: Project, from: number, to: number, fade: number, undo: boolean): { pieces: number; undone: number } {
-  if (!(to > from)) throw new Error("end must be after start");
+export function applyBringBack(project: Project, asked: number, until: number, fade: number, undo: boolean): { pieces: number; undone: number; from: number; to: number } {
+  if (!(until > asked)) throw new Error("end must be after start");
+  const from = undo ? asked : outOfFades(project, asked, "start");
+  const to = undo ? until : outOfFades(project, until, "end");
   let undone = 0;
   const seams = new Set<number>();
   for (const clip of project.clips) {
@@ -509,7 +513,7 @@ export function applyBringBack(project: Project, from: number, to: number, fade:
     undone++;
   }
   for (const seam of seams) rejoinAt(project, seam);
-  if (undo) return { pieces: 0, undone };
+  if (undo) return { pieces: 0, undone, from, to };
   const targets = project.clips.filter((clip): clip is AudioClip => {
     if (clip.type !== "audio" || clipEnd(clip) <= from || clip.start >= to) return false;
     const media = mediaOf(project, clip.media);
@@ -546,7 +550,23 @@ export function applyBringBack(project: Project, from: number, to: number, fade:
     if (after !== undefined) set(after, continues(project, clip, after) ? Math.max(fade, after.crossfade ?? 0) : (after.crossfade ?? 0));
     setSeams(cleanedMedia, kept);
   }
-  return { pieces: middles.length, undone };
+  return { pieces: middles.length, undone, from, to };
+}
+
+/**
+ * `frame` moved out of any fade it falls in, the span made wider (earlier for
+ * its start, later for its end): a cut through a fade would change how the
+ * picture or sound fades, and each part's fade only starts at its own edge.
+ */
+export function outOfFades(project: Project, frame: number, side: "start" | "end"): number {
+  let at = frame;
+  for (let step = 0; step < 20; step++) {
+    const clip = project.clips.find((one) => (one.start < at && at < one.start + one.fade_in) || (clipEnd(one) - one.fade_out < at && at < clipEnd(one)));
+    if (clip === undefined) return at;
+    const inFadeIn = clip.start < at && at < clip.start + clip.fade_in;
+    at = inFadeIn ? (side === "start" ? clip.start : clip.start + clip.fade_in) : side === "start" ? clipEnd(clip) - clip.fade_out : clipEnd(clip);
+  }
+  return at;
 }
 
 /** `time` (a source second) moved out of any word it falls in, earlier for a start and later for an end. */
@@ -602,6 +622,6 @@ registerTool("bring_back_sound", async ({ app, args, projectId }) => {
   const from = undo ? Math.round(start * rate) : edgeOffWord(app, live.project, Math.round(start * rate), "start");
   const to = undo ? Math.round(end * rate) : edgeOffWord(app, live.project, Math.round(end * rate), "end");
   const fade = fadeSeconds === null ? FADE_FRAMES : Math.max(2, Math.round(fadeSeconds * rate));
-  const [saved, report] = await app.store.update(projectId, "agent", (project) => applyBringBack(project, from, to, fade, undo));
-  return text(stableStringify({ ...report, start: from / rate, end: to / rate, fade_frames: fade, rev: saved.rev }));
+  const [saved, { from: start_frame, to: end_frame, ...report }] = await app.store.update(projectId, "agent", (project) => applyBringBack(project, from, to, fade, undo));
+  return text(stableStringify({ ...report, start: start_frame / rate, end: end_frame / rate, fade_frames: fade, rev: saved.rev }));
 });

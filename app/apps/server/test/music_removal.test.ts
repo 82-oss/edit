@@ -5,7 +5,7 @@
 import { beforeEach, expect, test } from "bun:test";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
+import { applyBringBack, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
@@ -63,7 +63,7 @@ test("a sound trimmed past what's cleaned plays its original, never silence", ()
 
 test("bringing a word back crossfades to the original on the same clock, picture and sound cut together", () => {
   const project = edit();
-  expect(applyBringBack(project, 300, 330, 6, false)).toEqual({ pieces: 1, undone: 0 });
+  expect(applyBringBack(project, 300, 330, 6, false)).toEqual({ pieces: 1, undone: 0, from: 300, to: 330 });
   const [left, middle, right] = audio(project);
   expect([left!.media, middle!.media, right!.media]).toEqual(["m2", "m1", "m2"]);
   expect([left!.duration, middle!.start, middle!.duration, right!.start]).toEqual([300, 300, 30, 330]);
@@ -79,7 +79,7 @@ test("bringing a word back crossfades to the original on the same clock, picture
 test("asked again it replaces the piece, so it can be made longer", () => {
   const project = edit();
   applyBringBack(project, 300, 330, 6, false);
-  expect(applyBringBack(project, 290, 345, 6, false)).toEqual({ pieces: 1, undone: 1 });
+  expect(applyBringBack(project, 290, 345, 6, false)).toEqual({ pieces: 1, undone: 1, from: 290, to: 345 });
   const originals = audio(project).filter((one) => one.media === "m1");
   expect(originals.map((one) => [one.start, one.duration])).toEqual([[290, 55]]);
   expect(originals[0]!.source_in).toBeCloseTo(10 + 290 / 30, 6);
@@ -90,7 +90,7 @@ test("asked again it replaces the piece, so it can be made longer", () => {
 test("undo returns the span to the cleaned sound with no crossfade left", () => {
   const project = edit();
   applyBringBack(project, 300, 330, 6, false);
-  expect(applyBringBack(project, 300, 330, 6, true)).toEqual({ pieces: 0, undone: 1 });
+  expect(applyBringBack(project, 300, 330, 6, true)).toEqual({ pieces: 0, undone: 1, from: 300, to: 330 });
   expect(audio(project).every((one) => one.media === "m2" && (one.crossfade ?? 0) === 0 && one.name === undefined)).toBe(true);
   // And no stray cuts: the picture and sound are one clip each again.
   expect(audio(project).map((one) => [one.start, one.duration])).toEqual([[0, 1800]]);
@@ -228,6 +228,16 @@ test("a callout already faded in stays up across the cut, and is one clip again 
   applyBringBack(project, 300, 330, 6, true);
   const joined = project.clips.filter((one) => one.track === "v2") as Extract<Clip, { type: "text" }>[];
   expect(joined.map((one) => [one.start, one.duration, one.animation.preset])).toEqual([[200, 300, "fade"]]);
+});
+
+test("an edge inside a fade moves out of it, so the picture fades as it did", () => {
+  const project = edit();
+  for (const one of project.clips) one.fade_out = 60;
+  // 1770 is inside the last 60 frames' fade: the span starts where the fade does, and the end at the clip's end cuts nothing.
+  expect(applyBringBack(project, 1770, 1790, 6, false)).toMatchObject({ pieces: 1, from: 1740, to: 1800 });
+  const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
+  expect(pictures.map((one) => [one.start, one.duration, one.fade_out])).toEqual([[0, 1740, 0], [1740, 60, 60]]);
+  expect(outOfFades(project, 900, "start")).toBe(900);
 });
 
 test("a muted track is never paid for", () => {
