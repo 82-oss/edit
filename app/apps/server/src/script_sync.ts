@@ -125,6 +125,19 @@ function run(project: Project, block: ScriptBlock): Played[] {
     .sort((a, b) => a.start - b.start);
 }
 
+/** Timeline frames from a run's start that play `seconds` of its source, piece by piece at each one's speed. */
+function throughRun(pieces: readonly Played[], seconds: number, fps: number): number {
+  let left = seconds;
+  let frames = 0;
+  for (const piece of pieces) {
+    const plays = (piece.duration / fps) * piece.speed;
+    if (left <= plays) return frames + Math.round((left / piece.speed) * fps);
+    frames += piece.duration;
+    left -= plays;
+  }
+  return frames;
+}
+
 /** The edit's side of one script clip: a range's outer ends (seconds of its first and last recording), or a cut-in's words; null when it has none. */
 export function editSide(project: Project, origin: string): NonNullable<SyncedClip["edit"]> | null {
   const blocks = blocksOf(project, origin);
@@ -231,10 +244,9 @@ export function applyToEdit(project: Project, given: WriterScript, change: Chang
     const head = headRun[0];
     const moveHead = (clip.startMs - kept.startMs) / 1000;
     if (head !== undefined && moveHead !== 0) {
-      const by = frames(Math.max(moveHead, -head.source_in) / head.speed);
-      if (moveHead < 0) insertTime(project, head.start, by, new Set(), new Set(linked(project, head)));
-      // As far as the trim goes through the range's pieces (music removal cuts a recording into several), no further.
-      else cutTime(project, head.start, Math.min(head.start + by, clipEnd(headRun.at(-1)!)));
+      if (moveHead < 0) insertTime(project, head.start, frames(Math.max(moveHead, -head.source_in) / head.speed), new Set(), new Set(linked(project, head)));
+      // As far as the trim goes through the range's pieces (music removal cuts a recording into several), each at its own speed.
+      else cutTime(project, head.start, Math.min(head.start + throughRun(headRun, moveHead, fps), clipEnd(headRun.at(-1)!)));
     }
     // The script's times, as the edit's script shows them.
     const now = blocksOf(project, kept.id);

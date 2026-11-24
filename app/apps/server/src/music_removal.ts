@@ -298,6 +298,12 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
   };
 }
 
+/** The old cleaned copy `from` gone for the new one `to`: everything that named it names the new one (its sounds, a waveform drawn from it). */
+export function replaceCleaned(project: Project, from: string, to: string): void {
+  for (const clip of project.clips) if ("media" in clip && clip.media === from) clip.media = to;
+  project.media = project.media.filter((one) => one.id !== from);
+}
+
 /** One source's sounds in frames first–last cleaned, read afresh once it's this one's turn: seconds sent and sounds moved. */
 async function cleanSource(app: App, id: string, originalId: string, key: string, first: number, last: number, signal?: AbortSignal): Promise<[number, number]> {
   const project = app.store.get(id)?.project;
@@ -355,10 +361,7 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     const current = before === undefined ? undefined : mediaOf(draft, before.id);
     const seams = current === undefined ? undefined : cleanedInfo(current)?.seams;
     media.markers = [...(media.markers ?? []).filter((marker) => marker.name !== MARK), cleanedMarker({ of: originalId, stretches, ...(seams === undefined ? {} : { seams }) })];
-    if (before !== undefined && newId !== before.id) {
-      for (const clip of draft.clips) if (clip.type === "audio" && clip.media === before.id) clip.media = newId;
-      draft.media = draft.media.filter((one) => one.id !== before.id);
-    }
+    if (before !== undefined && newId !== before.id) replaceCleaned(draft, before.id, newId);
     return moveToCleaned(draft, ids, originalId, newId, stretches, first, last);
   });
   return [paidSeconds, changed];

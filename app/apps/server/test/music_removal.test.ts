@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { ffmpeg } from "../src/tools.ts";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, buildFile, layout, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
+import { applyBringBack, buildFile, layout, moveToCleaned, replaceCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
@@ -345,6 +345,16 @@ test("a seam's own crossfade comes back on undo after the timeline has moved", (
   applyBringBack(project, 330, 360, 6, true);
   expect(audio(project).map((one) => [one.start, one.duration, one.crossfade ?? 0])).toEqual([[30, 300, 0], [330, 300, 12]]);
   expect(cleanedInfo(project.media.find((one) => one.id === "m2")!)!.seams).toBeUndefined();
+});
+
+test("a new cleaned copy takes the old one's place everywhere it's named, a waveform drawn from it too", () => {
+  const project = edit();
+  project.media.push(media({ id: "m3", name: "a (music removed 2).flac", path: "/nowhere/a2.flac", kind: "audio", duration: 120, has_audio: true }));
+  const v = project.tracks.find((track) => track.kind === "video")!.id;
+  project.clips.push(clip({ id: "wave", type: "waveform", track: v, start: 0, duration: 300, media: "m2" } as never));
+  replaceCleaned(project, "m2", "m3");
+  expect(project.media.map((one) => one.id)).toEqual(["m1", "m3"]);
+  expect(project.clips.filter((one) => "media" in one).map((one) => [one.id, (one as { media: string }).media])).toEqual([["pic", "m1"], ["snd", "m3"], ["wave", "m3"]]);
 });
 
 test("a muted track is never paid for", () => {
