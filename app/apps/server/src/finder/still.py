@@ -25,6 +25,8 @@ ON_PLATE = 0.6
 OFF_PLATE = 0.08
 # Frames kept either side of the one being written: for what covers them, and to take a spot from when someone's in it.
 REACH = 60
+# Frames each hidden pixel is voted on from: a pad or a hand passing through for a moment is outvoted by the room.
+SAMPLES = 5
 PAD = 14
 SIBLING_SAMPLES = 70
 
@@ -67,12 +69,12 @@ class Shot:
                 self.sums[step][here] += band[here]
         self.seen += 1
 
-    def plate(self):
+    def plate(self, close=True):
         best = self.counts.argmax(axis=0)
         rows, cols = np.indices(best.shape)
         n = self.counts[best, rows, cols]
         out = (self.sums[best, rows, cols] / np.maximum(n[..., None], 1)).clip(0, 255).astype(np.uint8)
-        if (n == 0).any():
+        if close and (n == 0).any():
             out = cv2.inpaint(out, (n == 0).astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
         return out
 
@@ -211,9 +213,24 @@ def letters(frame, boxes, y0, scale):
     return out, cover
 
 
-def filled(frame, plate, trust, mask, scale, window, own, at):
-    """What goes under the mask: each pixel from the nearest frame of these seconds with no caption on it, so a person
-    stays as they are; then the room's picture where it can be trusted; what's left is closed from around it."""
+def stretch_plate(job, masks, total, W, H, y0, y1, fps):
+    """The commonest picture of this stretch alone, captions left out: what's on the table now (a card put down halfway
+    through the video isn't on the whole video's plate). (picture, the pixels it saw)."""
+    step = max(1, total // 48)
+    shot = Shot(np.zeros(1), y1 - y0, W)
+    for at, frame in enumerate(read_frames(job["ffmpeg"], job["input"], job.get("input_args", []), W, H, f"fps={fps / step:.6f},", ("-ss", f"{float(job['from']):.3f}"))):
+        index = at * step
+        if index >= total:
+            break
+        near = [one for i in range(max(0, index - 6), min(total, index + 7)) for one in masks[i]]
+        shot.add(frame[y0:y1], solid(near, y0, y1 - y0, W))
+    return shot.plate(False), shot.counts.sum(axis=0) > 0
+
+
+def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, seen):
+    """What goes under the mask: each pixel voted on by the nearest frames with no caption on it, so a person stays as
+    they are and something that only passed through doesn't land there; failing that, this stretch's own picture, then
+    the room's where it can be trusted; what's left is closed from around it."""
     rows, W = mask.shape
     holes = (mask > 0).astype(np.uint8)
     ys, xs = np.where(holes)
@@ -221,19 +238,47 @@ def filled(frame, plate, trust, mask, scale, window, own, at):
     a, b, c, d = max(0, xs.min() - grow - 8), min(W, xs.max() + grow + 9), max(0, ys.min() - grow - 8), min(rows, ys.max() + grow + 9)
     out = plate.copy()
     patch = out[c:d, a:b]
-    left = holes[c:d, a:b] > 0
-    for step in range(1, REACH + 1):
+    want = holes[c:d, a:b] > 0
+    votes = np.zeros((SAMPLES, *want.shape, 3), np.uint8)
+    count = np.zeros(want.shape, np.uint8)
+    for step in range(3, REACH + 1, 4):
         for other in (at - step, at + step):
             if 0 <= other < len(window):
-                busy = np.zeros(left.shape, bool)
+                busy = np.zeros(want.shape, bool)
                 for near in range(max(0, other - 2), min(len(own), other + 3)):
                     busy |= own[near][c:d, a:b]
-                use = left & ~busy
-                if use.any():
-                    patch[use] = window[other][c:d, a:b][use]
-                    left &= ~use
-        if not left.any():
+                ys, xs = np.nonzero(want & ~busy & (count < SAMPLES))
+                if len(ys):
+                    votes[count[ys, xs], ys, xs] = window[other][c:d, a:b][ys, xs]
+                    count[ys, xs] += 1
+        if (count[want] >= SAMPLES).all():
             break
+    known = seen[c:d, a:b]
+    patch[want & known] = nearby[c:d, a:b][want & known]
+    for many in range(1, SAMPLES + 1):
+        # One or two frames are a poor vote: this stretch's own picture is better, where it saw the spot.
+        here = want & (count == many) & (~known if many < 3 else True)
+        if here.any():
+            patch[here] = np.median(votes[:many, here], axis=0).astype(np.uint8)
+    # Something this stretch's picture has that the room's doesn't (the pad, held up for most of it), and that the part of
+    # it we can see now shows isn't there any more: the room goes in its place. Wholly hidden, it stays (a card on the table)
+    # unless that spot is nearly always plain room.
+    room = plate[c:d, a:b]
+    differ = known & (np.abs(nearby[c:d, a:b].astype(np.int16) - room.astype(np.int16)).sum(axis=2) > 45)
+    pieces, parts = cv2.connectedComponents(differ.astype(np.uint8), connectivity=8)
+    if pieces > 1:
+        here_now = np.ascontiguousarray(frame[c:d, a:b]).astype(np.int16)
+        off_near = np.abs(here_now - nearby[c:d, a:b].astype(np.int16)).sum(axis=2).astype(np.float64)
+        off_room = np.abs(here_now - room.astype(np.int16)).sum(axis=2).astype(np.float64)
+        open_part = ~want
+        shown = np.bincount(parts[open_part], minlength=pieces)
+        gone = (shown >= 10) & (np.bincount(parts[open_part], off_room[open_part], minlength=pieces) < np.bincount(parts[open_part], off_near[open_part], minlength=pieces))
+        plain = np.bincount(parts.ravel(), certain[c:d, a:b].ravel().astype(np.float64), minlength=pieces) / np.maximum(np.bincount(parts.ravel(), minlength=pieces), 1)
+        gone |= (shown < 10) & (plain >= 0.7)
+        gone[0] = False
+        back = want & gone[parts]
+        patch[back] = room[back]
+    left = want & (count == 0) & ~known
     # A line or a speck one frame had (a caption's edge as it slid in) is put right from what's round it.
     smooth = cv2.medianBlur(patch, 5)
     odd = (np.abs(patch.astype(np.int16) - smooth.astype(np.int16)).sum(axis=2) > 60) & (holes[c:d, a:b] > 0)
@@ -243,6 +288,32 @@ def filled(frame, plate, trust, mask, scale, window, own, at):
         wider = cv2.dilate(holes[c:d, a:b], cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow * 2 + 1, grow * 2 + 1)))
         closed = cv2.inpaint(np.ascontiguousarray(frame[c:d, a:b]), wider * 255, 3, cv2.INPAINT_TELEA)
         patch[unsure] = closed[unsure]
+    return out
+
+
+def is_gray(frame, free):
+    """A black-and-white stretch of the video (the channel cuts to one and back): its colour channels move together."""
+    picked = frame[free][::29].astype(np.float32)
+    return len(picked) >= 100 and float(np.std(picked[:, 0] - picked[:, 2])) < 4 and float(np.std(picked[:, 0] - picked[:, 1])) < 4
+
+
+def regraded(picture, frame, free):
+    """The room's colour picture in this frame's black and white: each channel a straight-line fit of the picture's
+    brightness, from what's showing."""
+    luma = cv2.cvtColor(picture, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    out = np.zeros(picture.shape, np.uint8)
+    for channel in range(3):
+        gain, offset = np.polyfit(luma[free][::29], frame[..., channel][free][::29].astype(np.float32), 1)
+        out[..., channel] = (gain * luma + offset).clip(0, 255).astype(np.uint8)
+    return out
+
+
+def closed_up(frame, mask):
+    """A frame that isn't the room at all (the channel's white flash between two shots): the words closed from what's round them."""
+    ys, xs = np.nonzero(mask)
+    a, b, c, d = max(0, xs.min() - 8), min(mask.shape[1], xs.max() + 9), max(0, ys.min() - 8), min(mask.shape[0], ys.max() + 9)
+    out = np.array(frame)
+    out[c:d, a:b] = cv2.inpaint(np.ascontiguousarray(frame[c:d, a:b]), (mask[c:d, a:b] > 0).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA)
     return out
 
 
@@ -293,7 +364,10 @@ def clean(job):
         known[top - y0:bottom - y0] = True
         trust = np.zeros((rows, W), bool)
         trust[top - y0:bottom - y0] = sure[top - span[0]:bottom - span[0]] >= 150
+        certain = np.zeros((rows, W), bool)
+        certain[top - y0:bottom - y0] = sure[top - span[0]:bottom - span[0]] >= 205
 
+        nearby, seen = stretch_plate(job, masks, total, W, H, y0, y1, fps)
         window, marks, own = [], [], []
         off, checked, written, next_frame, boxed, empty = 0, 0, 0, 0, 0, 0
         none = np.zeros((rows, W), bool)
@@ -328,7 +402,15 @@ def clean(job):
             if m is None or not m.any():
                 strip.write(None, None)
             else:
-                strip.write(filled(frame, plate, trust, m, scale, window, own, at), worker.alpha_of(m, max(worker.FEATHER, int(round(9 * scale)))))
+                free = known & ~own[at]
+                gray = free.any() and is_gray(frame, free)
+                if gray:
+                    fill = filled(frame, regraded(plate, frame, free), trust, certain, m, scale, window, own, at, regraded(nearby, frame, free), seen)
+                elif free.any() and float((np.abs(frame.astype(np.int16) - plate.astype(np.int16)).sum(axis=2)[free] < 45).mean()) < 0.3:
+                    fill = closed_up(frame, m)
+                else:
+                    fill = filled(frame, plate, trust, certain, m, scale, window, own, at, nearby, seen)
+                strip.write(fill, worker.alpha_of(m, max(worker.FEATHER, int(round(9 * scale)))))
             written += 1
             if written - off > REACH:
                 window.pop(0), marks.pop(0), own.pop(0)

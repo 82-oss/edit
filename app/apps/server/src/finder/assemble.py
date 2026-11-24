@@ -66,6 +66,26 @@ def off_titles(masks,W,H,reads=()):
             m=[*m[:5],memo[k],'label']
         out.append(m)
     return out
+def off_caption_labels(masks,reads=()):
+    """Captions that come up in one place, line after line, can read as words standing there: a label over the place for
+    the whole file, whose blur stood on the clean picture as a dark patch (Nov 24, the Trooper video, a caption on a black
+    plate at the lower left). A label inside the captions' place whose words keep changing is them, and goes; a logo in
+    that place reads the same every time, and stays."""
+    from collections import Counter
+    caps=[m for m in masks if m[6] in('subtitle','note')]
+    if len(caps)<20 or not reads: return masks
+    x0,y0=np.percentile([m[2] for m in caps],5)-10,np.percentile([m[3] for m in caps],5)-10
+    x1,y1=np.percentile([m[4] for m in caps],95)+10,np.percentile([m[5] for m in caps],95)+10
+    here=[(((L[0]+L[2])/2,(L[1]+L[3])/2),str(L[4]).strip().lower()) for L in reads if x0<=(L[0]+L[2])/2<=x1 and y0<=(L[1]+L[3])/2<=y1]
+    memo={}
+    def changing(m):
+        k=tuple(m[2:6])
+        if k not in memo:
+            said=[t for (cx,cy),t in here if m[2]<=cx<=m[4] and m[3]<=cy<=m[5]]
+            memo[k]=len(said)>=10 and max(Counter(said).values())<=0.2*len(said)
+        return memo[k]
+    return [m for m in masks if not (m[6]=='label' and m[2]>=x0 and m[3]>=y0 and m[4]<=x1 and m[5]<=y1 and changing(m))]
+
 def off_stamps(box,stamps):
     """A label's box kept off the camera's own stamp beside it: where the two overlap by a sliver (the label's plate and
     its padding reaching into the stamp's last line), the box stops short of the stamp (Nov 23, Boyfriends 20:06 to
