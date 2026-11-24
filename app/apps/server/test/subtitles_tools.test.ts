@@ -12,6 +12,8 @@ import { baseRouter, respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import type { AudioClip, Media, Project, TextClip } from "../src/model.ts";
 import { f32, fixed } from "../src/rust.ts";
+import { cachedTranscripts } from "../src/edit_tools.ts";
+import { cleanedMarker } from "../src/music_removed.ts";
 import { houseWords } from "../src/subtitles.ts";
 import { routes } from "../src/subtitles_tools.ts";
 import { serialize, type Transcript } from "../src/transcribe.ts";
@@ -310,6 +312,23 @@ test("a word kept unmuted in footage whose words aren't cached is still kept, fr
     const house = await houseWords(app, store.get(id)!.project, 0, Number.MAX_SAFE_INTEGER, false, [], { cachedOnly: true });
     expect(house.kept.map((one) => [one.term, Math.round(one.at_ms)])).toEqual([["fucking", 1350]]);
     expect(house.listed).toEqual([]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the review's words for sound with its music removed are its footage's", async () => {
+  // review_edit reads footage's words only (cachedTranscripts' footageOnly): the cleaned file's clips still find theirs.
+  const { app, dir, store, cleanup } = fixtureHome("review-cleaned");
+  try {
+    const id = await footage(app, dir);
+    await store.update(id, "test", (project) => {
+      project.media.push({ id: "m2", name: "bodycam (music removed).flac", path: `${dir}/clean.flac`, kind: "audio", duration: 60, width: 0, height: 0, fps: 0, has_audio: true, markers: [cleanedMarker({ of: "m", stretches: [[0, 60]] })] } as Media);
+      (project.clips.find((clip) => clip.id === "a") as AudioClip).media = "m2";
+    });
+    const words = cachedTranscripts(app, store.get(id)!.project, true);
+    expect(words.get("m2")).toBeDefined();
+    expect(words.get("m2")).toBe(words.get("m"));
   } finally {
     cleanup();
   }

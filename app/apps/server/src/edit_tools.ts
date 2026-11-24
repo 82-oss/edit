@@ -8,6 +8,7 @@
 // with care.
 
 import * as fs from "node:fs";
+import { cleanedInfo } from "./music_removed.ts";
 import type { Measured } from "./graphics.ts";
 
 import type { App } from "./app.ts";
@@ -2117,6 +2118,12 @@ export function cachedTranscripts(app: App, project: Project, footageOnly: boole
     const transcript = readTranscript(app.media.paths(media.path).transcript);
     // Rough words where nothing kept was heard yet (kept_hearing.ts) still read: the agent cuts on them.
     if (transcript !== null) out.set(media.id, transcript);
+  }
+  // Sound with its music taken out plays its footage's words (music_removed.ts): looked up by the clip's own media, they're the source's.
+  for (const media of project.media) {
+    const of = cleanedInfo(media)?.of;
+    const words = of === undefined ? undefined : out.get(of);
+    if (words !== undefined) out.set(media.id, words);
   }
   return out;
 }
