@@ -390,8 +390,20 @@ test("cleaned sound is watched, heard and segmented as its footage", () => {
   const flagged = textNotSaid(project, new Map([["m1", said], ["m2", said]]) as never) as { kind: string }[];
   expect(flagged.filter((one) => one.kind === "subtitle_unheard")).toEqual([]);
   // Nor is it music or a sound effect, though its file is "… (music removed).flac" and a minute long.
-  const kinds = [...audit(project).issues, ...commentaryIssues(project), ...soundEffectsLong(project)].map((one) => (one as { kind?: string }).kind);
-  expect(kinds.filter((kind) => kind !== undefined && /music|sound_effect/u.test(kind))).toEqual([]);
+  const kinds = [...audit(project).issues, ...commentaryIssues(project)].map((one) => (one as { kind?: string }).kind);
+  expect(kinds.filter((kind) => kind !== undefined && /music/u.test(kind))).toEqual([]);
+});
+
+test("footage's sound with its music removed is never a long sound effect, whatever its file is called", () => {
+  // Named like an effect and long: as a cleaned copy of footage it's left alone; as a plain sound it's flagged.
+  const project = edit();
+  project.media.find((one) => one.id === "m2")!.name = "impact hit.flac";
+  expect(soundEffectsLong(project)).toEqual([]);
+  const plain = edit();
+  const effect = plain.media.find((one) => one.id === "m2")!;
+  effect.name = "impact hit.flac";
+  effect.markers = [];
+  expect((soundEffectsLong(plain) as { kind: string }[]).map((one) => one.kind)).toEqual(["sfx_long"]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {
