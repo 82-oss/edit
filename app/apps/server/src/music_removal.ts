@@ -389,39 +389,47 @@ function sameTake(project: Project, before: Clip, after: Clip): boolean {
   return JSON.stringify(shifted) === JSON.stringify(before.keyframes ?? {});
 }
 
+/**
+ * `left` and `right`, butted at a cut, joined again with whatever's linked to
+ * each, when every pair is the same take (sameTake): what's after the cut
+ * then follows the joined clip. Returns the ids kept, or null if they differ.
+ */
+function joinAcross(project: Project, left: Clip, right: Clip): string[] | null {
+  const lefts = left.link === undefined ? [left] : project.clips.filter((clip) => clip.link === left.link);
+  const rights = right.link === undefined ? [right] : project.clips.filter((clip) => clip.link === right.link);
+  if (lefts.length !== rights.length) return null;
+  const pairs = lefts.map((one) => [one, rights.find((other) => other.track === one.track)] as const);
+  if (!pairs.every(([one, other]) => other !== undefined && sameTake(project, one, other))) return null;
+  const gone = new Map<string, string>();
+  for (const [one, other] of pairs) {
+    one.duration += other!.duration;
+    one.fade_out = other!.fade_out;
+    gone.set(other!.id, one.id);
+  }
+  project.clips = project.clips.filter((clip) => !gone.has(clip.id));
+  for (const clip of project.clips) if (clip.parent !== undefined && gone.has(clip.parent)) clip.parent = gone.get(clip.parent)!;
+  return [...gone.values()];
+}
+
 /** The cut at `frame` taken out again where picture and sound both carry straight on, so tweaks leave no stray cuts. */
 function rejoinAt(project: Project, frame: number): void {
   for (const right of project.clips.filter((clip): clip is AudioClip => clip.type === "audio" && clip.start === frame)) {
+    if (!project.clips.includes(right)) continue;
     const left = project.clips.find((clip) => clip.type === "audio" && clip.track === right.track && clipEnd(clip) === frame);
     if (left === undefined) continue;
-    const lefts = left.link === undefined ? [left] : project.clips.filter((clip) => clip.link === left.link);
-    const rights = right.link === undefined ? [right] : project.clips.filter((clip) => clip.link === right.link);
-    if (lefts.length !== rights.length) continue;
-    const pairs = lefts.map((one) => [one, rights.find((other) => other.track === one.track)] as const);
-    if (!pairs.every(([one, other]) => other !== undefined && sameTake(project, one, other))) continue;
-    const gone = new Map<string, string>();
-    for (const [one, other] of pairs) {
-      one.duration += other!.duration;
-      one.fade_out = other!.fade_out;
-      gone.set(other!.id, one.id);
-    }
-    project.clips = project.clips.filter((clip) => !gone.has(clip.id));
-    for (const clip of project.clips) if (clip.parent !== undefined && gone.has(clip.parent)) clip.parent = gone.get(clip.parent)!;
-    rejoinFollowers(project, frame, new Set(gone.values()));
+    const kept = joinAcross(project, left, right);
+    if (kept !== null) rejoinFollowers(project, frame, new Set(kept));
   }
 }
 
-/** What follows rejoined footage (an overlay parented to it), cut at `frame` with it, joined again where nothing tells the parts apart. */
+/** What follows rejoined footage (an overlay parented to it, and what's linked to that), cut at `frame` with it, joined again where nothing tells the parts apart. */
 function rejoinFollowers(project: Project, frame: number, parents: Set<string>): void {
   const joined = new Set<string>();
   for (const right of project.clips.filter((clip) => clip.start === frame && clip.parent !== undefined && parents.has(clip.parent))) {
+    if (!project.clips.includes(right)) continue;
     const left = project.clips.find((clip) => clip !== right && clip.track === right.track && clipEnd(clip) === frame && clip.parent === right.parent);
-    if (left === undefined || left.link !== undefined || right.link !== undefined || !sameTake(project, left, right)) continue;
-    left.duration += right.duration;
-    left.fade_out = right.fade_out;
-    project.clips = project.clips.filter((clip) => clip !== right);
-    for (const clip of project.clips) if (clip.parent === right.id) clip.parent = left.id;
-    joined.add(left.id);
+    if (left === undefined) continue;
+    for (const id of joinAcross(project, left, right) ?? []) joined.add(id);
   }
   if (joined.size > 0) rejoinFollowers(project, frame, joined);
 }

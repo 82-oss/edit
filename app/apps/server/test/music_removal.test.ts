@@ -152,6 +152,25 @@ test("an overlay following the footage is cut with it, each part following its o
   expect(after.map((one) => [one.start, one.duration, one.parent])).toEqual([[200, 400, "pic"]]);
 });
 
+test("an overlay following the footage with its own sound linked to it is cut and joined again with it", () => {
+  const project = edit();
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  const v2 = structuredClone(project.tracks.find((one) => one.id === picture.track)!);
+  v2.id = "v2";
+  const a2 = structuredClone(project.tracks.find((one) => one.kind === "audio")!);
+  a2.id = "a2";
+  project.tracks.push(v2, a2);
+  project.media.push(media({ id: "m3", name: "b.mp4", path: "/nowhere/b.mp4", kind: "video", duration: 60, has_audio: true }));
+  project.clips.push(clip({ id: "inset", type: "video", track: "v2", media: "m3", start: 200, duration: 400, source_in: 0, speed: 1, link: "l9", parent: "pic" } as never));
+  project.clips.push(clip({ id: "insetsnd", type: "audio", track: "a2", media: "m3", start: 200, duration: 400, source_in: 0, speed: 1, volume_db: 0, link: "l9" }));
+  applyBringBack(project, 300, 330, 6, false);
+  expect(project.clips.filter((one) => one.track === "v2" || one.track === "a2").length).toBe(6);
+  applyBringBack(project, 300, 330, 6, true);
+  const after = project.clips.filter((one) => one.track === "v2" || one.track === "a2").sort((a, b) => a.track.localeCompare(b.track));
+  expect(after.map((one) => [one.track, one.start, one.duration, one.link])).toEqual([["a2", 200, 400, "l9"], ["v2", 200, 400, "l9"]]);
+  expect(after.find((one) => one.track === "v2")!.parent).toBe("pic");
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;
