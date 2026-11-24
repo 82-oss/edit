@@ -291,6 +291,44 @@ test("a file looked at with no mark found is looked at again once the team shows
   }
 }, 60_000);
 
+test("the person's Stop lets a cell under way go at once: no piece stays running, a rented machine's job is called off (Nov 24, the Trooper edit)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("watermark-stop");
+  const base = standIn([]);
+  let started = 0;
+  let calledOff = 0;
+  // A rented machine's job: it runs until it's called off.
+  wm.useEngine({
+    ...base,
+    remove: async (_piece, _progress, stopped) => {
+      started += 1;
+      while (stopped?.() !== true) await Bun.sleep(10);
+      calledOff += 1;
+      throw new Error("stopped");
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const before = wm.limits.cells;
+  try {
+    const file = join(dir, "marked.mp4");
+    fs.writeFileSync(file, "a long stand-in tape with a mark");
+    const id = await project(app, [file], 70);
+    wm.limits.cells = 3;
+    await wm.ensure(app, id);
+    while (started < 3) await Bun.sleep(10);
+    expect(wm.piecesOf(id).map((piece) => piece.state)).toEqual(["running", "running", "running"]);
+    wm.stop(id);
+    expect(wm.piecesOf(id)).toEqual([]);
+    await wm.settled();
+    expect(calledOff).toBe(3);
+    // Nothing failed, nothing laid, nothing queued again.
+    expect(wm.piecesOf(id)).toEqual([]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null)).toEqual([]);
+  } finally {
+    wm.limits.cells = before;
+    cleanup();
+  }
+}, 60_000);
+
 test("cells run several at once by the Mac's memory (8 GB: one; 16 GB: three), a file looked at for its mark one at a time beside them", async () => {
   // The M4 (17.2 GB): three.
   expect([8, 11, 12, 16, 17.2, 32].map((gb) => wm.cellsAtOnceFor(gb * 2 ** 30))).toEqual([1, 1, 2, 3, 3, 3]);

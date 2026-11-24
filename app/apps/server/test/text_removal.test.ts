@@ -806,6 +806,67 @@ test("stopped, then asked for a stretch: only that stretch is blurred, what ran 
   }
 }, 120_000);
 
+test("after the person's Stop a cleaned strip stays unless what's asked since runs over its seconds (Nov 24, the Hitman edit: the intro's captions came back)", () => {
+  const strip = { id: "s", name: "s", path: "/s.mp4", kind: "video", duration: 20, cleans: { media: "m", from: 10, to: 30, box: [0, 0, 1, 0.9] } } as unknown as Media;
+  const media = { id: "m" } as Media;
+  // Going: the blur or the model's new strips take its place.
+  expect(tr.takesItsPlace([], strip, false)).toBe(true);
+  // Stopped: nothing asked there, so it stays; asked over its seconds, the new run takes them.
+  expect(tr.takesItsPlace([], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media, spans: [[40, 50]] }], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media: { id: "n" } as Media, spans: [[10, 30]] }], strip, true)).toBe(false);
+  expect(tr.takesItsPlace([{ media, spans: [[25, 35]] }], strip, true)).toBe(true);
+});
+
+test("a channel taught to take their subtitles out lays ours over theirs without a refusal; one taught only their text doesn't", () => {
+  const project = { channel: "ch-taught" } as Project;
+  teach({ subtitles: true });
+  expect(burned.theirs.takenOut(project)).toBe(true);
+  teach({ text: true });
+  expect(burned.theirs.takenOut(project)).toBe(false);
+});
+
+test("one part stopped alone, the rest goes on; asked again, it runs on what's named (Nov 24, the Trooper edit: no way to stop just its watermarks)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-stop-part");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true, watermarks: true });
+  const reads: number[] = [];
+  blurReads(reads);
+  const calls: string[] = [];
+  wm.useEngine(engine(calls));
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const call = async (args: Record<string, unknown>) =>
+    ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+  let id = "";
+  try {
+    const file = await labelledFootage(dir, 8);
+    id = await labelledProject(app, file, 8);
+    const said = await call({ stop: true, kinds: ["watermarks"] });
+    expect(said.isError).toBe(false);
+    expect(said.content[0]!.text).toContain("Stopped taking their watermarks out");
+    await removalSchedule.ensure(app, id);
+    await blur.settled();
+    await wm.settled();
+    // Their text still blurred; no file looked at for a mark.
+    expect(blurs(id)).toEqual([["m", 0, 8, "done"]]);
+    expect(calls).toEqual([]);
+    expect(asks.isStopped(app.store.home, id)).toBe(false);
+    // Kept across a restart.
+    asks.reset();
+    await removalSchedule.ensure(app, id);
+    await wm.settled();
+    expect(calls).toEqual([]);
+    await Bun.sleep(5);
+    // Asked for again: done on what's named.
+    expect((await call({ kinds: ["watermarks"], media: ["m"] })).isError).toBe(false);
+    await wm.settled();
+    expect(calls).toEqual(["learn null", "remove 0-8"]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest; a longer clip is blurred to its new end", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

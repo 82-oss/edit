@@ -607,6 +607,9 @@ export function conflict(project: Project, shown: Shown[]): string {
   return `The footage already has subtitles burned in there (${where} on the timeline), so ours stay off it.`;
 }
 
+/** Whether `project`'s channel is taught to take their subtitles out of the picture (text_removal.ts says). */
+export const theirs = { takenOut: (_project: Project): boolean => false };
+
 /**
  * An agent's save that lays a subtitle of ours (new, moved or longer) over
  * subtitles burned into the footage: the line it's refused with, else null.
@@ -622,6 +625,10 @@ export function refusal(before: Project, after: Project): string | null {
     return old === undefined || old.start !== clip.start || old.duration !== clip.duration || old.track !== clip.track;
   });
   if (placed.length === 0) return null;
+  // Taught to take theirs out, ours go over them, and removal takes theirs out of the picture there (Nov 24, the Hitman
+  // edit: extend_clip was refused on every clipped word whose last frames removal hadn't cleaned yet, as it couldn't
+  // while stopped, and couldn't be asked to clean seconds not on the timeline).
+  if (theirs.takenOut(after)) return null;
   // Each stretch whole: cut to the subtitles' span, an edge's sliver read as all of it.
   const { shown } = onTimeline(after);
   if (shown.length === 0) return null;

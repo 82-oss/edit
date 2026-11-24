@@ -212,6 +212,14 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     rippled.clips.find((clip) => clip.id === "old")!.start = 30;
     expect(burned.refusal(legacy, rippled)).toBeNull();
     expect(burned.refusal(store.get(id)!.project, rippled)).toContain("so ours stay off it");
+    // A channel taught to take theirs out: ours go over them, removal takes theirs out of the picture (Nov 24, extend_clip on the Hitman edit).
+    const taught = burned.theirs.takenOut;
+    burned.theirs.takenOut = () => true;
+    try {
+      expect(burned.refusal(store.get(id)!.project, rippled)).toBeNull();
+    } finally {
+      burned.theirs.takenOut = taught;
+    }
     // A channel taught to cover theirs: a blur on their band, stuck to the clip, and ours on it.
     const covered = await call(app, "add_subtitles", { project_id: id, start: 0, burned_in: "cover" });
     expect(covered.isError).toBe(false);

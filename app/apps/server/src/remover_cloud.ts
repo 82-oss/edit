@@ -169,10 +169,11 @@ export function watermarkEngine(key: string) {
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be learned");
       return take(job.out);
     },
-    async remove(piece: WatermarkPiece, _progress: (progress: number) => void): Promise<WatermarkRemoved | null> {
+    async remove(piece: WatermarkPiece, _progress: (progress: number) => void, stopped: () => boolean = () => false): Promise<WatermarkRemoved | null> {
       const model = await modelKey(piece.model);
+      if (stopped()) throw new Error("stopped");
       const job = await start("watermark", { input: key, size: piece.size, fps: piece.fps, from: piece.from, to: piece.to, model, keep: piece.keep });
-      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null }>(job);
+      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null }>(job, stopped);
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be taken out");
       if (answer.removed != null) await cloud.download(job.out, piece.out);
       await cloud.remove([job.out]).catch(() => {});

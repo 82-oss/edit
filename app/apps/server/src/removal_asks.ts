@@ -37,7 +37,9 @@ export interface Ask {
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
 const stopFileOf = (home: string) => join(home, "removal-stopped.json");
-let kept: { home: string; asks: Record<string, Ask[]>; stopped: Record<string, number> } | null = null;
+const partsFileOf = (home: string) => join(home, "removal-parts-stopped.json");
+type PartsStopped = Record<string, Partial<Record<removal.Kind, number>>>;
+let kept: { home: string; asks: Record<string, Ask[]>; stopped: Record<string, number>; parts: PartsStopped } | null = null;
 
 function read<T>(file: string): T | null {
   try {
@@ -48,7 +50,9 @@ function read<T>(file: string): T | null {
 }
 
 function loaded(home: string): NonNullable<typeof kept> {
-  if (kept?.home !== home) kept = { home, asks: read<Record<string, Ask[]>>(fileOf(home)) ?? {}, stopped: read<Record<string, number>>(stopFileOf(home)) ?? {} };
+  if (kept?.home !== home) {
+    kept = { home, asks: read<Record<string, Ask[]>>(fileOf(home)) ?? {}, stopped: read<Record<string, number>>(stopFileOf(home)) ?? {}, parts: read<PartsStopped>(partsFileOf(home)) ?? {} };
+  }
   return kept;
 }
 
@@ -90,6 +94,29 @@ export function setStopped(home: string, id: string, stopped: boolean): void {
   keep(stopFileOf(home), state);
 }
 
+/**
+ * One part of project `id`'s removal stopped, the rest going on (Nov 24, the Trooper edit: once its watermark removal
+ * had started nothing could stop just that, and the whole Stop took the cleaning of their captions with it): that part
+ * no longer runs by itself, and what was asked of it before is done with; an ask of it after runs what it names.
+ */
+export function stopParts(home: string, id: string, kinds: removal.Kind[]): void {
+  const state = loaded(home).parts;
+  const now = Date.now();
+  state[id] = { ...state[id], ...Object.fromEntries(kinds.map((kind) => [kind, now])) };
+  keep(partsFileOf(home), state);
+}
+
+/** When part `kind` of project `id` was stopped alone, if it was. */
+const partStoppedAt = (home: string, id: string, kind: removal.Kind): number | undefined => loaded(home).parts[id]?.[kind];
+
+/** Whether part `kind` of project `id` was stopped alone (it doesn't run by itself there). */
+export function isPartStopped(home: string, id: string, kind: removal.Kind): boolean {
+  return partStoppedAt(home, id, kind) !== undefined;
+}
+
+/** Whether `ask` still counts for part `kind`: made after that part was stopped alone, if it was. */
+const liveFor = (home: string, id: string, kind: removal.Kind, ask: Ask): boolean => ask.at > (partStoppedAt(home, id, kind) ?? 0);
+
 /** What's been asked for in project `id`. */
 export function asksOf(home: string, id: string): Ask[] {
   return all(home)[id] ?? [];
@@ -111,7 +138,7 @@ const asking = (home: string, id: string, ask: Ask): boolean => ask.mark === und
 
 /** The parts asked for in project `id`. */
 export function askedKinds(home: string, id: string): removal.Kind[] {
-  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => asking(home, id, ask) && ask.kinds.includes(kind)));
+  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => asking(home, id, ask) && ask.kinds.includes(kind) && liveFor(home, id, kind, ask)));
 }
 
 /** The footage files named in what was asked since the Stop (not the whole project). */
@@ -123,7 +150,8 @@ export function pointedAt(home: string, id: string): Set<string> {
 
 /** The lesson as it applies to project `id` now: the parts running by themselves (unless stopped), and those asked for. */
 export function inForce(lesson: removal.Lesson | null, home: string, id: string): removal.Lesson | null {
-  return removal.inForce(isStopped(home, id) ? null : lesson, askedKinds(home, id), lesson);
+  const running = isStopped(home, id) || lesson === null ? null : removal.only(lesson, removal.KINDS.filter((kind) => !isPartStopped(home, id, kind)));
+  return removal.inForce(running, askedKinds(home, id), lesson);
 }
 
 const intersect = (a: Spans, b: Spans): Spans => a.flatMap(([x, y]) => b.flatMap(([u, v]): Spans => (Math.min(y, v) > Math.max(x, u) ? [[Math.max(x, u), Math.min(y, v)]] : [])));
@@ -145,10 +173,10 @@ function merged(spans: Spans): Spans {
  * the agent marked since).
  */
 export function scope(lesson: removal.Lesson | null, home: string, id: string, kind: removal.Kind, media: string, shown: Spans): Spans {
-  if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id)) return shown;
+  if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id) && !isPartStopped(home, id, kind)) return shown;
   const out: Spans = [];
   for (const ask of liveAsks(home, id)) {
-    if (!asking(home, id, ask) || !ask.kinds.includes(kind)) continue;
+    if (!asking(home, id, ask) || !ask.kinds.includes(kind) || !liveFor(home, id, kind, ask)) continue;
     const given = ask.media === "all" ? "all" : ask.media[media];
     if (given === undefined) continue;
     out.push(...(given === "all" ? shown : intersect(shown, given)));

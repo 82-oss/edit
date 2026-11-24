@@ -357,6 +357,7 @@ export function textOf(media: Media, camera: Box[], lesson: removal.Lesson | nul
 }
 
 export const lessonOf = removal.lessonOf;
+burned.theirs.takenOut = (project) => lessonOf(project)?.remove.subtitles === true;
 
 /** The camera's own text in a file, from the words read off it (no new reads; a bar needs its frames: `stampOf`). */
 function cameraFromReads(media: Media, bar: Bar | null): Box[] {
@@ -640,7 +641,8 @@ export async function ensure(app: App, id: string): Promise<void> {
  * marks and tracks (another method's, another version's, other seconds), each still counted as their words gone
  * (`stripCovers`), so the blur stood down over whatever it had left (Nov 22, the Boyfriends edit: a Vmake strip of Nov
  * 19 over 347–527 s with a blue subtitle still in it, shown sharp). The blur takes those seconds, and the model the
- * ones it cleans. Only while the model can be reached (its strips are what take their place).
+ * ones it cleans. Only while the model can be reached (its strips are what take their place), and after a Stop only
+ * where something asked for since runs.
  */
 async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: inpaint.InpaintPlan[]): Promise<void> {
   if (!inpaint.available()) return;
@@ -667,13 +669,26 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
     if (plan === undefined || boxes === null || (plan.marks ?? []).some((mark) => mark.from < media.cleans!.to && mark.to > media.cleans!.from)) return false;
     return !found.captionsIn(boxes, media.cleans!.from, media.cleans!.to);
   };
-  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && (!wanted(media) || again(media) || empty(media));
+  const stopped = asks.isStopped(app.store.home, id);
+  const replaced = (media: Media): boolean => takesItsPlace(plans, media, stopped);
+  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && ((!wanted(media) && replaced(media)) || again(media) || empty(media));
   const count = live.project.media.filter(stale).length;
   if (count === 0) return;
   await app.store.update(id, "text removal", (project) => {
     project.media = project.media.filter((media) => !stale(media));
   });
   diag.info("removal", `${id}: ${count} strips made before the finder read their files taken off (the blur and the model's new strips take those seconds)`);
+}
+
+/**
+ * Whether a strip outside what the model cleans now has something to take its place: the blur, or the model's new
+ * strips. After the person's Stop only what was asked since is planned, so only a strip over those seconds does (Nov 24,
+ * the Hitman edit: a Stop took off the intro's cleaned strips, nothing laid new ones, and its captions came back).
+ */
+export function takesItsPlace(plans: Pick<blur.BlurPlan, "media" | "spans">[], strip: Media, stopped: boolean): boolean {
+  if (!stopped) return true;
+  const { media, from, to } = strip.cleans!;
+  return plans.some((plan) => plan.media.id === media && plan.spans.some(([a, b]) => a < to && b > from));
 }
 
 // A file read by the finder: the project's plan again, with its boxes (one look at a time a project).
