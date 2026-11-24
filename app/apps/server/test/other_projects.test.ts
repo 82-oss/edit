@@ -119,6 +119,9 @@ test("the script's agent reads another script: the producer's asks, the answers 
       { role: "producer", text: "Apply the review's feedback.", at: 0 },
       { role: "editor", text: "Read the Trooper script and pasted it here, as the note said.", at: 0, workedMs: 30_000 },
       // The producer's own words, whose answer pulled the review's notes.
+      // The build's own last read, on the producer's side: Edit's words, not theirs (seen in the Nov 24 trial).
+      { role: "producer", text: "Fresh eyes: the final read.", at: 0 },
+      { role: "editor", text: "Tightened two clip edges.", at: 0, workedMs: 40_000 },
       { role: "producer", text: "Do you see any feedback?", at: 0 },
       { role: "editor", text: "One note: the reviewer asks to paste the other script in.", at: 0, workedMs: 9_000, trace: [{ at: 0, calls: [{ id: "t1", tool: "pull_feedback", label: "", state: "done" }] }] },
       // A failed answer that pulled them, then the retry's answer, which may carry them on.
@@ -156,6 +159,8 @@ test("the script's agent reads another script: the producer's asks, the answers 
     expect(said).not.toContain("Apply the review's feedback");
     expect(said).not.toContain("as the note said");
     expect(said).not.toContain("Do you see any feedback?");
+    expect(said).not.toContain("Fresh eyes");
+    expect(said).not.toContain("Tightened two clip edges");
     expect(said).not.toContain("paste the other script in");
     expect(said).not.toContain("Check the notes and tighten the intro.");
     expect(said).not.toContain("as the reviewer asked");

@@ -307,7 +307,7 @@ export async function buildAndReview(app: App, data: string, id: string, note: s
   job.stage("Reading it with fresh eyes");
   try {
     const built = store.read(store.scriptDir(data, id));
-    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job, { given: null, tools: false });
+    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), chat.FRESH_EYES, { selected: [], picked: null, playheadMs: null }, true, job, { given: null, tools: false });
     return [`${report}\n\nFresh eyes: ${again}`, cost + more];
   } catch (error) {
     checkStopped(job);

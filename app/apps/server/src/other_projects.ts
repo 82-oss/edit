@@ -210,7 +210,9 @@ function scriptChat(dir: string): Exchange[] {
   let open: Exchange | null = null;
   for (const turn of writerChat.read(dir) as ChatTurn[]) {
     if (turn.role === "producer") {
-      open = turn.text.trim() === "" || turn.text.trim() === REVIEW_FIX ? null : { at: turn.at, asked: turn.text, answer: null };
+      // Edit's own on the producer's side (a review's fix, the build's fresh eyes): never what the person asked.
+      const own = turn.text.trim() === REVIEW_FIX || turn.text.trim() === writerChat.FRESH_EYES;
+      open = turn.text.trim() === "" || own ? null : { at: turn.at, asked: turn.text, answer: null };
       if (open !== null) out.push(open);
       continue;
     }
