@@ -193,3 +193,22 @@ test("a turn fixing a review's notes has no other_projects, and a hidden test pr
     cleanup();
   }
 });
+
+test("a script too long to read with its clips' words still gives every cut-in, clip and note, with its clips' times alone", () => {
+  const { home, store, cleanup } = fixtureHome("other-long");
+  try {
+    putScript(home, script(TROOPER, "Trooper Stops Wrong Car", 1));
+    // 800 clips of 20 words each: past the answer's limit with every word, and with each clip's first and last words.
+    const words = Array.from({ length: 16_000 }, (_, index) => ({ id: `w${index}`, text: `word${index}`, startMs: index * 500, endMs: index * 500 + 400 }));
+    const clips = Array.from({ length: 800 }, (_, index) => ({ id: `c${index}`, startMs: index * 10_000, endMs: index * 10_000 + 9_900 }));
+    const long: Script = { ...script(KIMBERLY, "Kimberly Kessler Compilation", 2), words, durationMs: 8_000_000, clips: [...clips, { id: "n-last", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "And that was the last anyone saw of her." }] };
+    putScript(home, long);
+    const said = otherProjects.answer(store, { name: "kimberly compilation" }, TROOPER, "script");
+    expect(said).toContain("Each clip shows its times alone");
+    expect(said).toContain("And that was the last anyone saw of her.");
+    expect(said).toContain("i800 clip [");
+    expect(said).not.toContain("word15999");
+  } finally {
+    cleanup();
+  }
+});

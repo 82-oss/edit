@@ -232,11 +232,14 @@ function scriptText(script: Script): string {
     return `THE SCRIPT, as a plan\n${JSON.stringify(planWithIds(draft), null, 2)}`;
   }
   if (script.clips.length === 0) return "Nothing is laid out in it yet.";
-  // Every word of each clip, which moments were kept being as much the style as the narration; too long for that, each clip's first and last words.
+  // Every word of each clip, which moments were kept being as much the style as the narration; too long for that,
+  // each clip's first and last words; and still too long, its times alone, so every cut-in, clip and note still comes.
   const format = formatOfScript(script);
-  const whole = current(script, format, true);
+  const whole = current(script, format, "all");
   if (whole.length <= WORK_MOST) return whole;
-  return `(Each clip shows its first and last words: the script with every word is too long to read here.)\n${current(script, format)}`;
+  const ends = `(Each clip shows its first and last words: the script with every word is too long to read here.)\n${current(script, format, "ends")}`;
+  if (ends.length <= WORK_MOST) return ends;
+  return `(Each clip shows its times alone: the script with its clips' words is too long to read here.)\n${current(script, format, "none")}`;
 }
 
 /** Everything the answer says of one project. */
