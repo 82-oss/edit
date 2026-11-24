@@ -97,6 +97,11 @@ test("migration & save-time fast path: current strips never expand masksOf, v2 s
     const v2File = join(shelfDir, "1000-3000.minimax-v2-0-5167-10000-10000.mp4");
     await fakeStrip(v2File, 60, 64, 20, 30);
 
+    // 0. A plan its caller no longer stands by when its turn comes (a Stop of their text since): nothing placed.
+    await inpaint.ensure(app, created.id, plan, masksOf, () => undefined, () => false);
+    await inpaint.settled();
+    expect(app.store.get(created.id)!.project.media.filter((one) => one.cleans != null)).toEqual([]);
+
     // 1. While track range is undefined, v2 shelf hit is placed AND keeps its v2 tag (never promoted to v3).
     await inpaint.ensure(app, created.id, plan, masksOf, () => undefined);
     await inpaint.settled();

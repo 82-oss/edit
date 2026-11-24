@@ -652,7 +652,7 @@ export async function ensure(app: App, id: string): Promise<void> {
   if (!current()) return;
   await blur.ensure(app, id, plans);
   if (!current()) return;
-  await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
+  await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned), current);
 }
 
 /** Each project's Stops of their text so far (removal_schedule `stop`): a plan begun before a later one lays nothing. */

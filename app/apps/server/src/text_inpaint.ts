@@ -588,10 +588,11 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined, current: () => boolean = () => true): Promise<void> {
   // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
   // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
-  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf, rangeOf));
+  // `current`: the plan still stands when its turn comes (text_removal: no Stop of their text since it began).
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => (current() ? ensureNow(app, id, given, masksOf, rangeOf) : undefined));
   const settledRun = run.catch(() => {});
   ensuring.set(id, settledRun);
   void settledRun.finally(() => {
