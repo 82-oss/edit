@@ -29,6 +29,7 @@ import {
   clipMedia,
   clipOf,
   duration as durationOf,
+  footageMedia,
   fps as fpsOf,
   freeTrack,
   freeTrackFrom,
@@ -1315,7 +1316,7 @@ export function cutSounds(project: Project, at: number): string[] {
   const visible = (track: string) => trackOf(project, track)?.hidden === false;
   const sounds = project.clips.filter(
     (clip): clip is Extract<Clip, { type: "audio" }> =>
-      clip.type === "audio" && visible(clip.track) && clip.name !== "Voice-over" && mediaOf(project, clip.media)?.kind === "audio" && !isMusic(clip, mediaOf(project, clip.media)),
+      clip.type === "audio" && visible(clip.track) && clip.name !== "Voice-over" && footageMedia(project, clip)?.kind === "audio" && !isMusic(clip, mediaOf(project, clip.media)),
   );
   const named = (clip: Extract<Clip, { type: "audio" }>) => `${clip.name ?? ""} ${mediaOf(project, clip.media)?.name ?? ""}`;
   const missing: string[] = [];
@@ -1557,7 +1558,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   const heard: [number, number][] = [];
   for (const clip of project.clips) {
     if (clip.name === "Voice-over" || clip.type !== "audio") continue;
-    if (mediaOf(project, clip.media)?.kind === "audio") heard.push([clip.start, clipEnd(clip)]);
+    if (footageMedia(project, clip)?.kind === "audio") heard.push([clip.start, clipEnd(clip)]);
   }
   const near = asInt(round(0.5 * fps));
   const short = asInt(round(4 * fps));

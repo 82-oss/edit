@@ -5,7 +5,7 @@
 
 import * as addons from "./addons.ts";
 import type { Clip, Project } from "./model.ts";
-import { clipEnd, duration as durationOf, fps as fpsOf, reusedSpans, trackOf } from "./project.ts";
+import { clipEnd, duration as durationOf, footageMedia, fps as fpsOf, reusedSpans, trackOf } from "./project.ts";
 import { byteLength, charCount, chars, isAlphanumeric, round, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import { soundSourceId } from "./music_removed.ts";
@@ -475,7 +475,7 @@ function heardWords(project: Project, transcripts: Map<string, Transcript>, at: 
   const heard: [number, string][] = [];
   for (const clip of project.clips) {
     if (clip.type !== "audio" || trackOf(project, clip.track)?.muted === true) continue;
-    if (project.media.find((media) => media.id === clip.media)?.kind !== "video") continue;
+    if (footageMedia(project, clip)?.kind !== "video") continue;
     const transcript = transcripts.get(clip.media);
     if (transcript === undefined) continue;
     const to = clip.source_in + (clip.duration / fps) * clip.speed;
@@ -513,7 +513,7 @@ export function textNotSaid(project: Project, transcripts: Map<string, Transcrip
     (clip) =>
       clip.type === "audio" &&
       trackOf(project, clip.track)?.muted !== true &&
-      project.media.find((media) => media.id === clip.media)?.kind === "video",
+      footageMedia(project, clip)?.kind === "video",
   );
   const reused = reusedSpans(project);
   const lines = project.clips.filter((clip) => clip.type === "text" && /^(Caption|Subtitle)/u.test(clip.name ?? ""));
@@ -733,7 +733,7 @@ export function narrationInFootage(project: Project, transcripts: Map<string, Tr
   const near = Math.round(fps / 5);
   const audible = (clip: Clip): boolean => clip.type === "audio" && clip.volume_db > -30 && trackOf(project, clip.track)?.muted !== true;
   const narrations = project.clips.filter((clip) => audible(clip) && seams.voiceover.isVoiceover(project, clip));
-  const footage = project.clips.filter((clip) => audible(clip) && "media" in clip && project.media.find((media) => media.id === clip.media)?.kind === "video");
+  const footage = project.clips.filter((clip) => audible(clip) && "media" in clip && footageMedia(project, clip)?.kind === "video");
   const issues: unknown[] = [];
   // The words the footage says, on the timeline ([start, end] frames): the
   // clips can meet cleanly while a voice still runs into the narration
@@ -830,7 +830,7 @@ export function deadAir(project: Project, transcripts: Map<string, Transcript>, 
   const timeline = (clip: Clip & { source_in: number; speed: number }, at: number) => clip.start + toI64(round(((at - clip.source_in) / clip.speed) * fps));
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
-    if (project.media.find((media) => media.id === clip.media)?.kind !== "video") continue;
+    if (footageMedia(project, clip)?.kind !== "video") continue;
     if (!spans.some(([start, end]) => clip.start >= start && clipEnd(clip) <= end)) continue;
     const transcript = transcripts.get(clip.media);
     if (transcript === undefined) continue;

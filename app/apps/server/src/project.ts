@@ -414,6 +414,12 @@ export function clipMedia(clip: Clip): string | null {
   return clip.type === "video" || clip.type === "audio" ? clip.media : null;
 }
 
+/** The media of the footage a clip plays (footageOf): for sound with its music taken out, the video it came from. */
+export function footageMedia(project: Project, clip: Clip): Media | undefined {
+  const id = footageOf(project, clip);
+  return id === null ? undefined : mediaOf(project, id);
+}
+
 /** The footage a clip plays: its media, or for sound with its music taken out, the source it was cleaned from. */
 export function footageOf(project: Project, clip: Clip): string | null {
   const id = clipMedia(clip);
@@ -767,7 +773,7 @@ export function insertTime(project: Project, at: number, frames: number, lengthe
       done.moved++;
     } else if (end > at) {
       const own = at - clip.start;
-      const sound = clip.type === "audio" && mediaOf(project, clip.media)?.kind === "audio";
+      const sound = clip.type === "audio" && footageMedia(project, clip)?.kind === "audio";
       const mark = clip.type !== "video" && (clip.type !== "audio" || sound) && !subtitles.has(clip.track) && clip.duration <= short;
       if (mark) {
         // A flash, a dip, a whoosh across the cut: with the cut.

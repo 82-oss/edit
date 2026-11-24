@@ -2,7 +2,7 @@
 // transaction. Its receipt lives with the script so a restart can resume it.
 import type { Project, ScriptBlock } from "./model.ts";
 import type { Parsed } from "./seams.ts";
-import { clipEnd, clipOf, duration, insertTime, mediaOf } from "./project.ts";
+import { clipEnd, clipOf, duration, footageMedia, insertTime } from "./project.ts";
 
 const PENDING = "edit:pending-case:v1 ";
 export const CASE = "Added compilation case: ";
@@ -25,7 +25,7 @@ export function hasCase(project: Project, id: string): boolean {
 function boundary(project: Project, at: number): void {
   if (at < 0 || at > duration(project)) throw new Error("Choose a case boundary inside this timeline (frames).");
   const crossing = project.clips.filter((clip) => clip.start < at && clipEnd(clip) > at &&
-    (clip.type === "video" || (clip.type === "audio" && mediaOf(project, clip.media)?.kind !== "audio")));
+    (clip.type === "video" || (clip.type === "audio" && footageMedia(project, clip)?.kind !== "audio")));
   if (crossing.length) throw new Error(`The insertion crosses footage or its sound (${crossing.map((clip) => clip.id).join(", ")}). Split at a clean case boundary first.`);
 }
 

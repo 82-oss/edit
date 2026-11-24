@@ -10,6 +10,7 @@ import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missin
 import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
 import { setsSegments } from "../src/watch.ts";
+import { isSubtitled } from "../src/store.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
 beforeEach(stubNative);
@@ -376,6 +377,10 @@ test("cleaned sound is watched, heard and segmented as its footage", () => {
   expect(soundUses(project, "m2")).toEqual([]);
   // A video of nothing but footage still has its segments set by the watcher.
   expect(setsSegments(project)).toBe(true);
+  // And a subtitled video stays one (a subtitles-only teammate may still open and save it).
+  const v = project.tracks.find((one) => one.kind === "video")!.id;
+  project.clips.push(clip({ id: "line", type: "text", track: v, start: 0, duration: 30, name: "Subtitle · Officer", text: "Stop.", style: { font: "Geist", weight: 700, size: 96, color: [1, 1, 1, 1], tracking: 0, line_height: 1.15 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, animation: { preset: "none", duration: 12, stagger: 1.5 }, opacity: 1 } as never));
+  expect(isSubtitled(project)).toBe(true);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {

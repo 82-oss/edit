@@ -1,6 +1,6 @@
 import * as addons from "./addons.ts";
 import type { Clip, Project } from "./model.ts";
-import { clipEnd, mediaOf, trackOf } from "./project.ts";
+import { clipEnd, footageMedia, mediaOf, trackOf } from "./project.ts";
 import { captured } from "./watermarks.ts";
 import { COMMENTARY_CARDS, COMMENTARY_GRAPHICS, COMMENTARY_OVER, COMMENTARY_PLAIN, HORROR_CARDS, HORROR_LOOK, HORROR_OVER, HORROR_PICTURES, HORROR_TITLES, effectOf, isEffect, onChannel, shows, TRANSITIONS } from "./house_effects.ts";
 
@@ -50,7 +50,7 @@ export function issues(p: Project): Record<string, unknown>[] {
   const voices = new Set((p.script?.blocks ?? []).flatMap((b) => b.kind === "narration" && b.voiceover ? [b.voiceover] : []));
   const voiceMedia = new Set(live.flatMap((c) => c.type === "audio" && voices.has(c.id) ? [c.media] : []));
   const narration = live.filter((c) => c.type === "audio" && voiceMedia.has(c.media));
-  const source = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && !voiceMedia.has(c.media) && mediaOf(p, c.media)?.kind === "video");
+  const source = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && !voiceMedia.has(c.media) && footageMedia(p, c)?.kind === "video");
   const music = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && (mediaOf(p, c.media)?.library === "music" || /music|bed/iu.test(c.name ?? mediaOf(p, c.media)?.name ?? "")));
   for (const bed of music) {
     const clashes = source.filter((c) => c.start < clipEnd(bed) && clipEnd(c) > bed.start);
@@ -252,7 +252,7 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
       fix: `${Math.round((stockFrames / shown) * 100)}% of the B-roll is stock: the guide wants the story's own footage for 75–90% (the post itself, the account, the people, the place, the news); keep stock for wide establishing shots, matching the era (no modern phones in an older story)` });
     // The team's notes on v2 (Nov 6), as checks.
     const narr = live.filter((c) => c.type === "audio" && ((c.name ?? "").startsWith("Voice-over") || (p.script?.blocks ?? []).some((b) => b.kind === "narration" && b.voiceover === c.id)));
-    const source = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && mediaOf(p, c.media)?.kind === "video");
+    const source = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && footageMedia(p, c)?.kind === "video");
     const speaking = (frame: number) => narr.some((c) => c.start <= frame && clipEnd(c) > frame);
     const sourceSound = (frame: number) => source.some((c) => c.start <= frame && clipEnd(c) > frame && (c as { volume_db?: number }).volume_db !== undefined && ((c as { volume_db: number }).volume_db > -30));
     const graphic = /^(Cut-in \d+ · )?Horror · (picture|screenshot|card backdrop|.* title|title line|profile lines|icon|icon word)$/u;
