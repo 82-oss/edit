@@ -145,7 +145,10 @@ export function askedKinds(home: string, id: string): removal.Kind[] {
 /** The footage files named in what was asked since the Stop (not the whole project). */
 export function pointedAt(home: string, id: string): Set<string> {
   const out = new Set<string>();
-  for (const ask of liveAsks(home, id)) if (asking(home, id, ask) && ask.media !== "all") for (const media of Object.keys(ask.media)) out.add(media);
+  for (const ask of liveAsks(home, id)) {
+    if (ask.media === "all" || !ask.kinds.some((kind) => asking(home, id, ask, kind) && liveFor(home, id, kind, ask))) continue;
+    for (const media of Object.keys(ask.media)) out.add(media);
+  }
   return out;
 }
 

@@ -333,6 +333,10 @@ const pieces = new Map<string, Map<string, Piece>>();
 const queue: Job[] = [];
 /** The cells being cleaned now. */
 const underWay = new Set<Job>();
+/** Each project's Stops so far: a plan begun before a later Stop queues nothing. */
+const stops = new Map<string, number>();
+/** Each cell's own work file (a cell stopped and asked again runs twice for a while, neither removing the other's). */
+let workFiles = 0;
 const looks: Look[] = [];
 /** Sources being looked at for their mark now or queued to be, and the projects waiting on each. */
 const looking = new Map<string, Set<string>>();
@@ -435,7 +439,10 @@ export async function plan(app: App, project: Project, hints: Hints = NO_HINTS):
 export async function ensure(app: App, id: string, hints: Hints = hintsFor.project(app, id)): Promise<void> {
   const live = app.store.get(id);
   if (live === null || engine() === null) return;
+  const stopsBefore = stops.get(id) ?? 0;
   const { cells, unknown } = await plan(app, live.project, hints);
+  // Stopped while it planned: nothing queued from it.
+  if ((stops.get(id) ?? 0) !== stopsBefore) return;
   for (const { media, source } of unknown) {
     lookedFor.set(`${id}|${media.id}`, source);
     const waiting = looking.get(source);
@@ -547,7 +554,7 @@ async function work(app: App, job: Job): Promise<void> {
   const stopped = () => job.stopped === true;
   const dir = join(app.store.cacheDir(), "cleaned", "work");
   fs.mkdirSync(dir, { recursive: true });
-  const out = join(dir, `${job.project}-${job.media.id}-${Math.round(job.from * 1000)}.watermark.mp4`);
+  const out = join(dir, `${job.project}-${job.media.id}-${Math.round(job.from * 1000)}-${++workFiles}.watermark.mp4`);
   try {
     if (run === null) throw new Error("this Edit's engine can't take watermarks out");
     const input = await cloudMedia.originalInput(app.store.cacheDir(), job.media);
@@ -563,20 +570,30 @@ async function work(app: App, job: Job): Promise<void> {
     // Its mark not found in the cell at all: kept as none there.
     const found = removed !== null && removed.left < NOT_FOUND ? removed : null;
     if (removed !== null && found === null) diag.info("watermark", `${job.project}: ${label}: its mark wasn't found there (${Math.round(removed.left * 100)}% left), nothing laid`);
-    // Finished after the person's Stop: kept and laid when clean, else let go (nothing is done again after a Stop).
-    if (stopped() && found !== null && found.left > LEFT_MAX) return;
+    // Finished after the person's Stop: kept and laid when clean; an unclean one is let go wherever the Stop finds it
+    // (nothing is done again after a Stop, and its row, which `reject` would need, is gone).
+    const unclean = found !== null && found.left > LEFT_MAX;
+    if (stopped() && unclean) return;
     const done = await shelfOf(app).keep(job.source, found === null ? null : out, { from: job.from, to: job.to, box: found?.region ?? null }, job.model.hash);
     if (found === null || done.box === null) {
       piece.state = "none";
       return;
     }
+    const letGo = () => shelfOf(app).forget(job.source, done, job.model.hash);
+    if (stopped() && unclean) return await letGo();
     piece.left = Math.round(found.left * 1000) / 1000;
     piece.filled = Math.round(found.filled * 1000) / 1000;
     const file = await shelfOf(app).bring(job.source, done);
+    if (stopped() && unclean) return await letGo();
     await place(app, job.project, job.media, job.from, done.box, file);
     piece.state = "done";
+    if (stopped() && unclean) {
+      await letGo();
+      await unlay(app, job.project, job.media.id, job.from);
+      return;
+    }
     // The automatic look: too much of the mark still found is no clean piece.
-    if (found.left > LEFT_MAX) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
+    if (unclean) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
     diag.info("watermark", `${job.project}: ${label} in ${piece.seconds} s (${Math.round(found.filled * 100)}% rebuilt from its neighbours, ${Math.round(found.left * 100)}% of the mark left)`);
   } catch (error) {
     if (stopped()) return;
@@ -619,6 +636,13 @@ async function place(app: App, id: string, footage: Media, from: number, box: Bo
   }
 }
 
+/** Takes the watermark strip of footage `media`'s cell at `from` out of project `id`. */
+async function unlay(app: App, id: string, media: string, from: number): Promise<void> {
+  await app.store.update(id, "watermark removal", (project) => {
+    project.media = project.media.filter((one) => !(one.cleans?.media === media && one.cleans.what === "watermark" && Math.abs(one.cleans.from - from) < 0.01));
+  });
+}
+
 /**
  * A piece that isn't clean (the automatic look, or the agent's: removal_schedule.ts
  * `check_removal`): its strip out of the project and its kept cell forgotten;
@@ -635,9 +659,7 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   if (source !== null && model !== null && !isNone(model)) {
     for (const kept of (await shelfOf(app).list(source, model.hash)).filter((one) => Math.abs(one.from - piece.from) < 0.01)) await shelfOf(app).forget(source, kept, model.hash);
   }
-  await app.store.update(id, "watermark removal", (project) => {
-    project.media = project.media.filter((one) => !(one.cleans?.media === piece.media && one.cleans.what === "watermark" && Math.abs(one.cleans.from - piece.from) < 0.01));
-  });
+  await unlay(app, id, piece.media, piece.from);
   const again = (piece.tries ?? 1) < 2;
   note(id, { ...piece, state: "failed", error: why, ...(again ? {} : { gaveUp: true }) });
   diag.warn("watermark", `${id}: ${piece.name} ${piece.from}–${piece.to} s not clean (${why}): ${again ? "done again" : "left as it was"}`);
@@ -656,6 +678,7 @@ export function piecesOf(id: string): Piece[] {
  * and every restart behind them): a rented machine's job is called off, and one here finishes and is kept when clean.
  */
 export function stop(id: string): void {
+  stops.set(id, (stops.get(id) ?? 0) + 1);
   for (let at = queue.length - 1; at >= 0; at--) if (queue[at]!.project === id) queue.splice(at, 1);
   for (let at = looks.length - 1; at >= 0; at--) if (looks[at]!.project === id) looks.splice(at, 1);
   for (const [source, waiting] of looking) {
@@ -682,6 +705,7 @@ export function reset(): void {
   lookFailed.clear();
   // A fresh server's queue: what was under way is gone with the one that stopped.
   underWay.clear();
+  stops.clear();
   running = 0;
   lookingNow = 0;
   lookedFor.clear();

@@ -682,7 +682,8 @@ async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: 
     if (plan === undefined || boxes === null || (plan.marks ?? []).some((mark) => mark.from < media.cleans!.to && mark.to > media.cleans!.from)) return false;
     return !found.captionsIn(boxes, media.cleans!.from, media.cleans!.to);
   };
-  const stopped = asks.isStopped(app.store.home, id);
+  // The whole Stop, or their text's parts stopped alone (the text strips are theirs).
+  const stopped = asks.isStopped(app.store.home, id) || asks.isPartStopped(app.store.home, id, "subtitles") || asks.isPartStopped(app.store.home, id, "text");
   const replaced = (media: Media): boolean => takesItsPlace(plans, media, stopped);
   const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && ((!wanted(media) && replaced(media)) || again(media) || empty(media));
   const count = live.project.media.filter(stale).length;

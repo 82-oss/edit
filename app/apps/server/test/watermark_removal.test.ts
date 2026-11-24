@@ -329,6 +329,73 @@ test("the person's Stop lets a cell under way go at once: no piece stays running
   }
 }, 60_000);
 
+test("a cell here that finishes after the Stop is kept and laid only when clean; one unclean is let go, nothing kept of it", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("watermark-stop-here");
+  const base = standIn([]);
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  let started = 0;
+  // This computer's engine: it runs to its end whatever the Stop; the cell at 0 s comes out clean, the one at 30 s not.
+  wm.useEngine({
+    ...base,
+    remove: async (piece, progress) => {
+      started += 1;
+      await gate;
+      const done = await base.remove(piece, progress);
+      return done === null ? null : { ...done, left: piece.from === 0 ? 0.08 : 0.6 };
+    },
+  });
+  const shelf = wm.shelfIn(join(dir, "shelf"), () => false);
+  wm.useShelf(shelf);
+  const before = wm.limits.cells;
+  try {
+    const file = join(dir, "marked.mp4");
+    fs.writeFileSync(file, "a stand-in tape with a mark");
+    const id = await project(app, [file], 50);
+    wm.limits.cells = 2;
+    await wm.ensure(app, id);
+    while (started < 2) await Bun.sleep(10);
+    wm.stop(id);
+    open();
+    await wm.settled();
+    const laid = store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark");
+    expect(laid.map((media) => media.cleans!.from)).toEqual([0]);
+    const source = `sha256:${await cloudMedia.sha256File(file)}`;
+    const model = await wm.markOf(app, source);
+    expect((await shelf.list(source, (model as wm.Model).hash)).map((one) => one.from)).toEqual([0]);
+    expect(wm.piecesOf(id)).toEqual([]);
+  } finally {
+    wm.limits.cells = before;
+    cleanup();
+  }
+}, 60_000);
+
+test("a plan begun before the person's Stop queues nothing after it", async () => {
+  const { app, dir, cleanup } = fixtureHome("watermark-stop-plan");
+  const calls: WatermarkPiece[] = [];
+  wm.useEngine(standIn(calls));
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  try {
+    const file = join(dir, "marked.mp4");
+    fs.writeFileSync(file, "a stand-in tape with a mark");
+    const id = await project(app, [file], 20);
+    // Its mark known first, so the next plan goes straight to its cells.
+    await wm.ensure(app, id);
+    await wm.settled();
+    await app.store.update(id, "test", (p) => {
+      p.media = p.media.filter((one) => one.cleans == null);
+    });
+    wm.reset();
+    const planning = wm.ensure(app, id);
+    wm.stop(id);
+    await planning;
+    await wm.settled();
+    expect(wm.piecesOf(id)).toEqual([]);
+  } finally {
+    cleanup();
+  }
+}, 60_000);
+
 test("cells run several at once by the Mac's memory (8 GB: one; 16 GB: three), a file looked at for its mark one at a time beside them", async () => {
   // The M4 (17.2 GB): three.
   expect([8, 11, 12, 16, 17.2, 32].map((gb) => wm.cellsAtOnceFor(gb * 2 ** 30))).toEqual([1, 1, 2, 3, 3, 3]);
