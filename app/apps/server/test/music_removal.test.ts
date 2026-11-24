@@ -469,13 +469,18 @@ test.skipIf(Bun.which("ffmpeg") === null)("a piece laid over what's already clea
     tone(`${dir}/base.flac`, 10);
     tone(`${dir}/piece.mp3`, 5);
     await buildFile(`${dir}/base.flac`, [{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], 10, `${dir}/out.flac`);
-    const peak = (from: number, to: number) => {
-      const said = Bun.spawnSync([ffmpeg(), "-v", "info", "-ss", String(from), "-t", String(to - from), "-i", `${dir}/out.flac`, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
+    const peak = (file: string, from: number, to: number) => {
+      const said = Bun.spawnSync([ffmpeg(), "-v", "info", "-ss", String(from), "-t", String(to - from), "-i", file, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
       return Number(/max_volume: (-?[\d.]+) dB/u.exec(said)![1]);
     };
-    // Outside the piece and inside it, the same level (0.25 is about -12 dB); summed, inside would be about -6 dB.
-    expect(Math.abs(peak(0.2, 1.8) - peak(3, 6))).toBeLessThan(1.5);
-    expect(peak(3, 6)).toBeLessThan(-9);
+    const level = peak(`${dir}/piece.mp3`, 0, 5);
+    // Inside the piece, the piece's own level, as outside it; summed with what was there, it would be about 6 dB louder.
+    expect(Math.abs(peak(`${dir}/out.flac`, 3, 6) - level)).toBeLessThan(1);
+    expect(Math.abs(peak(`${dir}/out.flac`, 0.2, 1.8) - level)).toBeLessThan(1);
+    // The first time, over silence: the piece where it was laid, silence elsewhere.
+    await buildFile(null, [{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], 10, `${dir}/first.flac`);
+    expect(Math.abs(peak(`${dir}/first.flac`, 3, 6) - level)).toBeLessThan(1);
+    expect(peak(`${dir}/first.flac`, 0.2, 1.8)).toBeLessThan(level - 40);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
