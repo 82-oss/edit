@@ -52,6 +52,10 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   const oneParagraph = learn.referencesIn(`Pick up the style of ${pasted} and also this one https://youtu.be/5kFYKil24A0`);
   expect(oneParagraph.references.map((one) => one.kind)).toEqual(["text", "video"]);
   expect(oneParagraph.words).toContain("Pick up the style of");
+  // An ask that comes after the start of one long paragraph is still read.
+  const late = `${pasted} So that's the narration: learn the writing style from it for this channel.`;
+  expect(learn.split(late)[0]).toContain("learn the writing style from it");
+  expect(learn.mayAsk(late)).toBe(true);
   // A pasted script's own citations stay in it, never references of their own.
   const cited = Array.from({ length: 30 }, (_, at) => `Line ${at}: the detective leans in (https://news.example/${at}).`).join("\n");
   const withCites = learn.referencesIn(`Learn the style from this script:\n\n${cited}`);
