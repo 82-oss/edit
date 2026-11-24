@@ -240,6 +240,10 @@ test("an edge inside a fade moves out of it, so the picture fades as it did", ()
   const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
   expect(pictures.map((one) => [one.start, one.duration, one.fade_out])).toEqual([[0, 1740, 0], [1740, 60, 60]]);
   expect(outOfFades(project, 900, "start", () => true)).toBe(900);
+  // Asked again inside that fade, the replacement keeps out of it too.
+  expect(applyBringBack(project, 1760, 1780, 6, false)).toMatchObject({ pieces: 1, from: 1740, to: 1800 });
+  const again = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
+  expect(again.map((one) => [one.start, one.duration, one.fade_out])).toEqual([[0, 1740, 0], [1740, 60, 60]]);
 });
 
 test("only what the cut goes through moves an edge: a music bed fading in under it doesn't", () => {

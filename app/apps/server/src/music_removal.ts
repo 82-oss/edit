@@ -508,7 +508,8 @@ function setSeams(media: Media, seams: Record<string, number>): void {
  */
 export function applyBringBack(project: Project, asked: number, until: number, fade: number, undo: boolean): { pieces: number; undone: number; from: number; to: number } {
   if (!(until > asked)) throw new Error("end must be after start");
-  const cleanedSound = (clip: Clip) => clip.type === "audio" && cleanedInfo(mediaOf(project, clip.media) ?? { markers: [] }) !== null;
+  // What's cut: cleaned sound, and the brought-back pieces this replaces (undone first, then cut again).
+  const cleanedSound = (clip: Clip) => clip.type === "audio" && (cleanedInfo(mediaOf(project, clip.media) ?? { markers: [] }) !== null || originalOfPiece(project, clip) !== undefined);
   const from = undo ? asked : outOfFades(project, asked, "start", cleanedSound);
   const to = undo ? until : outOfFades(project, until, "end", cleanedSound);
   let undone = 0;

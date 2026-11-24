@@ -399,6 +399,52 @@ test("watch_footage asks the model once per window, corrects the transcript, set
   }
 });
 
+test("a watch whose segments were turned down (the timeline changed meanwhile) says so and leaves no receipt", async () => {
+  // A sound edit (music removal, say) mid-watch: the segments aren't written, so a later watch mustn't answer from a receipt.
+  const { app, dir, store, cleanup } = fixtureHome("watch-turned-down");
+  // An FFmpeg that says it started cutting a window, then waits to be let go.
+  const bin = `${dir}/bin`;
+  write(`${bin}/ffmpeg`, `#!/bin/sh\nfor a; do out="$a"; done\ntouch "${dir}/started"\nwhile [ ! -f "${dir}/go" ]; do sleep 0.05; done\nprintf x > "$out"\n`);
+  fs.chmodSync(`${bin}/ffmpeg`, 0o755);
+  const before = process.env.EDIT_FFMPEG;
+  process.env.EDIT_FFMPEG = `${bin}/ffmpeg`;
+  tools.forget();
+  try {
+    const id = await subtitled(app, dir);
+    mock.modelAnswer = JSON.stringify({
+      people: [{ id: "A", look: "grey suit", where: "left", on_screen: true, name: "", role: "leader" }],
+      lines: [
+        { n: 0, who: "A", sure: "high", or: null },
+        { n: 1, who: "A", sure: "high", or: null },
+      ],
+      segments: [{ start: 0, end: 10, kind: "footage", note: "" }],
+      background: [],
+    });
+    mock.castAnswer = JSON.stringify({ people: [{ name: null, title: "Detective", role: "leader", members: [0] }] });
+    const watching = dispatch(app, { id: 1, method: "tools/call", params: { name: "watch_footage", arguments: { project_id: id } } }, null) as Promise<{
+      result: { content: { text: string }[]; isError: boolean };
+    }>;
+    // While a window is being cut, the sound is trimmed by a frame.
+    for (let waited = 0; !fs.existsSync(`${dir}/started`) && waited < 20_000; waited += 50) await Bun.sleep(50);
+    expect(fs.existsSync(`${dir}/started`)).toBe(true);
+    await store.update(id, "test", (project) => {
+      project.clips.find((clip) => clip.id === "a")!.duration -= 1;
+    });
+    write(`${dir}/go`, "");
+    const reply = await watching;
+    expect(reply.result.isError).toBe(false);
+    const report = JSON.parse(reply.result.content[0]!.text.slice("watched: ".length)) as Record<string, unknown>;
+    expect(report.segments_set).toBe(false);
+    expect(fs.existsSync(`${app.store.cacheDir()}/watch-projects/${id}.json`)).toBe(false);
+  } finally {
+    mock.castAnswer = null;
+    if (before === undefined) delete process.env.EDIT_FFMPEG;
+    else process.env.EDIT_FFMPEG = before;
+    tools.forget();
+    cleanup();
+  }
+}, 60_000);
+
 test("a turn two windows give to two people is watched again, and that answer decides whose it is", async () => {
   // Killer Couple: one detective talks across the edge between two windows;
   // the cast has the earlier window's voice as one detective and the later

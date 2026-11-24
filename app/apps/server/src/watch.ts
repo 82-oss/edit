@@ -1653,6 +1653,8 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
     segments = voicedSegments(segments, heard, duration, fps);
   }
   let rev: number;
+  // Whether the segments asked for went onto the timeline: a watch whose write was turned down leaves no receipt.
+  let segmentsWritten = !setSegments;
   if (setSegments) {
     const written = segments.map((segment) => {
       const out: Segment = { start: segment.start, end: segment.end, kind: segment.kind };
@@ -1667,6 +1669,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
       return true;
     });
     rev = saved.rev;
+    segmentsWritten = wrote;
     if (!wrote) diag.warn("watch", `${projectId}: the timeline changed while watching: its segments weren't written (watch again)`);
   } else {
     const now = app.store.get(projectId);
@@ -1703,7 +1706,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
     words_moved: moved,
     doubtful,
     people,
-    segments_set: setSegments,
+    segments_set: setSegments && segmentsWritten,
     segments: segments.map((segment) => ({
       start: round((segment.start / fps) * 100.0) / 100.0,
       end: round((segment.end / fps) * 100.0) / 100.0,
@@ -1713,7 +1716,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
   };
   // Done only when everything held: a failed cast or second look is asked again next run.
   const unsettled = secondLooks.some((entry) => (entry as { decided?: unknown }).decided === null);
-  if (failed.length === 0 && castFailed === null && !unsettled) {
+  if (failed.length === 0 && castFailed === null && !unsettled && segmentsWritten) {
     const current = app.store.get(projectId);
     if (current !== null && sameText(watchedUses(current.project), watchedUses(project))) {
       // Use the corrected words from disk, not the pre-watch snapshots.
