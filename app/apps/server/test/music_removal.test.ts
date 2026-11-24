@@ -3,9 +3,14 @@
 // original, then lengthen, shorten or undo it (Sphe and JJ, Nov 23).
 
 import { beforeEach, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { ffmpeg } from "../src/tools.ts";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
+import { applyBringBack, buildFile, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
@@ -454,4 +459,24 @@ test("a seam's own crossfade comes back on undo", () => {
   applyBringBack(project, 300, 330, 6, true);
   expect(audio(project).map((one) => [one.start, one.duration, one.crossfade ?? 0])).toEqual([[0, 300, 0], [300, 300, 12]]);
   expect(cleanedInfo(project.media.find((one) => one.id === "m2")!)!.seams).toBeUndefined();
+});
+
+test.skipIf(Bun.which("ffmpeg") === null)("a piece laid over what's already cleaned replaces it, never adds to it", async () => {
+  // Cleaned before over 0–10 s; a new piece grown into 2–7 s: those seconds must be the piece's level, not double.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "music-build-"));
+  try {
+    const tone = (file: string, length: number) => expect(Bun.spawnSync([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=300:duration=${length}`, "-af", "volume=0.25", "-ac", "1", "-ar", "44100", file]).exitCode).toBe(0);
+    tone(`${dir}/base.flac`, 10);
+    tone(`${dir}/piece.mp3`, 5);
+    await buildFile(`${dir}/base.flac`, [{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], 10, `${dir}/out.flac`);
+    const peak = (from: number, to: number) => {
+      const said = Bun.spawnSync([ffmpeg(), "-v", "info", "-ss", String(from), "-t", String(to - from), "-i", `${dir}/out.flac`, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
+      return Number(/max_volume: (-?[\d.]+) dB/u.exec(said)![1]);
+    };
+    // Outside the piece and inside it, the same level (0.25 is about -12 dB); summed, inside would be about -6 dB.
+    expect(Math.abs(peak(0.2, 1.8) - peak(3, 6))).toBeLessThan(1.5);
+    expect(peak(3, 6)).toBeLessThan(-9);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
