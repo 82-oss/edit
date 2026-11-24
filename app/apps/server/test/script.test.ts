@@ -10,6 +10,7 @@ import {
   align,
   clock,
   confirmLink,
+  cut as cutExcerpt,
   cueWords,
   dispositionName,
   docId,
@@ -187,8 +188,18 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
       expect(cut!.path.endsWith(".mp4")).toBe(true);
       const seconds = await durationOf(cut!.path);
       expect(Math.abs(seconds - (cut!.to - cut!.from))).toBeLessThan(0.5);
-      const codec = Bun.spawnSync([Bun.which("ffprobe")!, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", cut!.path]);
-      expect(codec.stdout.toString().trim()).toBe("h264");
+      const codecOf = (path: string) =>
+        Bun.spawnSync([Bun.which("ffprobe")!, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path]).stdout.toString().trim();
+      expect(codecOf(cut!.path)).toBe("h264");
+      // The same from the cloud's address (its key ends in the original's name), as when its download here failed.
+      const server = Bun.serve({ port: 0, fetch: () => new Response(Bun.file(source)) });
+      try {
+        const out = `${dir}/from-address.mp4`;
+        await cutExcerpt(`http://127.0.0.1:${server.port}/edit/originals/sha256/abc/Old%20camera.wmv?X-Amz-Signature=1`, cut!.from, cut!.to, out);
+        expect(codecOf(out)).toBe("h264");
+      } finally {
+        void server.stop(true);
+      }
     } finally {
       cleanup();
     }

@@ -2593,9 +2593,10 @@ const MP4_PICTURES = ["h264", "hevc", "mpeg4", "mpeg2video", "mpeg1video", "av1"
  */
 async function picturePasses(source: string, out: string): Promise<boolean> {
   const to = (pathExtension(out) ?? "").toLowerCase();
-  // An address is copied as before: it's an MP4 or MOV read in place (`cloud_media.readsInPlace`); the rest come down
-  // whole first, and are read from the cloud only when that download fails.
-  if (to !== "mp4" || tools.isUrl(source) || (pathExtension(source) ?? "").toLowerCase() === to) return true;
+  // An address ends in the original's name: the cloud's key (an ASF read from there when its download here failed) or
+  // this Mac's reader's (an MP4 or MOV read in place, `cloud_media.readsInPlace`, so copied as before).
+  const from = (pathExtension(tools.isUrl(source) ? addressPath(source) : source) ?? "").toLowerCase();
+  if (to !== "mp4" || from === "" || from === to) return true;
   const output = await runTool(
     [tools.ffprobe(), "-v", "error", "-protocol_whitelist", tools.protocols(source), "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", ...tools.urlArgs(source), source],
     steps.probeLimit(source),
@@ -2604,6 +2605,15 @@ async function picturePasses(source: string, out: string): Promise<boolean> {
   const codec = trim(output.stdout).split("\n")[0] ?? "";
   // No picture (sound alone) or one MP4 holds: copied.
   return codec === "" || MP4_PICTURES.includes(codec);
+}
+
+/** An address's path, decoded, without its query (a signature); "" when it isn't one. */
+function addressPath(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return "";
+  }
 }
 
 /**
