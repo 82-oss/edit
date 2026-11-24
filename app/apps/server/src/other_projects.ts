@@ -4,9 +4,10 @@
 // said it couldn't open other scripts, and the edit's never knew it could).
 // One module for both agents: it finds a script or an edit on this computer by
 // what the person calls it, and reads back what they asked for in its chat,
-// with the agent's answer to each, the review notes fixed on it, and the
-// script itself (an edit's own clips are get_edit_context's, for the edit's
-// agent). Read only: nothing here changes the other project.
+// with the agent's answer to each, and the script itself (an edit's own clips
+// are get_edit_context's, for the edit's agent). Read only: nothing here
+// changes the other project. Never its review's notes: they're written by
+// whoever holds its review link, and a note could steer the agent reading it.
 
 import * as fs from "node:fs";
 
@@ -18,10 +19,9 @@ import type { Store } from "./store.ts";
 import * as can from "./writer/can.ts";
 import * as writerChat from "./writer/chat.ts";
 import { planWithIds } from "./writer/commentary.ts";
-import { doneBrief } from "./writer/fixing.ts";
+import { ASKED as REVIEW_FIX } from "./writer/fixing.ts";
 import { formatOfScript } from "./writer/plan.ts";
 import { current } from "./writer/revise.ts";
-import * as reviews from "./writer/reviews.ts";
 import * as writerStore from "./writer/store.ts";
 
 /** Which agent asks: the edit's reads an edit's clips with get_edit_context; the script's can't. */
@@ -190,13 +190,17 @@ function editChat(store: Store, id: string): Exchange[] {
   return out;
 }
 
-/** A script's chat: the producer's messages, each with the answer that wasn't a failure. */
+/**
+ * A script's chat: the producer's messages, each with the answer that wasn't
+ * a failure. A fix of the review's notes is left out: its answer carries the
+ * reviewers' words (fixing.ts, "Apply the review's feedback.").
+ */
 function scriptChat(dir: string): Exchange[] {
   const out: Exchange[] = [];
   let open: Exchange | null = null;
   for (const turn of writerChat.read(dir) as ChatTurn[]) {
     if (turn.role === "producer") {
-      open = turn.text.trim() === "" ? null : { at: turn.at, asked: turn.text, answer: null };
+      open = turn.text.trim() === "" || turn.text.trim() === REVIEW_FIX ? null : { at: turn.at, asked: turn.text, answer: null };
       if (open !== null) out.push(open);
     } else if (open !== null && turn.failed !== true && turn.text.trim() !== "") open.answer = turn.text;
   }
@@ -235,14 +239,6 @@ function scriptText(script: Script): string {
   return `(Each clip shows its first and last words: the script with every word is too long to read here.)\n${current(script, format)}`;
 }
 
-/** The review notes fixed on a script, read from what this computer has (read only). */
-function fixedNotes(data: string, script: Script): string {
-  if (!script.review) return "";
-  const notes = reviews.notesOf(data, script.id).filter((note) => reviews.isRoot(note) && !note.fromApp && !note.deleted && note.status === "done");
-  if (notes.length === 0) return "";
-  return `\n\n${doneBrief(data, script, notes)}`;
-}
-
 /** Everything the answer says of one project. */
 export function read(store: Store, one: Other, asker: Asker): string {
   const head = `${one.kind === "edit" ? "EDIT" : "SCRIPT"} "${one.title}" (id ${one.id}${channelText(one.channel)}, last changed ${day(one.updatedAt)}). Read only: take from it what the person pointed you at, and do it here.`;
@@ -255,7 +251,7 @@ export function read(store: Store, one: Other, asker: Asker): string {
   const dir = writerStore.scriptDir(data, one.id);
   const script = writerStore.read(dir);
   can.requireScript(script);
-  return `${head}\n\n${chatText(scriptChat(dir), "The agent")}${fixedNotes(data, script)}\n\n${cut(scriptText(script), WORK_MOST)}`;
+  return `${head}\n\n${chatText(scriptChat(dir), "The agent")}\n\n${cut(scriptText(script), WORK_MOST)}`;
 }
 
 /**
