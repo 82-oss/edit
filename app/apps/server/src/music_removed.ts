@@ -74,7 +74,7 @@ export function merged(stretches: readonly Stretch[]): Stretch[] {
 }
 
 /** What of `wanted` isn't in `have`, however short. */
-function gaps(wanted: readonly Stretch[], have: readonly Stretch[]): Stretch[] {
+export function gaps(wanted: readonly Stretch[], have: readonly Stretch[]): Stretch[] {
   const held = merged(have);
   const out: Stretch[] = [];
   for (const [from, to] of merged(wanted)) {

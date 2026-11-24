@@ -24,6 +24,7 @@ import {
   cleanedMarker,
   cleanedOf,
   covers,
+  gaps,
   MARK,
   merged,
   missing,
@@ -225,18 +226,36 @@ async function oneAtATime<T>(key: string, work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The cleaned file: what was cleaned before, with the new pieces laid in at their times, silence elsewhere. */
-export async function buildFile(base: string | null, pieces: { file: string; from: number; to: number }[], length: number, out: string, signal?: AbortSignal): Promise<void> {
+/** A stretch of a cleaned piece to lay in: `from`–`to` of the source, read from `at` seconds into the piece's file. */
+export interface Laid {
+  file: string;
+  from: number;
+  to: number;
+  at: number;
+}
+
+/**
+ * The new pieces, cut to what isn't cleaned yet: a piece grown to ElevenLabs'
+ * least length can reach into stretches cleaned before, where the cleaned file
+ * already has sound, and the mix only adds. Everywhere else the file is
+ * silence, so laying a piece there replaces nothing and doubles nothing.
+ */
+export function layout(pieces: readonly { file: string; from: number; to: number }[], had: readonly Stretch[]): Laid[] {
+  return pieces.flatMap((piece) => gaps([[piece.from, piece.to]], had).map(([from, to]): Laid => ({ file: piece.file, from, to, at: from - piece.from })));
+}
+
+/** The cleaned file: what was cleaned before, with the new stretches laid in at their times, by the sample; silence elsewhere. */
+export async function buildFile(base: string | null, pieces: readonly Laid[], length: number, out: string, signal?: AbortSignal): Promise<void> {
   const inputs = base === null ? ["-f", "lavfi", "-t", seconds(length), "-i", "anullsrc=r=44100:cl=mono"] : ["-i", base];
   for (const piece of pieces) inputs.push("-i", piece.file);
   const format = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono";
-  const laid = pieces.map(
-    (piece, index) => `[${index + 1}:a]atrim=0:${seconds(piece.to - piece.from)},asetpts=PTS-STARTPTS,${format},adelay=${Math.round(piece.from * 44100)}S:all=1[p${index}]`,
-  );
-  // Where a piece goes in, it replaces what was there: a piece grown to ElevenLabs' least length can reach into what's
-  // already cleaned, and the mix only adds (normalize=0), which would double that stretch.
-  const cleared = pieces.map((piece) => `,volume=0:enable='between(t,${seconds(piece.from)},${seconds(piece.to)})'`).join("");
-  const graph = [`[0:a]${format}${cleared}[base]`, ...laid, `[base]${pieces.map((_, index) => `[p${index}]`).join("")}amix=inputs=${pieces.length + 1}:normalize=0:duration=first[out]`].join(";");
+  const sample = (time: number) => Math.round(time * 44100);
+  const laid = pieces.map((piece, index) => {
+    const start = sample(piece.at);
+    const count = sample(piece.to) - sample(piece.from);
+    return `[${index + 1}:a]${format},atrim=start_sample=${start}:end_sample=${start + count},asetpts=PTS-STARTPTS,adelay=${sample(piece.from)}S:all=1[p${index}]`;
+  });
+  const graph = [`[0:a]${format}[base]`, ...laid, `[base]${pieces.map((_, index) => `[p${index}]`).join("")}amix=inputs=${pieces.length + 1}:normalize=0:duration=first[out]`].join(";");
   await run([ffmpeg(), "-nostdin", "-v", "error", "-y", ...inputs, "-filter_complex", graph, "-map", "[out]", "-t", seconds(length), "-c:a", "flac", out], {
     background: true,
     ...(signal === undefined ? {} : { signal }),
@@ -315,7 +334,7 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     await fs.promises.mkdir(folder, { recursive: true });
     const out = join(folder, `${original.name.replace(/\.[^.]+$/u, "").replaceAll("/", "-")} (music removed ${Date.now()}).flac`);
     const base = before === undefined ? null : await app.media.analysisInput(before.path);
-    await buildFile(base, pieces, original.duration, out, signal);
+    await buildFile(base, layout(pieces, had), original.duration, out, signal);
     const words = app.media.paths(fs.realpathSync(out)).transcript;
     await fs.promises.mkdir(parent(words) ?? dir, { recursive: true });
     await fs.promises.copyFile(app.media.paths(original.path).transcript, words);

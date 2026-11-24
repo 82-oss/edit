@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { ffmpeg } from "../src/tools.ts";
 
 import type { Clip, Project } from "../src/model.ts";
-import { applyBringBack, buildFile, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
+import { applyBringBack, buildFile, layout, moveToCleaned, offWord, oneSidedIn, ORIGINAL_SOUND, outOfFades, playedIn, requests, soundsToClean, spanFrames } from "../src/music_removal.ts";
 import { cleanedInfo, cleanedMarker, covers, enforceCleanedSound, merged, missing, soundSourceId, type Stretch } from "../src/music_removed.ts";
 import { footageOf, soundUses } from "../src/project.ts";
 import { footageSound } from "../src/subtitles.ts";
@@ -461,26 +461,42 @@ test("a seam's own crossfade comes back on undo", () => {
   expect(cleanedInfo(project.media.find((one) => one.id === "m2")!)!.seams).toBeUndefined();
 });
 
-test.skipIf(Bun.which("ffmpeg") === null)("a piece laid over what's already cleaned replaces it, never adds to it", async () => {
-  // Cleaned before over 0–10 s; a new piece grown into 2–7 s: those seconds must be the piece's level, not double.
+test("a new piece is laid only where nothing is cleaned yet", () => {
+  // Cleaned before over 0–10 s; a piece grown to 9–14 s lays in 10–14 s, read from 1 s into its file.
+  expect(layout([{ file: "p.mp3", from: 9, to: 14 }], [[0, 10]])).toEqual([{ file: "p.mp3", from: 10, to: 14, at: 1 }]);
+  expect(layout([{ file: "p.mp3", from: 2, to: 7 }], [[3, 4], [5, 6]])).toEqual([
+    { file: "p.mp3", from: 2, to: 3, at: 0 },
+    { file: "p.mp3", from: 4, to: 5, at: 2 },
+    { file: "p.mp3", from: 6, to: 7, at: 4 },
+  ]);
+  expect(layout([{ file: "p.mp3", from: 2, to: 7 }], [])).toEqual([{ file: "p.mp3", from: 2, to: 7, at: 0 }]);
+});
+
+test.skipIf(Bun.which("ffmpeg") === null)("a piece laid next to what's already cleaned joins it by the sample, never doubled, never a gap", async () => {
+  // Cleaned before over 0–4 s (silence after); a new piece grown to 2–7 s: laid in at 4–7 s only.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "music-build-"));
   try {
-    const tone = (file: string, length: number) => expect(Bun.spawnSync([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=300:duration=${length}`, "-af", "volume=0.25", "-ac", "1", "-ar", "44100", file]).exitCode).toBe(0);
-    tone(`${dir}/base.flac`, 10);
-    tone(`${dir}/piece.mp3`, 5);
-    await buildFile(`${dir}/base.flac`, [{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], 10, `${dir}/out.flac`);
-    const peak = (file: string, from: number, to: number) => {
+    const make = (file: string, args: string[]) => expect(Bun.spawnSync([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", ...args, "-ac", "1", "-ar", "44100", file]).exitCode).toBe(0);
+    make(`${dir}/base.flac`, ["-i", "sine=frequency=300:duration=4", "-af", "volume=0.25,apad=whole_dur=10"]);
+    make(`${dir}/piece.mp3`, ["-i", "sine=frequency=300:duration=5", "-af", "volume=0.25"]);
+    await buildFile(`${dir}/base.flac`, layout([{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], [[0, 4]]), 10, `${dir}/out.flac`);
+    const measure = (file: string, from: number, to: number, what: "max" | "mean") => {
       const said = Bun.spawnSync([ffmpeg(), "-v", "info", "-ss", String(from), "-t", String(to - from), "-i", file, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
-      return Number(/max_volume: (-?[\d.]+) dB/u.exec(said)![1]);
+      return Number(new RegExp(`${what}_volume: (-?[\\d.]+) dB`, "u").exec(said)![1]);
     };
-    const level = peak(`${dir}/piece.mp3`, 0, 5);
-    // Inside the piece, the piece's own level, as outside it; summed with what was there, it would be about 6 dB louder.
-    expect(Math.abs(peak(`${dir}/out.flac`, 3, 6) - level)).toBeLessThan(1);
-    expect(Math.abs(peak(`${dir}/out.flac`, 0.2, 1.8) - level)).toBeLessThan(1);
-    // The first time, over silence: the piece where it was laid, silence elsewhere.
-    await buildFile(null, [{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], 10, `${dir}/first.flac`);
-    expect(Math.abs(peak(`${dir}/first.flac`, 3, 6) - level)).toBeLessThan(1);
-    expect(peak(`${dir}/first.flac`, 0.2, 1.8)).toBeLessThan(level - 40);
+    const level = measure(`${dir}/piece.mp3`, 0, 5, "max");
+    const steady = measure(`${dir}/out.flac`, 1, 3, "mean");
+    // The same level before, across and after the join at 4 s: summed, it would be about 6 dB louder; a gap, quieter.
+    for (const [from, to] of [[1, 3], [3.9, 4.1], [5, 6.5]] as const) {
+      expect(Math.abs(measure(`${dir}/out.flac`, from, to, "max") - level)).toBeLessThan(1);
+      expect(Math.abs(measure(`${dir}/out.flac`, from, to, "mean") - steady)).toBeLessThan(1);
+    }
+    // Silence after the piece, as before it was cleaned.
+    expect(measure(`${dir}/out.flac`, 7.2, 9.8, "max")).toBeLessThan(level - 40);
+    // The first time, over silence: the piece where it was laid.
+    await buildFile(null, layout([{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], []), 10, `${dir}/first.flac`);
+    expect(Math.abs(measure(`${dir}/first.flac`, 3, 6, "max") - level)).toBeLessThan(1);
+    expect(measure(`${dir}/first.flac`, 0.2, 1.8, "max")).toBeLessThan(level - 40);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
