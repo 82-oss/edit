@@ -594,7 +594,7 @@ export function offScript(project: Project, transcripts: Map<string, Transcript>
     // where the last left off: the same moment played elsewhere doesn't count.
     // A recording without picture (a 911 call) plays as sound on any track.
     const call = project.media.find((media) => media.id === block.media)?.kind === "audio";
-    const footage = project.clips.filter((clip) => (clip.type === "audio" ? call && clip.media === block.media : clip.type === "video" && !call && clip.track === base && clip.media === block.media));
+    const footage = project.clips.filter((clip) => (clip.type === "audio" ? call && soundSourceId(project, clip.media) === block.media : clip.type === "video" && !call && clip.track === base && clip.media === block.media));
     const span = (clip: Clip): [number, number] => {
       const from = clip.type === "video" || clip.type === "audio" ? clip.source_in : 0;
       const speed = clip.type === "video" || clip.type === "audio" ? clip.speed : 1;

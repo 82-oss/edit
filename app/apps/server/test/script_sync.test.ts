@@ -8,6 +8,8 @@ import { clipEnd, cutTime } from "../src/project.ts";
 import { layOut } from "../src/script.ts";
 import { applyToEdit, applyToScript, changesOf, editSide, linkOf, syncComments } from "../src/script_sync.ts";
 import { toParsed, type WriterScript } from "../src/writer_handoff.ts";
+import { applyBringBack } from "../src/music_removal.ts";
+import { cleanedMarker } from "../src/music_removed.ts";
 import { media, project as newProject } from "./helpers/model.ts";
 
 // The ripples are the addon's (edit_core::remove_time): these run against the real one when it's built.
@@ -48,6 +50,22 @@ describe.skipIf(real === null)("a script and its edit, kept in step", () => {
     expect(project.script!.blocks.map((block) => [block.kind, block.origin])).toEqual([["footage", "a"], ["narration", "n"], ["footage", "b"]]);
     expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
     expect(editSide(project, "n")).toEqual({ head: 0, tail: 0, text: "Then the call came in." });
+  });
+
+  test("a call recording with its music removed, a word brought back mid-way, still reads as the whole range", () => {
+    // A sound-only file (a police call), laid out as one: its range plays as sound under a black card.
+    const given = script();
+    const project = newProject("edit");
+    project.media.push(media({ id: "m1", name: "Call.mp3", path: "/call.mp3", kind: "audio", duration: 60, has_audio: true }));
+    project.script = { source: "writer:s1", blocks: toParsed(given as unknown as WriterScript).blocks.map((block) => (block.kind === "footage" ? { ...block, media: "m1" } : block)) };
+    layOut(project);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
+    project.media.push(media({ id: "m9", name: "Call (music removed 1).flac", path: "/call-clean.flac", kind: "audio", duration: 60, has_audio: true, markers: [cleanedMarker({ of: "m1", stretches: [[0, 60]] })] }));
+    for (const clip of project.clips) if (clip.type === "audio" && clip.media === "m1") clip.media = "m9";
+    // 4–6 s of it plays the original again, in its own piece.
+    applyBringBack(project, 120, 180, 6, false);
+    expect(project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).length).toBe(3);
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 10, text: null });
   });
 
   test("a range trimmed in the script loses that time on every track; one lengthened gains it", () => {

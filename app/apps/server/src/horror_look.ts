@@ -20,6 +20,7 @@
 // the style.
 
 import * as fs from "node:fs";
+import { soundSourceId } from "./music_removed.ts";
 
 import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
@@ -367,11 +368,12 @@ export function soundEdges(project: Project): void {
     const ids = b as { clip?: string; voiceover?: string };
     return b.kind === "narration" ? [ids.clip, ids.voiceover].filter((id): id is string => typeof id === "string") : [];
   }));
-  const kindOf = (c: AudioClip) => project.media.find((m) => m.id === c.media)?.kind;
+  // Sound with its music taken out is its footage's (music_removed.ts).
+  const kindOf = (c: AudioClip) => project.media.find((m) => m.id === soundSourceId(project, c.media))?.kind;
   const sounds = project.clips.filter((c): c is AudioClip => c.type === "audio" && (kindOf(c) === "video" || voiced.has(c.id) || (c.name ?? "").startsWith("Voice-over")));
   const sourceAt = (c: AudioClip, frame: number) => c.source_in + (frame / fps) * c.speed;
   const joined = (a: AudioClip, b: AudioClip) =>
-    a.media === b.media && Math.abs(b.start - (a.start + a.duration)) <= 1 && Math.abs(b.source_in - sourceAt(a, a.duration)) < 0.1;
+    soundSourceId(project, a.media) === soundSourceId(project, b.media) && Math.abs(b.start - (a.start + a.duration)) <= 1 && Math.abs(b.source_in - sourceAt(a, a.duration)) < 0.1;
   for (const c of sounds) {
     const post = kindOf(c) === "video";
     if ((c.fade_out ?? 0) === 0 && !sounds.some((next) => next !== c && joined(c, next))) c.fade_out = Math.min(post ? 6 : 2, Math.floor(c.duration / 4));

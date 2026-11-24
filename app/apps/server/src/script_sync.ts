@@ -34,6 +34,7 @@
 // anyone; resetting the edit makes it follow the script again.
 
 import * as fs from "node:fs";
+import { soundSourceId } from "./music_removed.ts";
 
 import type { Clip as ScriptClip, EditLink, Script, SyncedClip } from "@edit/types/writer";
 
@@ -101,7 +102,7 @@ function run(project: Project, block: ScriptBlock): Played[] {
   const card = block.clip ? clipOf(project, block.clip) : undefined;
   const first = card?.type === "video" ? card : card?.link ? project.clips.find((clip): clip is Played => clip.type === "audio" && clip.link === card.link) : undefined;
   if (first !== undefined && (first.type === "video" || first.type === "audio")) {
-    const same = project.clips.filter((clip): clip is Played => clip.type === first.type && clip.track === first.track && clip.media === first.media && clip.start >= clipEnd(first)).sort((a, b) => a.start - b.start);
+    const same = project.clips.filter((clip): clip is Played => clip.type === first.type && clip.track === first.track && soundSourceId(project, clip.media) === soundSourceId(project, first.media) && clip.start >= clipEnd(first)).sort((a, b) => a.start - b.start);
     const pieces: Played[] = [first];
     for (const clip of same) {
       const last = pieces[pieces.length - 1]!;
@@ -113,7 +114,8 @@ function run(project: Project, block: ScriptBlock): Played[] {
   if (!block.media) return [];
   const kind = mediaOf(project, block.media)?.kind === "audio" ? "audio" : "video";
   return project.clips
-    .filter((clip): clip is Played => clip.type === kind && clip.media === block.media && !others.has(clip.id))
+    // Sound with its music taken out (or a word brought back) is still the block's file (music_removed.ts).
+    .filter((clip): clip is Played => clip.type === kind && soundSourceId(project, clip.media) === block.media && !others.has(clip.id))
     .filter((clip) => {
       const [from, to] = fileSpan(project, block, clip);
       return to > block.start - 0.5 && from < block.end + 0.5;
