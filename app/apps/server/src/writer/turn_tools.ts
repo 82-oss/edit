@@ -30,6 +30,7 @@ import * as youtubeResearch from "../youtube_research.ts";
 import { toolsAddress } from "./build.ts";
 import * as fixing from "./fixing.ts";
 import * as reviews from "./reviews.ts";
+import * as styles from "../script_styles.ts";
 import * as store from "./store.ts";
 
 /** One turn's tools: its script, and the review notes it has taken to fix. */
@@ -70,10 +71,17 @@ export const TOOLS_NOTE = `TOOLS. Before your answer you can use these tools; th
 - search_web, read_page: research on the web: news reports, court records, the case's facts and dates.
 - search_youtube, read_youtube: find videos on YouTube and read what's said in them (their captions), e.g. another channel's video on this case ("Red File Stephanie Lazarus") to see which details they give their viewers. Use the facts that hold up; never copy their wording. Bringing footage into the script is the footage search's job, not yours.
 - find_images: pictures of the case (its people, places, evidence, documents, news photos), shown to you as a numbered sheet with each one's link and page. The editor places pictures: each picture worth showing goes on the script as a note for the editor on the words it belongs under: "edit: show this photo of Sherri Rasmussen <image link> (from <page link>)". Only pictures of this case (their page is about it) and never stock. A reviewer asking for assets, images or visuals is asking for these notes, as many as the script can use, spread through it.
-A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).`;
+A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).\n- And use_style: which of the channel's script styles this script is written in, when the producer names one ("do this one in the Dr Insanity style", "go back to the default"), or makes one the channel's default. Its guide comes back: write what's asked in it. A new style is learned from videos, a Doc or a script pasted in when the producer's message brings them and asks for it; asked to learn one with nothing to learn from, ask for the links.`;
 
 type Args = Record<string, unknown>;
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/** A channel's script's: its style (script_styles.ts). */
+const USE_STYLE = {
+  name: "use_style",
+  description: "Which of this channel's script styles this script is written in, from now on: style is its name as the instructions list it, or \"default\" for the channel's default. default: true also makes it the channel's default (what a script is written in when none is named), when the producer asks for that. Answers with the style's guide and examples.",
+  inputSchema: { type: "object", properties: { style: { type: "string" }, default: { type: "boolean" }, reason: { type: "string", description: "What the producer said, quoted" } }, required: ["style"] },
+};
 
 const TOOLS = [
   { name: "pull_feedback", description: "The open notes reviewers left on this script's review link (feedback.spheceo.com), taken for you to fix: each with its id, who left it, where it is (the words it's on), what kind of note it is and what that lets you change, the replies under it, and its words. Fix them all in this answer and report each in feedback. done: true reads back the notes already fixed instead, each with what was done, taking nothing (for \"remember all of this for the future\").", inputSchema: { type: "object", properties: { done: { type: "boolean" } } } },
@@ -108,7 +116,7 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: session.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("script")] });
+      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: session.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("script"), USE_STYLE] });
     case "tools/call": {
       if (session === undefined) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
@@ -162,9 +170,40 @@ async function call(session: Session, name: string, args: Args): Promise<Content
     case "other_channels":
       if (session.place === null) throw new Error("This script isn't a channel's, so it has no lessons to keep or read.");
       return said(await lanes.call(name, args, session.place));
+    case "use_style":
+      if (session.place === null) throw new Error("This script isn't a channel's, so it has no styles.");
+      return said(await useStyle(session, session.place, args));
     default:
       throw new Error(`There's no tool ${name} here.`);
   }
+}
+
+/** Writes the script in one of its channel's styles from now on (and makes it the default, when asked); its guide, said back. */
+async function useStyle(session: Session, place: lanes.Place, args: Args): Promise<string> {
+  await lanes.refresh();
+  const lessons = lanes.lessonsOf(place);
+  const all = styles.stylesIn(lessons);
+  const asked = str(args.style) ?? "";
+  const dir = store.scriptDir(session.data, session.id);
+  if (/^(default|none|the default)$/iu.test(asked)) {
+    store.update(dir, (now) => void delete now.style, true);
+    const fallback = lanes.chosenStyle(place, null);
+    return fallback === null ? "This script is written in no style of its own now: the channel's lessons alone. The channel has no default style." : `This script is written in the channel's default style now, ${fallback.title}:\n\n${styles.prompt(fallback, all, true)}`;
+  }
+  const wanted = styles.nameFor(asked);
+  const found = all.find((one) => one.name === wanted || one.name === asked || one.title.toLowerCase() === asked.toLowerCase());
+  if (found === undefined) throw new Error(all.length === 0 ? "This channel has no script styles yet. One is learned from videos, a Doc or a script pasted in: ask the producer for the links." : `No style ${asked}: this channel's are ${all.map((one) => `${one.title} (${one.name.slice(styles.PREFIX.length)})`).join(", ")}.`);
+  // The channel's default first (a teacher's): refused, the script is left as it was.
+  let made = "";
+  if (args.default === true) {
+    // Kept where it takes: a channel's own style, or a channel with its own default, is that channel's, never its group's.
+    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat", lanes.defaultScope(place.channel, found.name));
+    await lanes.refresh();
+    made = lanes.defaultStyle(place) === found.name ? " It's the channel's default now: scripts that name no style are written in it." : ` It was kept as the default, but ${lanes.defaultStyle(place) ?? "no style"} is still this channel's default: say so.`;
+  }
+  store.update(dir, (now) => void (now.style = found.name), true);
+  const isDefault = lanes.defaultStyle(place) === found.name;
+  return `This script is written in ${found.title} from now on.${made} Say so in your reply.\n\n${styles.prompt(found, all, isDefault)}`;
 }
 
 /** The most of a video's captions one answer carries (about an hour of talk). */

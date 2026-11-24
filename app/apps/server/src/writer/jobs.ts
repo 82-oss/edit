@@ -35,6 +35,8 @@ export interface Job {
   stage(text: string): void;
   /** Started again after Edit restarted: the producer's request is in the chat already, and `kept` says how far it got. */
   resumed?: boolean;
+  /** A step before this one said the producer's request in the chat (a style learned first, style_learn.ts): it isn't said again. */
+  asked?: boolean;
   /** What the run kept as it went (`keep`), handed back when it's started again after a restart. */
   kept?: Record<string, unknown>;
   /** Keeps what the run has finished (in the job table), so a restart carries on past it: a step done is getting further. */
@@ -74,6 +76,8 @@ export type Work =
   | { kind: "link"; urls: string[]; files?: string[]; build?: boolean; request: string; focus: import("@edit/types/writer").Focus }
   /** A message that may ask for more of the case's footage found on YouTube (finder.ts), else the revision or first build (`build`) it would have been. */
   | { kind: "hunt"; request: string; focus: import("@edit/types/writer").Focus; build?: boolean }
+  /** A message that may ask to learn a script style from the videos, Docs or script it brings (style_learn.ts), then the revision or first build (`build`) it asks for. */
+  | { kind: "style"; request: string; focus: import("@edit/types/writer").Focus; build?: boolean; files?: string[] }
   | { kind: "reuse"; urls: string[] }
   | { kind: "find" }
   | { kind: "learn"; step: import("@edit/types/writer").LearnStep }
@@ -89,6 +93,7 @@ const FIRST_STAGE: Record<Work["kind"], string> = {
   revise: "Editing the script",
   link: "Adding the footage",
   hunt: "Reading the ask",
+  style: "Reading the references",
   reuse: "Bringing in the reused cases",
   find: "Finding clips",
   learn: "Learning from the feedback",
@@ -110,6 +115,8 @@ function described(work: Work): string {
       return `adding ${plural(work.urls.length + (work.files?.length ?? 0), "link or file", "links and files")} to the footage and ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
     case "hunt":
       return `finding footage on YouTube, or ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
+    case "style":
+      return `learning a style, then ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
     case "reuse":
       return `bringing in ${plural(work.urls.length, "reused case", "reused cases")}`;
     case "find":
