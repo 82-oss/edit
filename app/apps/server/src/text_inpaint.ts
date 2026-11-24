@@ -539,9 +539,11 @@ export function current(project: { media: Media[] }, media: string, from: number
 }
 
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
-async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined): Promise<void> {
+async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined, stands: () => boolean = () => true): Promise<void> {
   const probed = await probe(file);
-  await playing.whenIdle();
+  await playing.whenIdle(() => !stands());
+  // Its plan gone stale meanwhile (a Stop of their text): not laid.
+  if (!stands()) return;
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
     // A current-VERSION strip always replaces an older PREV_VERSION strip; only skip if current-VERSION (or legacy Vmake) is already placed.
@@ -650,7 +652,7 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       if (!stands()) return;
       if (kept !== null) {
         piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange);
+        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
         if (!stands()) return;
         continue;
       }

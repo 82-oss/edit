@@ -107,6 +107,12 @@ test("migration & save-time fast path: current strips never expand masksOf, v2 s
     await inpaint.settled();
     expect(asked).toBeGreaterThan(1);
     expect(app.store.get(created.id)!.project.media.filter((one) => one.cleans != null)).toEqual([]);
+    // A Stop while a kept strip is being laid (its probe, a play): not laid either.
+    asked = 0;
+    await inpaint.ensure(app, created.id, plan, masksOf, () => undefined, () => asked++ < 2);
+    await inpaint.settled();
+    expect(asked).toBeGreaterThan(2);
+    expect(app.store.get(created.id)!.project.media.filter((one) => one.cleans != null)).toEqual([]);
 
     // 1. While track range is undefined, v2 shelf hit is placed AND keeps its v2 tag (never promoted to v3).
     await inpaint.ensure(app, created.id, plan, masksOf, () => undefined);
