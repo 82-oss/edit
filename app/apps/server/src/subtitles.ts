@@ -1618,9 +1618,17 @@ export async function houseWords(
     const media = soundSource(project, played);
     if (!transcripts.has(media.id)) transcripts.set(media.id, options.cachedOnly === true ? cachedTranscript(app, media) : await transcriptOf(app, media, project));
     const transcript = transcripts.get(media.id)!;
-    // Not heard yet (cachedOnly): left as it is, never waited on.
-    if (transcript === null) continue;
     const [visibleFrom, visibleTo] = visible(clip, from, to, fps);
+    // Not heard yet (cachedOnly): left as it is, never waited on. A word kept unmuted there is still known by its marker.
+    if (transcript === null) {
+      const onTimeline = onTimelineOf(clip, fps);
+      for (const marker of media.markers ?? []) {
+        if (marker.name !== NOT_MUTED || marker.note === undefined || marker.time < visibleFrom || marker.time > visibleTo) continue;
+        const at = marker.time * 1000.0;
+        out.kept.push({ term: marker.note, at_ms: onTimeline(at), timeline_ms: [onTimeline(at - 250.0), onTimeline(at + 250.0)] });
+      }
+      continue;
+    }
     const words = timedWords(transcript.words, visibleFrom, visibleTo);
     const onTimeline = onTimelineOf(clip, fps);
     let entry = out.mutes.get(clip.id);

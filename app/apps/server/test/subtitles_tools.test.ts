@@ -2,6 +2,7 @@
 // and the pieces it shares with captions.
 
 import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import * as aiModule from "../src/ai_claude.ts";
 
 import type { App } from "../src/app.ts";
@@ -11,6 +12,7 @@ import { baseRouter, respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import type { AudioClip, Media, Project, TextClip } from "../src/model.ts";
 import { f32, fixed } from "../src/rust.ts";
+import { houseWords } from "../src/subtitles.ts";
 import { routes } from "../src/subtitles_tools.ts";
 import { serialize, type Transcript } from "../src/transcribe.ts";
 import { fixtureHome, write } from "./helpers/home.ts";
@@ -291,6 +293,23 @@ test("mute_house_words keep leaves a word unmuted and unstarred there, and later
     const repacked = store.get(id)!.project;
     expect((repacked.clips.find((clip) => clip.id === "a") as AudioClip).mutes ?? []).toEqual([]);
     expect(repacked.clips.some((clip) => clip.type === "text" && clip.text.includes("fucking"))).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a word kept unmuted in footage whose words aren't cached is still kept, from its marker, and nothing is transcribed", async () => {
+  // A partial repack stars every text in the video: footage outside the span may have no cached words.
+  const { app, dir, store, cleanup } = fixtureHome("keep-uncached");
+  try {
+    const id = await footage(app, dir);
+    await store.update(id, "test", (project) => {
+      project.media[0]!.markers = [{ time: 1.35, name: "not muted", note: "fucking" }];
+    });
+    fs.rmSync(app.media.paths(store.get(id)!.project.media[0]!.path).transcript, { force: true });
+    const house = await houseWords(app, store.get(id)!.project, 0, Number.MAX_SAFE_INTEGER, false, [], { cachedOnly: true });
+    expect(house.kept.map((one) => [one.term, Math.round(one.at_ms)])).toEqual([["fucking", 1350]]);
+    expect(house.listed).toEqual([]);
   } finally {
     cleanup();
   }
