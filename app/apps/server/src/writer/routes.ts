@@ -883,7 +883,14 @@ function mark(context: RouteContext<App>, how: "test" | "show" | "hide" | "promo
 }
 
 /** A first message is a note of up to 4,000 characters, or a style's references with a script pasted in, of up to 100,000 (style_learn.ts). */
-const firstBuild = (build: unknown): { note: string } | null => (typeof build === "string" ? { note: build.trim().slice(0, styleLearn.mayAsk(build) ? styleLearn.MOST_PASTED : 4_000) } : null);
+function firstBuild(build: unknown): { note: string } | null {
+  if (typeof build !== "string") return null;
+  const note = build.trim();
+  if (!styleLearn.mayAsk(note)) return { note: [...note].slice(0, 4_000).join("") };
+  // Counted as the chat's route counts it (by code point), and refused when over rather than cut.
+  if ([...note].length > styleLearn.MOST_PASTED) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
+  return { note };
+}
 
 // A script made with a first build is built once its import is ready, as the Build button would.
 imports.hooks.build = (app, id, note) => {
