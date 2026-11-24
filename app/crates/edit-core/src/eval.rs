@@ -893,6 +893,24 @@ impl AudioSegment {
 }
 
 /// What's heard at `frame` (audio clips on unmuted tracks), only `media`'s if given.
+/// The recording a sound file is of: its own id, or for a copy with its music
+/// taken out (the server's music_removed.ts), the id its "music removed"
+/// marker names, so a waveform of a recording follows it through its copy.
+fn sound_of<'a>(project: &'a Project, id: &'a str) -> &'a str {
+    project
+        .media(id)
+        .and_then(|media| {
+            media
+                .markers
+                .iter()
+                .find(|marker| marker.name == "music removed")
+        })
+        .and_then(|marker| serde_json::from_str::<serde_json::Value>(&marker.note).ok())
+        .and_then(|note| note.get("of").and_then(|of| of.as_str()).map(str::to_owned))
+        .and_then(|of| project.media(&of).map(|media| media.id.as_str()))
+        .unwrap_or(id)
+}
+
 fn heard(project: &Project, frame: i64, media: Option<&str>) -> Vec<WaveSource> {
     let fps = project.fps();
     project
@@ -915,7 +933,7 @@ fn heard(project: &Project, frame: i64, media: Option<&str>) -> Vec<WaveSource> 
             else {
                 return None;
             };
-            if media.is_some_and(|wanted| wanted != source) {
+            if media.is_some_and(|wanted| sound_of(project, wanted) != sound_of(project, source)) {
                 return None;
             }
             let local = (frame - clip.start) as f32;
@@ -1606,6 +1624,47 @@ mod tests {
         let mut still = segment.clone();
         still.volume_keys.clear();
         assert!((still.volume_at(0.5) - 10_f32.powf(-3.0 / 20.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_waveform_of_a_recording_hears_it_through_its_copy_with_the_music_taken_out() {
+        let mut project = project();
+        let a1 = project
+            .tracks
+            .iter()
+            .find(|track| track.kind == TrackKind::Audio)
+            .map(|track| track.id.clone())
+            .unwrap_or_default();
+        project.media.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "m9", "name": "clean.flac", "path": "/clean.flac", "kind": "audio", "duration": 60.0, "has_audio": true,
+                "markers": [{"time": 0.0, "name": "music removed", "note": "{\"of\":\"m1\",\"stretches\":[[0,60]]}"}]
+            }))
+            .unwrap(),
+        );
+        project.clips.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "s1", "track": a1, "start": 60, "duration": 90, "type": "audio", "media": "m9",
+                "source_in": 1.0, "speed": 1.0, "volume_db": 0.0
+            }))
+            .unwrap(),
+        );
+        // A waveform of the recording, or of the copy: either hears the copy that plays.
+        for wanted in ["m1", "m9"] {
+            let sources = heard(&project, 75, Some(wanted));
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|one| one.media.as_str())
+                    .collect::<Vec<_>>(),
+                ["m9"],
+                "{wanted}"
+            );
+        }
+        // Another recording's waveform hears nothing of it.
+        assert!(heard(&project, 75, Some("m2")).is_empty());
+        assert_eq!(sound_of(&project, "m9"), "m1");
+        assert_eq!(sound_of(&project, "m1"), "m1");
     }
 
     /// Frames of the crossfade the tests ask for: 0.2 s each way at 30 fps.
