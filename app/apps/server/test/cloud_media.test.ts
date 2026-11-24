@@ -1597,14 +1597,17 @@ test("forExport aborts in-flight ffmpeg sound-copy and excerpt-cut subprocesses 
   const cache = store.cacheDir();
   const prevSoundStill = cloudMedia.soundCopyTiming.stillMs;
   const prevSoundTimeout = cloudMedia.soundCopyTiming.timeoutMs;
-  let requests = 0;
+  // Requests by path: each part asks for its own, so a late request from part 1's killed FFmpegs can't count for
+  // part 2 (Nov 24, #4's Check: part 2 read 2 requests on GitHub's Mac).
+  const requests = new Map<string, number>();
   let sawRequest!: () => void;
   const requested = new Promise<void>((resolve) => { sawRequest = resolve; });
   const server = Bun.serve({
     port: 0,
-    fetch: () => {
-      requests += 1;
-      if (requests === 1) sawRequest();
+    fetch: (request) => {
+      const path = new URL(request.url).pathname;
+      requests.set(path, (requests.get(path) ?? 0) + 1);
+      if (path === "/hung.mp4") sawRequest();
       // Hold the socket open forever without answering: reproduces a wedged R2/HTTP read.
       return new Promise<Response>(() => {});
     },
@@ -1649,23 +1652,21 @@ test("forExport aborts in-flight ffmpeg sound-copy and excerpt-cut subprocesses 
     expect(fs.readdirSync(cloudMedia.scratchDir(cache))).toEqual([]);
 
     // 2. A hung HTTP sound copy without cancel hits soundCopyTiming.stillMs and does NOT fall back to a second PCM pass.
-    requests = 0;
     cloudMedia.soundCopyTiming.stillMs = 300;
     const stallStart = Date.now();
-    expect(await cloudMedia.soundCopy(cache, key, hungUrl)).toBeNull();
+    expect(await cloudMedia.soundCopy(cache, key, `http://127.0.0.1:${server.port}/stall.mp4`)).toBeNull();
     expect(Date.now() - stallStart).toBeLessThan(10_000);
     // Only the initial stream-copy pass ran (no pcm_s16le retry after a stall).
-    expect(requests).toBe(1);
+    expect(requests.get("/stall.mp4")).toBe(1);
     if (fs.existsSync(soundDir)) expect(fs.readdirSync(soundDir)).toEqual([]);
 
     // 3. Hard duration bound (soundCopyTiming.timeoutMs) stops a slow trickle without retrying PCM.
-    requests = 0;
     cloudMedia.soundCopyTiming.stillMs = 60_000;
     cloudMedia.soundCopyTiming.timeoutMs = 400;
     const timeoutStart = Date.now();
-    expect(await cloudMedia.soundCopy(cache, key, hungUrl)).toBeNull();
+    expect(await cloudMedia.soundCopy(cache, key, `http://127.0.0.1:${server.port}/trickle.mp4`)).toBeNull();
     expect(Date.now() - timeoutStart).toBeLessThan(10_000);
-    expect(requests).toBe(1);
+    expect(requests.get("/trickle.mp4")).toBe(1);
     if (fs.existsSync(soundDir)) expect(fs.readdirSync(soundDir)).toEqual([]);
   } finally {
     cloudMedia.soundCopyTiming.stillMs = prevSoundStill;
