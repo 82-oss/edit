@@ -355,6 +355,8 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
     for (const keys of Object.values(right.keyframes ?? {})) for (const key of keys) key.frame -= offset;
     // Words said so far stay up: their times count from the clip's start (a word before it shows from the first frame).
     if (right.type === "text" && (right.animation.preset === "words" || right.animation.preset === "word")) right.word_times = wordTimes(right).map((time) => time - offset);
+    // An entrance (fade, rise, pop, typewriter…) is the left part's: the right part is already up, not brought in again.
+    else if (right.type === "text" && right.animation.preset !== "none") right.animation = { ...right.animation, preset: "none" };
     one.duration = offset;
     one.fade_out = 0;
     project.clips.push(right);
@@ -384,7 +386,9 @@ const playback = (clip: Clip) => stableStringify(Object.fromEntries(Object.entri
 
 /** Whether `after` is the same take carrying on from `before`, nothing to tell them apart at the seam. */
 function sameTake(project: Project, before: Clip, after: Clip): boolean {
-  if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || before.type !== after.type || playback(before) !== playback(after)) return false;
+  // A text's right part had its entrance taken off by the split (splitLinked): the same text.
+  const entered = before.type === "text" && after.type === "text" && after.animation.preset === "none" && before.animation.preset !== "words" && before.animation.preset !== "word" ? { ...after, animation: before.animation } : after;
+  if (clipEnd(before) !== after.start || before.fade_out !== 0 || after.fade_in !== 0 || before.type !== after.type || playback(before) !== playback(entered)) return false;
   // Footage plays on in its source; anything else (an overlay) has no source to follow.
   if (
     (before.type === "video" || before.type === "audio") &&

@@ -201,6 +201,35 @@ test("words revealed on an overlay stay up across the cut, and its parts join ag
   expect(joined.map((one) => [one.start, one.duration, one.word_times])).toEqual([[270, 120, [0, 20, 40]]]);
 });
 
+test("a callout already faded in stays up across the cut, and is one clip again on undo", () => {
+  const project = edit();
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  const v2 = structuredClone(project.tracks.find((one) => one.id === picture.track)!);
+  v2.id = "v2";
+  project.tracks.push(v2);
+  project.clips.push(
+    clip({
+      id: "callout",
+      type: "text",
+      track: "v2",
+      start: 200,
+      duration: 300,
+      parent: "pic",
+      text: "Sergeant arrives",
+      style: { font: "Geist", weight: 700, size: 96, color: [1, 1, 1, 1], tracking: 0, line_height: 1.15 },
+      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      animation: { preset: "fade", duration: 12, stagger: 1.5 },
+      opacity: 1,
+    } as never),
+  );
+  applyBringBack(project, 300, 330, 6, false);
+  const parts = project.clips.filter((one) => one.track === "v2").sort((a, b) => a.start - b.start) as Extract<Clip, { type: "text" }>[];
+  expect(parts.map((one) => one.animation.preset)).toEqual(["fade", "none", "none"]);
+  applyBringBack(project, 300, 330, 6, true);
+  const joined = project.clips.filter((one) => one.track === "v2") as Extract<Clip, { type: "text" }>[];
+  expect(joined.map((one) => [one.start, one.duration, one.animation.preset])).toEqual([[200, 300, "fade"]]);
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;
