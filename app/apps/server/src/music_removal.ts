@@ -221,7 +221,7 @@ export async function buildFile(base: string | null, pieces: { file: string; fro
 
 /** Seconds from–to (either open) as the frames that cover them; an empty or reversed span is refused before it's rounded. */
 export function spanFrames(rate: number, from: number | null, to: number | null): [number, number] {
-  if (from !== null && to !== null && !(to > from)) throw new Error("end must be after start");
+  if (to !== null && !(to > (from ?? 0))) throw new Error("end must be after start");
   return [from === null ? 0 : Math.floor(from * rate), to === null ? Number.MAX_SAFE_INTEGER : Math.ceil(to * rate)];
 }
 

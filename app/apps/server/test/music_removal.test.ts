@@ -121,6 +121,7 @@ test("a span with no cleaned sound says so", () => {
 test("an empty or reversed span is refused before it's rounded to frames", () => {
   expect(() => spanFrames(30, 15.01, 15.01)).toThrow("end must be after start");
   expect(() => spanFrames(30, 20.02, 10.01)).toThrow("end must be after start");
+  expect(() => spanFrames(30, null, 0)).toThrow("end must be after start");
   expect(spanFrames(30, 15.01, 15.02)).toEqual([450, 451]);
   expect(spanFrames(30, null, null)).toEqual([0, Number.MAX_SAFE_INTEGER]);
   expect(spanFrames(30, 10, null)).toEqual([300, Number.MAX_SAFE_INTEGER]);
