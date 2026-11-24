@@ -51,7 +51,8 @@ export function issues(p: Project): Record<string, unknown>[] {
   const voiceMedia = new Set(live.flatMap((c) => c.type === "audio" && voices.has(c.id) ? [c.media] : []));
   const narration = live.filter((c) => c.type === "audio" && voiceMedia.has(c.media));
   const source = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && !voiceMedia.has(c.media) && footageMedia(p, c)?.kind === "video");
-  const music = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && (mediaOf(p, c.media)?.library === "music" || /music|bed/iu.test(c.name ?? mediaOf(p, c.media)?.name ?? "")));
+  // Never footage's own sound: a cleaned file is named "… (music removed …)" (music_removal.ts).
+  const music = live.filter((c) => c.type === "audio" && !trackOf(p, c.track)?.muted && footageMedia(p, c)?.kind !== "video" && (mediaOf(p, c.media)?.library === "music" || /music|bed/iu.test(c.name ?? mediaOf(p, c.media)?.name ?? "")));
   for (const bed of music) {
     const clashes = source.filter((c) => c.start < clipEnd(bed) && clipEnd(c) > bed.start);
     if (clashes.length) out.push({ kind: "commentary_music_over_source", clip: bed.id, source_clips: clashes.map((c) => c.id), start: bed.start, end: clipEnd(bed), fix: "split the music at every source excerpt; music only under narration" });

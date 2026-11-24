@@ -67,6 +67,7 @@ import {
   clipOf,
   cutTime,
   duration as durationOf,
+  footageMedia,
   fps as fpsOf,
   freeTrack,
   freeTrackFrom,
@@ -1765,7 +1766,8 @@ export function soundEffectsLong(project: Project): Json[] {
   for (const clip of project.clips) {
     if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
     const media = project.media.find((one) => one.id === clip.media);
-    if (media === undefined || media.kind !== "audio") continue;
+    // Footage's own sound, its music taken out or not, is no sound effect.
+    if (media === undefined || media.kind !== "audio" || footageMedia(project, clip)?.kind === "video") continue;
     const name = `${clip.name ?? ""} ${media.name}`;
     if (!sfx.MOMENT.test(name) || /music|drone|ambien|bed\b|loop/iu.test(name)) continue;
     const seconds = (clip.duration / fps) * clip.speed;

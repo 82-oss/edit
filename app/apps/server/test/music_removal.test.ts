@@ -12,6 +12,9 @@ import { footageSound } from "../src/subtitles.ts";
 import { setsSegments } from "../src/watch.ts";
 import { isSubtitled } from "../src/store.ts";
 import { textNotSaid } from "../src/edit_review.ts";
+import { issues as commentaryIssues } from "../src/commentary_audit.ts";
+import { audit } from "../src/edit_plan.ts";
+import { soundEffectsLong } from "../src/edit_tools.ts";
 import { clip, media, project as newProject, stubNative } from "./helpers/model.ts";
 
 beforeEach(stubNative);
@@ -386,6 +389,9 @@ test("cleaned sound is watched, heard and segmented as its footage", () => {
   const said = { model: "scribe_v2", language: "eng", words: [{ text: "Stop.", start: 10.1, end: 10.4, speaker: "speaker_0" }] };
   const flagged = textNotSaid(project, new Map([["m1", said], ["m2", said]]) as never) as { kind: string }[];
   expect(flagged.filter((one) => one.kind === "subtitle_unheard")).toEqual([]);
+  // Nor is it music or a sound effect, though its file is "… (music removed).flac" and a minute long.
+  const kinds = [...audit(project).issues, ...commentaryIssues(project), ...soundEffectsLong(project)].map((one) => (one as { kind?: string }).kind);
+  expect(kinds.filter((kind) => kind !== undefined && /music|sound_effect/u.test(kind))).toEqual([]);
 });
 
 test("an edge inside a word moves out to take the whole word", () => {

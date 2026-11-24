@@ -1316,7 +1316,7 @@ export function cutSounds(project: Project, at: number): string[] {
   const visible = (track: string) => trackOf(project, track)?.hidden === false;
   const sounds = project.clips.filter(
     (clip): clip is Extract<Clip, { type: "audio" }> =>
-      clip.type === "audio" && visible(clip.track) && clip.name !== "Voice-over" && footageMedia(project, clip)?.kind === "audio" && !isMusic(clip, mediaOf(project, clip.media)),
+      clip.type === "audio" && visible(clip.track) && clip.name !== "Voice-over" && footageMedia(project, clip)?.kind === "audio" && !isMusic(clip, footageMedia(project, clip)),
   );
   const named = (clip: Extract<Clip, { type: "audio" }>) => `${clip.name ?? ""} ${mediaOf(project, clip.media)?.name ?? ""}`;
   const missing: string[] = [];
@@ -1747,7 +1747,8 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   // back from the team as "change the music".
   const music = project.clips.filter(
     (clip): clip is Extract<Clip, { type: "audio" }> =>
-      visible(clip.track) && isMusic(clip, clip.type === "audio" ? mediaOf(project, clip.media) : undefined),
+      // Footage's own sound, its music taken out or not, is never music (footageMedia: the video it came from).
+      visible(clip.track) && isMusic(clip, clip.type === "audio" ? footageMedia(project, clip) : undefined),
   );
   const longestBed = addons.has(project, "interrogation-music") ? LONGEST_SECTION_BED : LONGEST_BED;
   // A bed that covers one narration longer than that and no more can't be
