@@ -273,6 +273,12 @@ const quantile = (values: readonly number[], q: number): number => {
 /** "Sam's Interrogations'", "Inspector Ted's". */
 const possessive = (name: string): string => (/s$/iu.test(name) ? `${name}'` : `${name}'s`);
 
+/** Text up to `most` characters, counted as the routes count them (by code point, so an emoji is one), and whether it was cut. */
+export function upTo(text: string, most: number): [string, boolean] {
+  const chars = [...text];
+  return chars.length <= most ? [text, false] : [chars.slice(0, most).join(""), true];
+}
+
 /** A model's or yt-dlp's field as text: "" when it isn't one. */
 const textOf = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
 
@@ -553,10 +559,13 @@ async function readAll(home: string, references: readonly Reference[], job: Job)
           } else if (reference.kind === "page") {
             const [name, text] = await commentary.fetchSource(reference.url);
             if (text.trim().length < 200) throw new Error("there's next to nothing on it");
-            if (text.trim().length > MOST_PASTED) missed.push(`"${name}" is longer than ${MOST_PASTED.toLocaleString("en-US")} characters: only its start was learned from.`);
-            reads[at + offset] = { about: `"${name}" ${reference.url}`, text: text.trim().slice(0, MOST_PASTED) };
+            const [kept, cut] = upTo(text.trim(), MOST_PASTED);
+            if (cut) missed.push(`"${name}" is longer than ${MOST_PASTED.toLocaleString("en-US")} characters: only its start was learned from.`);
+            reads[at + offset] = { about: `"${name}" ${reference.url}`, text: kept };
           } else if (reference.kind === "text") {
-            reads[at + offset] = { about: "Pasted by the producer", text: reference.text.slice(0, MOST_PASTED) };
+            const [kept, cut] = upTo(reference.text, MOST_PASTED);
+            if (cut) missed.push(`The pasted script is longer than ${MOST_PASTED.toLocaleString("en-US")} characters: only its start was learned from.`);
+            reads[at + offset] = { about: "Pasted by the producer", text: kept };
           }
         } catch (error) {
           if (job.signal.aborted) throw error;

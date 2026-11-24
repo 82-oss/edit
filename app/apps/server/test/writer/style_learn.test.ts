@@ -80,6 +80,14 @@ test("a message's references: each video once, a channel, a Doc, and a long past
 const word = (text: string, start: number, speaker: string): transcribe.Word => ({ text, start, end: start + 0.3, speaker });
 const said = (text: string, start: number, speaker: string): transcribe.Word[] => text.split(" ").map((one, at) => word(one, start + at * 0.4, speaker));
 
+test("a reference is held to its most as the routes count it, by code point", () => {
+  const emoji = "🔪".repeat(60_000);
+  expect(emoji.length).toBe(120_000);
+  expect(learn.upTo(emoji, learn.MOST_PASTED)).toEqual([emoji, false]);
+  const [kept, cut] = learn.upTo("🔪".repeat(learn.MOST_PASTED + 1), learn.MOST_PASTED);
+  expect([[...kept].length, cut]).toEqual([learn.MOST_PASTED, true]);
+});
+
 test("a video's words are lines at each change of voice, pause or 45 words", () => {
   const lines = learn.linesOf([...said("He thought he was smart.", 0, "a"), ...said("Where were you?", 3, "b"), ...said("At home.", 5, "c"), ...said("Notice the pause.", 9, "a")]);
   expect(lines.map((one) => [one.n, one.voice, one.text])).toEqual([
