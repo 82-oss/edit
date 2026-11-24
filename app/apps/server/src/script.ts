@@ -2526,6 +2526,7 @@ export async function cut(source: string, start: number, to: number, out: string
   // From the cloud's address: cut for as long as the excerpt's file grows. From a file here: within a fixed time.
   const remote = tools.isUrl(source);
   try {
+    const picture = (await picturePasses(source, out)) ? ["-c:v", "copy"] : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
     const command = [
       tools.ffmpeg(),
       "-v",
@@ -2546,8 +2547,7 @@ export async function cut(source: string, start: number, to: number, out: string
       "0:v:0?",
       "-map",
       "0:a?",
-      "-c:v",
-      "copy",
+      ...picture,
       "-c:a",
       "aac",
       "-b:a",
@@ -2578,6 +2578,29 @@ export async function cut(source: string, start: number, to: number, out: string
     diag.warn("script", `cutting an excerpt: ${problem}`);
     throw new Error(`The excerpt cut from the footage came out wrong (${problem}).`);
   }
+}
+
+/** Pictures an MP4 takes as they are: an excerpt moved into one from another container copies only these. */
+const MP4_PICTURES = ["h264", "hevc", "mpeg4", "mpeg2video", "mpeg1video", "av1", "vp9", "mjpeg"];
+
+/**
+ * Whether `source`'s picture is copied into `out` as it is: always when the excerpt keeps its own container; into an
+ * MP4 from another (`excerptExtension`) only a picture MP4 holds. Windows Media video (WMV2, WMV3, VC-1) in an ASF is
+ * encoded instead: MP4 can't hold it, and kept in ASF the excerpt reads seconds long (Nov 24, the ASF preroll).
+ */
+async function picturePasses(source: string, out: string): Promise<boolean> {
+  const to = (pathExtension(out) ?? "").toLowerCase();
+  // An address is copied as before: it's an MP4 or MOV read in place (`cloud_media.readsInPlace`); the rest come down
+  // whole first, and are read from the cloud only when that download fails.
+  if (to !== "mp4" || tools.isUrl(source) || (pathExtension(source) ?? "").toLowerCase() === to) return true;
+  const output = await runTool(
+    [tools.ffprobe(), "-v", "error", "-protocol_whitelist", tools.protocols(source), "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", ...tools.urlArgs(source), source],
+    steps.probeLimit(source),
+    "Reading the footage's picture",
+  );
+  const codec = trim(output.stdout).split("\n")[0] ?? "";
+  // No picture (sound alone) or one MP4 holds: copied.
+  return codec === "" || MP4_PICTURES.includes(codec);
 }
 
 /**

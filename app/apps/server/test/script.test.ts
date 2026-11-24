@@ -168,6 +168,34 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
   30_000,
 );
 
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "a_windows_media_video_asf_file_cuts_into_an_mp4_it_encodes",
+  async () => {
+    // MP4 can't hold WMV2 as it is: its picture is encoded into the excerpt instead of the cut failing.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-wmv");
+    try {
+      const source = `${dir}/Old camera.wmv`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "wmv2", "-g", "60", "-c:a", "wmav2", "-shortest", "-f", "asf", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      const [cut] = await excerpts(source, [[40, 70]]);
+      expect(cut!.path.endsWith(".mp4")).toBe(true);
+      const seconds = await durationOf(cut!.path);
+      expect(Math.abs(seconds - (cut!.to - cut!.from))).toBeLessThan(0.5);
+      const codec = Bun.spawnSync([Bun.which("ffprobe")!, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", cut!.path]);
+      expect(codec.stdout.toString().trim()).toBe("h264");
+    } finally {
+      cleanup();
+    }
+  },
+  60_000,
+);
+
 test("lays_out_footage_and_cut_ins_in_order", () => {
   stubNative();
   const project = newProject("Test");
