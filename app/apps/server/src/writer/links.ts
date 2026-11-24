@@ -339,7 +339,7 @@ export async function addFootage(app: App, data: string, id: string, adding: Add
   const files = adding.files ?? [];
   // Said as the build says it, so the build it hands on to doesn't say it again.
   const said = adding.build ? (adding.request.trim() === "" ? "Build the script." : `Build the script. ${adding.request.trim()}`) : adding.request;
-  chat.asked(dir, said, job.resumed, attachedNames(dir, files));
+  if (!job.asked) chat.asked(dir, said, job.resumed, attachedNames(dir, files));
   const failed: string[] = [];
   let brought: Piece[];
   try {

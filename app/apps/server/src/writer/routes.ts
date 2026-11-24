@@ -44,6 +44,7 @@ import { audit } from "./plan.ts";
 import * as scripting from "./scripting.ts";
 import { readText } from "./sources.ts";
 import * as store from "./store.ts";
+import * as styleLearn from "./style_learn.ts";
 import * as missing from "./missing.ts";
 import * as trello from "./trello.ts";
 import * as versions from "./versions.ts";
@@ -646,6 +647,12 @@ export function routes(router: Router<App>): void {
         const waits = await waitsForTeaching(script, note);
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
+        // A note that asks to write in a style it brings (videos, a Doc, a script pasted in) learns it first (style_learn.ts).
+        if (script.channel && styleLearn.mayAsk(note)) {
+          const files = Array.isArray(given.files) ? given.files.map(String) : [];
+          links.checkAttached(store.scriptDir(dataOf(context.app), script.id), files);
+          return startJob(context.app, id(context), { kind: "style", request: note, focus: NO_FOCUS, build: true, ...(files.length > 0 ? { files } : {}) });
+        }
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
         const adding = footageOf(dataOf(context.app), script, note, given.files);
         if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
@@ -660,8 +667,18 @@ export function routes(router: Router<App>): void {
       return answer(() => {
         const request = String(given.request ?? "").trim();
         if (request === "") throw new Error("Say what to change.");
-        if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
         const focus = given.focus ?? NO_FOCUS;
+        // One that asks to learn a style from the videos, Docs or script it brings goes there before its links are read as footage (style_learn.ts); a pasted script may be long.
+        const asked = readFor(dataOf(context.app), id(context));
+        if (asked.channel && styleLearn.mayAsk(request)) {
+          if ([...request].length > styleLearn.MOST_PASTED) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
+          // Only a pasted script may run long: what's asked around it is held to any message's length.
+          if ([...styleLearn.split(request)[0]].length > styleLearn.MOST_ASKED) throw new Error("Keep the request under 8,000 characters.");
+          const files = Array.isArray(given.files) ? given.files.map(String) : [];
+          links.checkAttached(store.scriptDir(dataOf(context.app), asked.id), files);
+          return startJob(context.app, id(context), { kind: "style", request, focus, ...(files.length > 0 ? { files } : {}) });
+        }
+        if ([...request].length > styleLearn.MOST_ASKED) throw new Error("Keep the request under 8,000 characters.");
         // Footage linked in the message, or attached to it, comes into the script first, then the revision places it (links.ts).
         const script = readFor(dataOf(context.app), id(context));
         const adding = footageOf(dataOf(context.app), script, request, given.files);
@@ -865,13 +882,25 @@ function mark(context: RouteContext<App>, how: "test" | "show" | "hide" | "promo
   });
 }
 
-const firstBuild = (build: unknown): { note: string } | null => (typeof build === "string" ? { note: build.trim().slice(0, 4_000) } : null);
+/** A first message is a note of up to 4,000 characters, or a style's references with a script pasted in, of up to 100,000 (style_learn.ts). */
+function firstBuild(build: unknown): { note: string } | null {
+  if (typeof build !== "string") return null;
+  const note = build.trim();
+  if (!styleLearn.mayAsk(note)) return { note: [...note].slice(0, 4_000).join("") };
+  // Counted as the chat's route counts it (by code point), and refused when over rather than cut.
+  if ([...note].length > styleLearn.MOST_PASTED) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
+  return { note };
+}
 
 // A script made with a first build is built once its import is ready, as the Build button would.
 imports.hooks.build = (app, id, note) => {
   // A first message that asks for more of the case's footage finds it first, then writes, as the Build button's does
   // (Nov 18: a card imported with "find more courtroom and bodycam footage, then write" was written without looking).
   const script = readFor(dataOf(app), id);
+  if (script.channel && styleLearn.mayAsk(note)) {
+    startJob(app, id, { kind: "style", request: note, focus: NO_FOCUS, build: true });
+    return;
+  }
   if (!script.commentary && finder.mayAsk(note)) {
     startJob(app, id, { kind: "hunt", request: note, focus: NO_FOCUS, build: true });
     return;
@@ -884,9 +913,12 @@ export function startJob(app: App, scriptId: string, work: jobs.Work): BuildStat
   const script = readFor(dataOf(app), scriptId);
   idle(scriptId);
   // Writing waits for footage still on its way: kept as the build to start by itself once it's here or its quick tries are over (missing.ts `holding`).
-  const holding = work.kind === "build" ? missing.holding(script) : [];
-  if (work.kind === "build" && holding.length > 0) {
-    store.update(store.scriptDir(dataOf(app), scriptId), (fresh) => (fresh.firstBuild = { note: work.note }), true);
+  // A first build that learns a style first waits too, kept whole: its build starts the learning again once the footage is in.
+  const writes = work.kind === "build" || (work.kind === "style" && work.build === true);
+  const holding = writes ? missing.holding(script) : [];
+  if (writes && holding.length > 0) {
+    const note = work.kind === "build" ? work.note : work.kind === "style" ? work.request : "";
+    store.update(store.scriptDir(dataOf(app), scriptId), (fresh) => (fresh.firstBuild = { note }), true);
     throw new Error(`Writing waits: ${missing.line({ ...script, missing: holding })}. It starts by itself in a few minutes, with or without it.`);
   }
   return beginJob(app, scriptId, script.title, work);

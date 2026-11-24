@@ -12,6 +12,9 @@ import type { Script } from "@edit/types/writer";
 import { brief, doneBrief, feedbackOf, settle } from "../../src/writer/fixing.ts";
 import { changeLesson, changedMost, keepRule } from "../../src/teaching.ts";
 import type { Note } from "../../src/writer/reviews.ts";
+import * as channels from "../../src/channels.ts";
+import * as styles from "../../src/script_styles.ts";
+import * as v2cloud from "../../src/v2_cloud.ts";
 import * as store from "../../src/writer/store.ts";
 import * as turnTools from "../../src/writer/turn_tools.ts";
 import { fixtureHome } from "../helpers/home.ts";
@@ -188,9 +191,45 @@ test("a channel's script turn has the channel's lesson tools", async () => {
     const [token, , session] = turnTools.open(data, ID);
     expect(session.place).toEqual({ channel: "ch-test", lane: "script" });
     const listed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "read_skill", "other_channels"]);
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "read_skill", "other_channels", "use_style"]);
     turnTools.close(token);
   } finally {
+    cleanup();
+  }
+});
+
+test("use_style writes a channel's script in one of its styles from now on, and back in the default", async () => {
+  const { home, cleanup } = fixtureHome("feedback-use-style");
+  try {
+    const data = store.dataDir(home);
+    const dir = store.scriptDir(data, ID);
+    fs.mkdirSync(dir, { recursive: true });
+    store.write(dir, { ...script(), channel: "ch-test" });
+    channels.useChannelsForTests([{ key: "ch-test", youtubeId: null, handle: null, title: "Test", description: "", avatar: null, banner: null, uploads: null, subscribers: 0, videos: 0, views: 0, country: null, publishedAt: null, fetchedAt: 0, narration: { kind: "recorded" }, compilation: false, lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, archived: false, addedBy: null, at: 0 } as unknown as channels.Channel]);
+    v2cloud.useSkillsForTests([
+      { name: "style-dr-insanity", text: styles.compose("Dr Insanity", "Present tense, tease every cut-in.", []), note: "A script style", key: "skill:@ch-test--script/style-dr-insanity" },
+      { name: "style-classic", text: styles.compose("Classic", "Plain storytelling.", []), note: "A script style", key: "skill:@ch-test--script/style-classic" },
+      { name: "style-default", text: "style-classic", key: "skill:@ch-test--script/style-default" },
+    ]);
+    const [token] = turnTools.open(data, ID);
+    const use = async (args: Record<string, unknown>) => ((await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "use_style", arguments: args } })) as { result: { content: { text: string }[]; isError?: boolean } }).result;
+    const picked = await use({ style: "Dr Insanity" });
+    expect(picked.content[0]!.text).toContain("This script is written in Dr Insanity from now on.");
+    expect(picked.content[0]!.text).toContain("Present tense, tease every cut-in.");
+    const revision = store.read(dir).revision;
+    expect(store.read(dir).style).toBe("style-dr-insanity");
+    // The revision under way isn't refused for it.
+    expect(revision).toBe(3);
+    const back = await use({ style: "default" });
+    expect(back.content[0]!.text).toContain("default style now, Classic");
+    expect(store.read(dir).style).toBeUndefined();
+    const missing = await use({ style: "JCS" });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0]!.text).toContain("this channel's are Dr Insanity (dr-insanity), Classic (classic)");
+    turnTools.close(token);
+  } finally {
+    v2cloud.useSkillsForTests([]);
+    channels.useChannelsForTests([]);
     cleanup();
   }
 });

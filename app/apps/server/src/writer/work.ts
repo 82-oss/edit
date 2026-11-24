@@ -22,6 +22,7 @@ import * as reuse from "./reuse.ts";
 import * as scout from "./scout.ts";
 import * as scripting from "./scripting.ts";
 import * as store from "./store.ts";
+import * as styleLearn from "./style_learn.ts";
 
 /** The run that does `work` on script `id`. */
 export function runFor(app: App, id: string, work: jobs.Work): (job: jobs.Job) => Promise<jobs.Outcome> {
@@ -35,6 +36,8 @@ export function runFor(app: App, id: string, work: jobs.Work): (job: jobs.Job) =
       return (job) => links.addFootage(app, data, id, work, job);
     case "hunt":
       return (job) => finder.findFootage(app, data, id, work, job);
+    case "style":
+      return (job) => styleLearn.learn(app, data, id, work, job);
     case "reuse":
       return (job) => reuse.importReused(app, data, id, work.urls, job);
     case "find":

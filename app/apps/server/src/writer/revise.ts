@@ -56,12 +56,12 @@ const TAUGHT_EDGES = "Anchor clip edges to exact words; the app adds breathing r
 export function systemPrompt(script: Script, format: Format, tools: boolean): string {
   const teach = tools && script.channel ? "tools" : "lesson";
   const rule = teach === "lesson" ? `\n${LESSON_RULE}` : "";
-  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false)}`;
+  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false, script.style ?? null)}`;
   const cases = format.compilation ? Math.max(caseCount(script.parts), 1) : 1;
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
   let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt + lanes.section(script.channel, "script", teach);
+  return prompt + lanes.section(script.channel, "script", teach, true, script.style ?? null);
 }
 
 const SCHEMA = {

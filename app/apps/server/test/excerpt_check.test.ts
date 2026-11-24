@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
+import * as failure from "../src/failure.ts";
 import { cut, excerptProblem } from "../src/script.ts";
 import * as tools from "../src/tools.ts";
 
@@ -39,7 +40,9 @@ test("a right cut passes, and so does one asked past the footage's end", async (
 test("cut refuses and removes an excerpt that comes out wrong", async () => {
   const wrong = join(dir, "wrong.wav");
   const failed = await cut(call, 0, 20, wrong).catch((error: unknown) => error);
-  expect((failed as Error).message).toContain("came out wrong");
+  // From a file here it's cut once more encoded (AAC in a .wav still reads wrong), then stops as the same every time.
+  expect(failed).toBeInstanceOf(failure.SameEveryTime);
+  expect((failed as Error).message).toContain("comes out the wrong length every time");
   expect(fs.existsSync(wrong)).toBe(false);
 });
 

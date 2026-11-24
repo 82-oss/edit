@@ -675,7 +675,7 @@ export async function writerSystem(script: Script, writing: Pick<Writing, "lesso
   if (writing.extra.trim() !== "") system += `\n\n${writing.extra.trim()}`;
   if (taught(script)) {
     await lanes.refresh();
-    system += lanes.section(script.channel, "script", "none", false);
+    system += lanes.section(script.channel, "script", "none", false, script.style ?? null);
   }
   return system;
 }
@@ -814,7 +814,7 @@ export async function reviseSystem(script: Script, lessons: string, tools: boole
   system += `\n\n${REVISE_NOTE}${tools ? `\n${TOOLS_NOTE}` : ""}${teach === "lesson" ? `\n${LESSON_RULE}` : ""}`;
   if (taught(script)) {
     await lanes.refresh();
-    system += lanes.section(script.channel, "script", teach, false);
+    system += lanes.section(script.channel, "script", teach, false, script.style ?? null);
   }
   return system;
 }
