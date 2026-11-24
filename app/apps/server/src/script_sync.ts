@@ -125,7 +125,7 @@ function run(project: Project, block: ScriptBlock): Played[] {
     .sort((a, b) => a.start - b.start);
 }
 
-/** Timeline frames from a run's start that play `seconds` of its source, piece by piece at each one's speed. */
+/** Timeline frames from a run's start (or its end, given the pieces last first) that play `seconds` of its source, piece by piece at each one's speed. */
 function throughRun(pieces: readonly Played[], seconds: number, fps: number): number {
   let left = seconds;
   let frames = 0;
@@ -238,7 +238,8 @@ export function applyToEdit(project: Project, given: WriterScript, change: Chang
       const left = (mediaOf(project, tail.media)?.duration ?? Number.POSITIVE_INFINITY) - (tail.source_in + (tail.duration / fps) * tail.speed);
       const by = frames(Math.min(moveTail, moveTail > 0 ? left : Number.POSITIVE_INFINITY) / tail.speed);
       if (moveTail > 0) insertTime(project, end, by, new Set(linked(project, tail)), new Set());
-      else cutTime(project, Math.max(end - by, tailRun[0]!.start), end);
+      // Back from its end through the range's pieces, each at its own speed.
+      else cutTime(project, Math.max(end - throughRun([...tailRun].reverse(), -moveTail, fps), tailRun[0]!.start), end);
     }
     const headRun = run(project, first);
     const head = headRun[0];

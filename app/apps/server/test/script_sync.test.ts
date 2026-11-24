@@ -107,6 +107,23 @@ describe.skipIf(real === null)("a script and its edit, kept in step", () => {
     expect(editSide(project, "a")).toEqual({ head: 7, tail: 10, text: null });
   });
 
+  test("a tail trim through pieces at different speeds takes just the source asked for", () => {
+    const [project, given] = cleanedCall(script());
+    // The first piece (0–4 s) plays at double speed: the range is 0–10 s of the call over 240 frames.
+    const first = project.clips.filter((clip) => clip.type === "audio" && clip.start < 300).sort((a, b) => a.start - b.start)[0]!;
+    if (first.type !== "audio") throw new Error("no sound");
+    const shift = 60;
+    first.speed = 2;
+    first.duration = 60;
+    for (const clip of project.clips) if (clip !== first && clip.start >= 120) clip.start -= shift;
+    for (const clip of project.clips) if (clip.type !== "audio" && clip.start === 0 && clipEnd(clip) === 300) clip.duration -= shift;
+    const now = structuredClone(given);
+    now.clips[0]!.endMs = 3_000;
+    applyToEdit(project, now as unknown as WriterScript, changesOf(given.edit!, now));
+    // 6 s back through the two plain pieces, then 1 s of the fast one: 15 frames, not 30.
+    expect(editSide(project, "a")).toEqual({ head: 0, tail: 3, text: null });
+  });
+
   test("two ranges of one recording back to back stay two, though one file plays through both", () => {
     const given = script();
     given.clips = [
