@@ -588,11 +588,12 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined, current: () => boolean = () => true): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined, stands: () => boolean = () => true): Promise<void> {
   // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
   // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
-  // `current`: the plan still stands when its turn comes (text_removal: no Stop of their text since it began).
-  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => (current() ? ensureNow(app, id, given, masksOf, rangeOf) : undefined));
+  // `stands`: the plan still stands (text_removal: no Stop of their text since it began), when its turn comes and
+  // after each wait in it.
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => (stands() ? ensureNow(app, id, given, masksOf, rangeOf, stands) : undefined));
   const settledRun = run.catch(() => {});
   ensuring.set(id, settledRun);
   void settledRun.finally(() => {
@@ -603,7 +604,7 @@ export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: Mask
 
 const ensuring = new Map<string, Promise<void>>();
 
-async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf): Promise<void> {
+async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf, stands: () => boolean = () => true): Promise<void> {
   if (!available()) return;
   const live = app.store.get(id);
   if (live === null) return;
@@ -646,9 +647,11 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
         continue;
       }
       const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
+      if (!stands()) return;
       if (kept !== null) {
         piece.state = "done";
         if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange);
+        if (!stands()) return;
         continue;
       }
       // Only expand per-frame masks when we actually need to queue work.
