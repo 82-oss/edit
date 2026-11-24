@@ -40,6 +40,8 @@ A `(FAILED)` row means the step doesn't work there (expected for parts of Edit n
 3. Edit itself (the app and the GUI) only runs on Linux/macOS, so it lives in WSL either way; check that Windows
    Chrome reaches it on `localhost` and that exports/renders work on the GPU there (Vulkan is WSL's weak spot).
 
+Crash history and what used the most memory: [crashes.md](crashes.md).
+
 ## Results
 
 ### Linux (mandalorian, Ubuntu 26.04, Ryzen 9 5900XT, 31 GB, ext4)
