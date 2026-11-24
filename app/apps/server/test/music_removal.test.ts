@@ -472,27 +472,25 @@ test("a new piece is laid only where nothing is cleaned yet", () => {
   expect(layout([{ file: "p.mp3", from: 2, to: 7 }], [])).toEqual([{ file: "p.mp3", from: 2, to: 7, at: 0 }]);
 });
 
-test.skipIf(Bun.which("ffmpeg") === null)("a piece laid next to what's already cleaned joins it by the sample, never doubled, never a gap", async () => {
-  // Cleaned before over 0–4 s (silence after); a new piece grown to 2–7 s: laid in at 4–7 s only.
+test.skipIf(Bun.which("ffmpeg") === null)("a piece laid between what's already cleaned joins it by the sample at both ends, never doubled, never a gap", async () => {
+  // Cleaned before over 0–4 s and 6–10 s (silence between, by the sample); a new piece grown to 2–7 s: laid in at 4–6 s only.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "music-build-"));
   try {
     const make = (file: string, args: string[]) => expect(Bun.spawnSync([ffmpeg(), "-v", "error", "-y", "-f", "lavfi", ...args, "-ac", "1", "-ar", "44100", file]).exitCode).toBe(0);
-    make(`${dir}/base.flac`, ["-i", "sine=frequency=300:duration=4", "-af", "volume=0.25,apad=whole_dur=10"]);
+    make(`${dir}/base.flac`, ["-i", "sine=frequency=300:duration=10", "-af", `volume=0.25,aeval='val(0)*(1-gte(n,${4 * 44100})*lt(n,${6 * 44100}))':c=same`]);
     make(`${dir}/piece.mp3`, ["-i", "sine=frequency=300:duration=5", "-af", "volume=0.25"]);
-    await buildFile(`${dir}/base.flac`, layout([{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], [[0, 4]]), 10, `${dir}/out.flac`);
+    await buildFile(`${dir}/base.flac`, layout([{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], [[0, 4], [6, 10]]), 10, `${dir}/out.flac`);
     const measure = (file: string, from: number, to: number, what: "max" | "mean") => {
       const said = Bun.spawnSync([ffmpeg(), "-v", "info", "-ss", String(from), "-t", String(to - from), "-i", file, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
       return Number(new RegExp(`${what}_volume: (-?[\\d.]+) dB`, "u").exec(said)![1]);
     };
     const level = measure(`${dir}/piece.mp3`, 0, 5, "max");
     const steady = measure(`${dir}/out.flac`, 1, 3, "mean");
-    // The same level before, across and after the join at 4 s: summed, it would be about 6 dB louder; a gap, quieter.
-    for (const [from, to] of [[1, 3], [3.9, 4.1], [5, 6.5]] as const) {
+    // The same level before, across the joins at 4 s and 6 s, between and after: summed, about 6 dB louder; a gap, quieter.
+    for (const [from, to] of [[1, 3], [3.95, 4.05], [4.5, 5.5], [5.95, 6.05], [7, 9.5]] as const) {
       expect(Math.abs(measure(`${dir}/out.flac`, from, to, "max") - level)).toBeLessThan(1);
       expect(Math.abs(measure(`${dir}/out.flac`, from, to, "mean") - steady)).toBeLessThan(1);
     }
-    // Silence after the piece, as before it was cleaned.
-    expect(measure(`${dir}/out.flac`, 7.2, 9.8, "max")).toBeLessThan(level - 40);
     // The first time, over silence: the piece where it was laid.
     await buildFile(null, layout([{ file: `${dir}/piece.mp3`, from: 2, to: 7 }], []), 10, `${dir}/first.flac`);
     expect(Math.abs(measure(`${dir}/first.flac`, 3, 6, "max") - level)).toBeLessThan(1);
