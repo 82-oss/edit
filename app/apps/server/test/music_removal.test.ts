@@ -40,7 +40,14 @@ test("only what isn't cleaned yet is sent, in pieces a request can take", () => 
   expect(missing([[2, 4]], [[0, 10]])).toEqual([]);
   expect(covers([[0, 5], [5, 9]], 1, 8)).toBe(true);
   expect(covers([[0, 5]], 1, 8)).toBe(false);
-  expect(requests([[0, 1200]], 540)).toEqual([[0, 540], [540, 1080], [1080, 1200]]);
+  // Equal pieces, none a sliver; anything short grown to what ElevenLabs takes (4.6 s), within the source.
+  expect(requests([[0, 1200]], 1200, 540)).toEqual([[0, 400], [400, 800], [800, 1200]]);
+  expect(requests([[0, 541]], 600, 540)).toEqual([[0, 270.5], [270.5, 541]]);
+  expect(requests([[10, 12]], 120)).toEqual([[8.5, 13.5]]);
+  expect(requests([[0.5, 1]], 120)).toEqual([[0, 5]]);
+  expect(requests([[118, 119]], 120)).toEqual([[115, 120]]);
+  expect(requests([[10, 12], [13, 14]], 120)).toEqual([[8.5, 16]]);
+  expect(() => requests([[0, 2]], 3)).toThrow("needs at least 5 s");
 });
 
 test("a cleaned file says what it is, and any other file says nothing", () => {

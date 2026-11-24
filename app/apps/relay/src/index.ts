@@ -13,7 +13,7 @@ import { removerJobs, removerOn, type RemoverEnv } from "./remover";
 export { RemoverPods } from "./remover";
 import { google, mayUseDrive } from "./google";
 import { holdsAnyChannel } from "./authz";
-import { ISOLATE_DAILY_SECONDS_PER_CLIENT, ISOLATE_DAILY_SECONDS_TOTAL, ISOLATE_MAX_BYTES, ISOLATE_MAX_SECONDS, wavSeconds } from "./isolate";
+import { ISOLATE_DAILY_SECONDS_PER_CLIENT, ISOLATE_DAILY_SECONDS_TOTAL, ISOLATE_MAX_BYTES, ISOLATE_MAX_SECONDS, ISOLATE_MIN_SECONDS, wavSeconds } from "./isolate";
 
 export { DriveToR2 } from "./jobs";
 
@@ -507,6 +507,7 @@ async function isolate(request: Request, env: Env): Promise<Response> {
   const audio = new Uint8Array(await request.arrayBuffer());
   const seconds = wavSeconds(audio);
   if (seconds === null) return json(400, { error: "Send a 44.1 kHz, mono, 16-bit WAV." });
+  if (seconds < ISOLATE_MIN_SECONDS) return json(400, { error: `Send at least ${ISOLATE_MIN_SECONDS} seconds at a time.` });
   const client = await budgetKey(request, found);
   const budget = env.BUDGET.get(env.BUDGET.idFromName(new Date().toISOString().slice(0, 10)));
   const reserved = await budget.fetch(new Request("https://budget/isolate", { method: "POST", body: JSON.stringify({ client, seconds }) }));

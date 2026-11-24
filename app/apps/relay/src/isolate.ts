@@ -2,6 +2,8 @@
 // by the minute, so the relay takes one exact format and reads the length from
 // the file itself rather than trusting what a client says.
 
+/** ElevenLabs refuses anything shorter ("below the minimum of 4.6 seconds"): refused here, before any budget is held. */
+export const ISOLATE_MIN_SECONDS = 4.6;
 /** One request: 10 minutes. Workers hold the body in memory while it's sent on. */
 export const ISOLATE_MAX_SECONDS = 600;
 /** At $0.12 a minute: at most $14.40 a day per connection and $28.80 for the team. */

@@ -136,12 +136,27 @@ export function moveToCleaned(project: Project, ids: readonly string[], original
   return count;
 }
 
-/** Stretches no longer than a request takes. */
-export function requests(stretches: readonly Stretch[], most = MOST_SECONDS): Stretch[] {
-  return stretches.flatMap(([from, to]) => {
-    const out: Stretch[] = [];
-    for (let at = from; at < to; at += most) out.push([at, Math.min(to, at + most)]);
-    return out;
+/** ElevenLabs refuses anything shorter (Nov 24, a 3 s test: "below the minimum of 4.6 seconds"): a little over, to be safe. */
+export const LEAST_SECONDS = 5;
+
+/**
+ * What's sent, as requests ElevenLabs takes: each stretch at least
+ * `least` seconds (grown about its middle, within the source's `length`),
+ * then cut into equal pieces no longer than `most`, so none is a sliver.
+ */
+export function requests(stretches: readonly Stretch[], length: number, most = MOST_SECONDS, least = LEAST_SECONDS): Stretch[] {
+  if (stretches.length > 0 && length < least) throw new Error(`this footage is ${length.toFixed(1)} s long: music removal needs at least ${least} s of it`);
+  const grown = merged(
+    stretches.map(([from, to]): Stretch => {
+      if (to - from >= least) return [from, to];
+      const start = Math.min(Math.max(0, (from + to) / 2 - least / 2), length - least);
+      return [start, start + least];
+    }),
+  );
+  return grown.flatMap(([from, to]) => {
+    const count = Math.ceil((to - from) / most - 1e-9);
+    const size = (to - from) / count;
+    return Array.from({ length: count }, (_, index): Stretch => [from + index * size, index === count - 1 ? to : from + (index + 1) * size]);
   });
 }
 
@@ -287,7 +302,8 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     await fs.promises.mkdir(dir, { recursive: true });
     const input = await app.media.analysisInput(original.path);
     const pieces: { file: string; from: number; to: number }[] = [];
-    for (const piece of requests(need)) {
+    const sent = requests(need, original.duration);
+    for (const piece of sent) {
       const { file, sent } = await isolatedPiece(input, dir, piece, signal);
       pieces.push({ file, from: piece[0], to: piece[1] });
       paidSeconds += sent;
@@ -303,7 +319,7 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
     const [, added, errors] = await importPaths(app, id, [out], false, "voice");
     cleanedId = added[0];
     if (cleanedId === undefined) throw new Error(`Couldn't bring in the cleaned sound: ${errors.join("; ")}`);
-    stretches = merged([...had, ...need]);
+    stretches = merged([...had, ...sent]);
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
   if (cleanedId === undefined) return [paidSeconds, 0];

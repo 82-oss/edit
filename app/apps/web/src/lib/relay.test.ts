@@ -1292,10 +1292,10 @@ describe("relay music removal", () => {
       calls.push({ url, key: new Headers(init.headers).get("xi-api-key"), audio: (init.body as FormData).get("audio") as File });
       return new Response("clean", { headers: { "content-type": "audio/mpeg" } });
     });
-    const answer = await send(wav(2));
-    expect([answer.status, await answer.text(), answer.headers.get("x-edit-seconds")]).toEqual([200, "clean", "2"]);
-    expect(reservations.map((one) => one.seconds)).toEqual([2]);
-    expect(calls.map((one) => [one.url, one.key, one.audio.size])).toEqual([["https://api.elevenlabs.io/v1/audio-isolation", "main-key", 44 + 176400]]);
+    const answer = await send(wav(5));
+    expect([answer.status, await answer.text(), answer.headers.get("x-edit-seconds")]).toEqual([200, "clean", "5"]);
+    expect(reservations.map((one) => one.seconds)).toEqual([5]);
+    expect(calls.map((one) => [one.url, one.key, one.audio.size])).toEqual([["https://api.elevenlabs.io/v1/audio-isolation", "main-key", 44 + 441000]]);
   });
 
   it("spends nothing on a file it can't measure, past the day's budget, or for someone who can't edit", async () => {
@@ -1304,10 +1304,13 @@ describe("relay music removal", () => {
     expect((await send(new TextEncoder().encode("not a wav file, whatever it says it is, and long enough to have a header"))).status).toBe(400);
     expect((await send(wav(1, 48000))).status).toBe(400);
     expect((await send(wav(601))).status).toBe(413);
-    expect((await send(wav(1), USE_ONLY)).status).toBe(403);
-    expect((await send(wav(1), EDITOR, { ...env, ELEVENLABS_MAIN_KEY: undefined } as unknown as Env)).status).toBe(503);
+    // Shorter than ElevenLabs takes (4.6 s): refused before any budget is held.
+    expect((await send(wav(3))).status).toBe(400);
+    expect(reservations).toEqual([]);
+    expect((await send(wav(5), USE_ONLY)).status).toBe(403);
+    expect((await send(wav(5), EDITOR, { ...env, ELEVENLABS_MAIN_KEY: undefined } as unknown as Env)).status).toBe(503);
     allowed = false;
-    expect((await send(wav(1))).status).toBe(429);
+    expect((await send(wav(5))).status).toBe(429);
     expect(paid).not.toHaveBeenCalled();
   });
 
