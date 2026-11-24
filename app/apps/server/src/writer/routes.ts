@@ -648,7 +648,11 @@ export function routes(router: Router<App>): void {
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
         // A note that asks to write in a style it brings (videos, a Doc, a script pasted in) learns it first (style_learn.ts).
-        if (script.channel && styleLearn.mayAsk(note)) return startJob(context.app, id(context), { kind: "style", request: note, focus: NO_FOCUS, build: true, ...(given.files ? { files: given.files.map(String) } : {}) });
+        if (script.channel && styleLearn.mayAsk(note)) {
+          const files = Array.isArray(given.files) ? given.files.map(String) : [];
+          links.checkAttached(store.scriptDir(dataOf(context.app), script.id), files);
+          return startJob(context.app, id(context), { kind: "style", request: note, focus: NO_FOCUS, build: true, ...(files.length > 0 ? { files } : {}) });
+        }
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
         const adding = footageOf(dataOf(context.app), script, note, given.files);
         if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
@@ -668,9 +672,13 @@ export function routes(router: Router<App>): void {
         const asked = readFor(dataOf(context.app), id(context));
         if (asked.channel && styleLearn.mayAsk(request)) {
           if ([...request].length > styleLearn.MOST_PASTED) throw new Error("Keep a pasted script under 100,000 characters, or link it as a Google Doc.");
-          return startJob(context.app, id(context), { kind: "style", request, focus, ...(given.files ? { files: given.files.map(String) } : {}) });
+          // Only a pasted script may run long: what's asked around it is held to any message's length.
+          if ([...styleLearn.split(request)[0]].length > styleLearn.MOST_ASKED) throw new Error("Keep the request under 8,000 characters.");
+          const files = Array.isArray(given.files) ? given.files.map(String) : [];
+          links.checkAttached(store.scriptDir(dataOf(context.app), asked.id), files);
+          return startJob(context.app, id(context), { kind: "style", request, focus, ...(files.length > 0 ? { files } : {}) });
         }
-        if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
+        if ([...request].length > styleLearn.MOST_ASKED) throw new Error("Keep the request under 8,000 characters.");
         // Footage linked in the message, or attached to it, comes into the script first, then the revision places it (links.ts).
         const script = readFor(dataOf(context.app), id(context));
         const adding = footageOf(dataOf(context.app), script, request, given.files);

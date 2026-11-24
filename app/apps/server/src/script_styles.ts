@@ -106,19 +106,24 @@ const TURNED_AWAY = /\b(not|no|never|without|instead of|rather than|except|than|
  */
 export function namedIn(lessons: readonly Pick<Skill, "name" | "text">[], note: string): Style | null {
   const said = ` ${plain(note)} `;
-  const asked = (words: string): boolean => {
-    if (words.length < 3) return false;
+  /** Where the note asks for these words: each [from, to) in `said`, never where they're turned away. A name under three letters ("TV") counts only said as a style ("the TV style"). */
+  const asked = (words: string): [number, number][] => {
+    if (words === "") return [];
+    const found: [number, number][] = [];
     let from = 0;
     for (let at = said.indexOf(` ${words} `, from); at >= 0; at = said.indexOf(` ${words} `, from)) {
-      if (!TURNED_AWAY.test(said.slice(Math.max(0, at - 24), at + 1).trimEnd())) return true;
+      const end = at + words.length + 2;
+      const short = words.length < 3 && !said.startsWith(" style ", end - 1);
+      if (!short && !TURNED_AWAY.test(said.slice(Math.max(0, at - 24), at + 1).trimEnd())) found.push([at, end]);
       from = at + 1;
     }
-    return false;
+    return found;
   };
-  const hits = stylesIn(lessons).filter((one) => [plain(one.title), plain(one.name.slice(PREFIX.length))].some(asked));
-  // One style's name inside another's ("Dry" in "Dry Wit") is that one, not two.
-  const distinct = hits.filter((one) => !hits.some((other) => other !== one && plain(other.title).includes(plain(one.title))));
-  return distinct.length === 1 ? distinct[0]! : null;
+  const hits = stylesIn(lessons).map((one) => ({ one, at: [...new Set([plain(one.title), plain(one.name.slice(PREFIX.length))])].flatMap(asked) })).filter((hit) => hit.at.length > 0);
+  // One style's name said inside another's ("Dry" in "Dry Wit") is that one; said on its own too ("Dry and Dry Wit"), it's two.
+  const inside = (span: [number, number], other: { at: [number, number][] }) => other.at.some(([from, to]) => from <= span[0] && span[1] <= to && to - from > span[1] - span[0]);
+  const distinct = hits.filter((hit) => !hit.at.every((span) => hits.some((other) => other !== hit && inside(span, other))));
+  return distinct.length === 1 ? distinct[0]!.one : null;
 }
 
 /** What a script's writer is told of its style, and of the others the channel has. */

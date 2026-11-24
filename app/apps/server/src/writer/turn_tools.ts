@@ -193,14 +193,15 @@ async function useStyle(session: Session, place: lanes.Place, args: Args): Promi
   const wanted = styles.nameFor(asked);
   const found = all.find((one) => one.name === wanted || one.name === asked || one.title.toLowerCase() === asked.toLowerCase());
   if (found === undefined) throw new Error(all.length === 0 ? "This channel has no script styles yet. One is learned from videos, a Doc or a script pasted in: ask the producer for the links." : `No style ${asked}: this channel's are ${all.map((one) => `${one.title} (${one.name.slice(styles.PREFIX.length)})`).join(", ")}.`);
-  store.update(dir, (now) => void (now.style = found.name), true);
+  // The channel's default first (a teacher's): refused, the script is left as it was.
   let made = "";
   if (args.default === true) {
-    // Kept where the style is: a channel's own style is that channel's default, never its group's.
-    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat", lanes.styleScope(place.channel, found.name));
+    // Kept where it takes: a channel's own style, or a channel with its own default, is that channel's, never its group's.
+    await lanes.keepDefaultStyle(place.channel, found.name, str(args.reason) ?? "said in the script's chat", lanes.defaultScope(place.channel, found.name));
     await lanes.refresh();
-    made = " It's the channel's default now: scripts that name no style are written in it.";
+    made = lanes.defaultStyle(place) === found.name ? " It's the channel's default now: scripts that name no style are written in it." : ` It was kept as the default, but ${lanes.defaultStyle(place) ?? "no style"} is still this channel's default: say so.`;
   }
+  store.update(dir, (now) => void (now.style = found.name), true);
   const isDefault = lanes.defaultStyle(place) === found.name;
   return `This script is written in ${found.title} from now on.${made} Say so in your reply.\n\n${styles.prompt(found, all, isDefault)}`;
 }

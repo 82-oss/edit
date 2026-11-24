@@ -68,6 +68,12 @@ test("a build note names a style by its title or its name", () => {
   expect(styles.namedIn(both, "mix Dr Insanity and Classic")).toBeNull();
   const nested = [lesson("style-dry", styles.compose("Dry", "Flat.", [])), lesson("style-dry-wit", styles.compose("Dry Wit", "Flat, with jokes.", []))];
   expect(styles.namedIn(nested, "in the dry wit style")?.name).toBe("style-dry-wit");
+  // Each said on its own: two, so none.
+  expect(styles.namedIn(nested, "use Dry and Dry Wit")).toBeNull();
+  // A short name counts only said as a style.
+  const tv = [lesson("style-tv", styles.compose("TV", "Broadcast.", [])), ...both];
+  expect(styles.namedIn(tv, "Write this in the TV style")?.name).toBe("style-tv");
+  expect(styles.namedIn(tv, "it was on TV last night")).toBeNull();
 });
 
 test("a channel whose scripts are taught in words on its page has no default style by itself", () => {
@@ -87,6 +93,12 @@ test("a style kept for one channel of a group is that channel's: its default is 
   expect(lanes.styleScope("tedcases", "style-dr-insanity")).toBe("channel");
   expect(lanes.styleAt("tedcases", "style-dr-insanity", "channel")?.latest).toBe(3);
   expect(lanes.styleAt("tedcases", "style-dr-insanity")).toBeUndefined();
+  expect(lanes.defaultScope("tedcases", "style-dr-insanity")).toBe("channel");
+  // A group's style is the group's default, unless the channel keeps a default of its own.
+  v2cloud.useSkillsForTests([{ ...lesson("style-classic", classic), key: "skill:@gr-ted--script/style-classic" }]);
+  expect(lanes.defaultScope("tedcases", "style-classic")).toBeUndefined();
+  v2cloud.useSkillsForTests([{ ...lesson("style-classic", classic), key: "skill:@gr-ted--script/style-classic" }, lesson("style-default", "style-classic")]);
+  expect(lanes.defaultScope("tedcases", "style-classic")).toBe("channel");
 });
 
 test("a script's writer reads its own style whole and only the others' names, beside the channel's lessons", () => {

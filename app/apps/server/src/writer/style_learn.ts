@@ -47,6 +47,7 @@ import * as youtubeWords from "../youtube_words.ts";
 import * as chat from "./chat.ts";
 import * as claude from "./claude.ts";
 import * as commentary from "./commentary.ts";
+import * as finder from "./finder.ts";
 import { checkStopped, type Job, type Outcome } from "./jobs.ts";
 import * as links from "./links.ts";
 import { buildAndReview, reviseWith, scriptFreshEyes } from "./scripting.ts";
@@ -80,6 +81,9 @@ const withoutLinks = (text: string): string => text.replace(URL_IN_TEXT, " ").tr
 /** One thing to learn from. */
 export type Reference = { kind: "video"; id: string } | { kind: "channel"; url: string } | { kind: "page"; url: string } | { kind: "text"; text: string };
 
+/** The longest message any other is (routes.ts: the revise route's cap). */
+export const MOST_ASKED = 8_000;
+
 /** The longest message a style is learned from: a script pasted in whole, read whole. */
 export const MOST_PASTED = 100_000;
 
@@ -94,7 +98,10 @@ const LONGEST_S = 3 * 3600;
 export function referencesIn(text: string): { references: Reference[]; words: string } {
   const references: Reference[] = [];
   const seen = new Set<string>();
-  for (const raw of text.match(URL_IN_TEXT) ?? []) {
+  const [ask, pasted] = split(text);
+  // A pasted script is the first reference, and the links are the ask's alone: a script's own citations are part of it, never references that could crowd it out.
+  if (pasted !== "") references.push({ kind: "text", text: pasted });
+  for (const raw of (pasted === "" ? text : ask).match(URL_IN_TEXT) ?? []) {
     const url = raw.replace(/[.,;:!?]+$/u, "");
     const id = youtube.videoId(url);
     const key = id ?? url;
@@ -104,11 +111,14 @@ export function referencesIn(text: string): { references: Reference[]; words: st
     else if (channelLink(url)) references.push({ kind: "channel", url });
     else references.push({ kind: "page", url });
   }
-  const [ask, pasted] = split(text);
   if (pasted === "") return { references, words: text.trim() };
-  references.push({ kind: "text", text: pasted });
-  return { references, words: `${ask}\n(The message also pasted a script of ${pasted.length.toLocaleString("en-US")} characters: reference ${references.length}.)`.trim() };
+  return { references, words: `${ask}\n(The message also pasted a script of ${pasted.length.toLocaleString("en-US")} characters: reference 1.)`.trim() };
 }
+
+/** An ask that says the script follows ("the script below", "here's one"): what comes after it is the paste, however short. */
+const MARKED = /\b(below|following|here'?s|here is|this script)\b/iu;
+/** The shortest script a marked paste is taken for. */
+const MARKED_LEAST = 300;
 
 /**
  * A message's ask and the script pasted in it ("" for none). A script is many short lines, so the ask is told by what it
@@ -117,7 +127,11 @@ export function referencesIn(text: string): { references: Reference[]; words: st
  */
 export function split(text: string): [string, string] {
   const whole = text.trim();
-  if (withoutLinks(whole).length < PASTED) return [whole, ""];
+  if (withoutLinks(whole).length < PASTED) {
+    const [head, ...rest] = whole.split(/\n\s*\n|\n/u);
+    const after = withoutLinks(whole.slice(head!.length));
+    return head !== undefined && rest.length > 0 && ASKS.test(head) && MARKED.test(head) && after.length >= MARKED_LEAST ? [head.trim(), after] : [whole, ""];
+  }
   const paragraphs = whole.split(/\n\s*\n/u);
   const units = paragraphs.length > 1 ? paragraphs : whole.split("\n");
   const join = (some: string[]) => some.join(paragraphs.length > 1 ? "\n\n" : "\n");
@@ -162,6 +176,8 @@ export interface Line {
 }
 
 const PAUSE_S = 1.5;
+/** A gap between lines this long is a stretch with no words of its own. */
+const QUIET_S = 4;
 const LINE_WORDS = 45;
 
 /** A video's words as lines: a new one at a change of voice (or caption turn), a pause, or 45 words. */
@@ -268,30 +284,38 @@ function clipWords(text: string): string {
 export function rebuild(details: Details, url: string, lines: readonly Line[], marked: Marked, voiced: boolean): string {
   const inRange = (n: number, ranges: readonly { from: number; to: number }[]) => ranges.some((one) => n >= one.from && n <= one.to);
   const who = new Map(marked.voices.map((one) => [one.voice, one.who.trim()]));
-  type Piece = { kind: "narration" | "clip" | "furniture"; lines: Line[]; what?: string };
+  // A stretch with no words in it is said as one, neither narration nor a clip: it may be footage playing silent, or a pause.
+  type Piece = { kind: "narration" | "clip" | "furniture" | "quiet"; lines: Line[]; what?: string; at?: number; end?: number };
   const pieces: Piece[] = [];
+  let lastEnd: number | null = null;
   for (const line of lines) {
+    if (lastEnd !== null && line.at - lastEnd >= QUIET_S) pieces.push({ kind: "quiet", lines: [], at: lastEnd, end: line.at });
+    lastEnd = Math.max(lastEnd ?? 0, line.end);
     const furniture = marked.furniture.find((one) => line.n >= one.from && line.n <= one.to);
     const kind = furniture !== undefined ? "furniture" : inRange(line.n, marked.narration) ? "narration" : "clip";
     const last = pieces.at(-1);
     if (last !== undefined && last.kind === kind && (kind !== "furniture" || last.what === furniture?.what)) last.lines.push(line);
     else pieces.push({ kind, lines: [line], ...(furniture ? { what: furniture.what } : {}) });
   }
-  const span = (piece: Piece) => Math.max(0, piece.lines.at(-1)!.end - piece.lines[0]!.at);
+  const startOf = (piece: Piece) => piece.at ?? piece.lines[0]!.at;
+  const span = (piece: Piece) => Math.max(0, (piece.end ?? piece.lines.at(-1)!.end) - startOf(piece));
   const story = pieces.filter((one) => one.kind !== "furniture");
   const narration = story.filter((one) => one.kind === "narration");
   const clips = story.filter((one) => one.kind === "clip");
+  const quiet = story.filter((one) => one.kind === "quiet");
   const narrationS = narration.reduce((sum, one) => sum + span(one), 0);
   const clipS = clips.reduce((sum, one) => sum + span(one), 0);
+  const quietS = quiet.reduce((sum, one) => sum + span(one), 0);
   const narrationText = narration.map((one) => one.lines.map((line) => line.text).join(" "));
   const narrationWords = narrationText.reduce((sum, one) => sum + wordCount(one), 0);
   const sentences = narrationText.join(" ").split(/(?<=[.!?])\s+/u).filter((one) => wordCount(one) > 0);
   const clipLengths = clips.map(span);
   const blockWords = narrationText.map(wordCount);
   const firstClip = clips[0]?.lines[0]?.at ?? null;
-  const opensOn = story[0]?.kind === "clip" ? "a clip" : "narration";
+  const opensOn = story.find((one) => one.kind !== "quiet")?.kind === "clip" ? "a clip" : "narration";
   const measured = [
-    `narration ${Math.round((narrationS / Math.max(narrationS + clipS, 1)) * 100)}% of the story's time (${clock(narrationS)} of ${clock(narrationS + clipS)})`,
+    `narration ${Math.round((narrationS / Math.max(narrationS + clipS + quietS, 1)) * 100)}% of the story's time (${clock(narrationS)} of ${clock(narrationS + clipS + quietS)})`,
+    quietS > 0 ? `${clock(quietS)} with no words in ${quiet.length} stretches (silent footage or pauses, counted as neither)` : null,
     `${clips.length} clips, running ${Math.round(quantile(clipLengths, 0.1))}–${Math.round(quantile(clipLengths, 0.9))} s (median ${Math.round(median(clipLengths))} s)`,
     `${narration.length} stretches of narration, median ${Math.round(median(blockWords))} words (${Math.round(quantile(blockWords, 0.1))}–${Math.round(quantile(blockWords, 0.9))})`,
     `opens on ${opensOn}${firstClip === null ? "" : `, first clip at ${clock(firstClip)}`}`,
@@ -306,7 +330,8 @@ export function rebuild(details: Details, url: string, lines: readonly Line[], m
     voiced ? null : "From YouTube's captions: their punctuation is YouTube's, and nothing told the voices apart.",
   ].filter(Boolean);
   const body = story.map((piece) => {
-    const at = clock(piece.lines[0]!.at);
+    const at = clock(startOf(piece));
+    if (piece.kind === "quiet") return `[${at}] NO WORDS ${Math.round(span(piece))} s (silent footage, or a pause)`;
     if (piece.kind === "narration") return `[${at}] NARRATION\n${piece.lines.map((line) => line.text).join(" ")}`;
     const voices = [...new Set(piece.lines.map((line) => who.get(line.voice) ?? ""))].filter((one) => one !== "");
     return `[${at}] CLIP ${Math.round(span(piece))} s${voices.length > 0 ? ` · ${voices.join(", ")}` : ""}\n"${clipWords(piece.lines.map((line) => line.text).join(" "))}"`;
@@ -336,7 +361,8 @@ export const hooks = {
     };
     const before = kept();
     if (before !== null) return [before, true];
-    const folder = join(dir, "sound");
+    // This job's own: another learning the same video at once never has its sound taken from under it.
+    const folder = join(dir, `sound-${crypto.randomUUID()}`);
     try {
       stage("Fetching the video's sound");
       const sound = await youtube.downloadSound(home, id, folder, true);
@@ -474,26 +500,34 @@ interface Learned {
 async function readAll(home: string, references: readonly Reference[], job: Job): Promise<[Read[], string[], number]> {
   const expanded: Reference[] = [];
   const missed: string[] = [];
+  const unread = (one: Reference) => one.kind !== "video" || !expanded.some((other) => other.kind === "video" && other.id === one.id);
   for (const reference of references) {
     if (reference.kind !== "channel") {
-      expanded.push(reference);
+      if (unread(reference)) expanded.push(reference);
       continue;
     }
+    // Once the references to read are all there, a later channel isn't asked for its videos.
+    if (expanded.length >= MOST_REFERENCES) {
+      missed.push(`Only the first ${MOST_REFERENCES} references were read.`);
+      break;
+    }
+    checkStopped(job);
     try {
       const found = await channels.videosOf(reference.url, "recent", 25);
       const long = found.videos.filter((one) => (one.seconds ?? 0) >= 6 * 60 && (one.seconds ?? 0) <= LONGEST_S);
       const picked = long.sort((a, b) => (b.views ?? 0) - (a.views ?? 0)).slice(0, CHANNEL_VIDEOS);
       if (picked.length === 0) missed.push(`${found.channel.title} has no long videos lately to learn from.`);
-      for (const video of picked) expanded.push({ kind: "video", id: video.id });
+      for (const video of picked) {
+        const one: Reference = { kind: "video", id: video.id };
+        if (unread(one)) expanded.push(one);
+      }
     } catch (error) {
       missed.push(`${reference.url} couldn't be read as a channel: ${diag.messageOf(error)}`);
     }
   }
-  // A video linked and brought by its channel's link too is read once.
-  const seenVideos = new Set<string>();
-  const unique = expanded.filter((one) => one.kind !== "video" || (!seenVideos.has(one.id) && Boolean(seenVideos.add(one.id))));
-  const taken = unique.slice(0, MOST_REFERENCES);
-  if (unique.length > taken.length) missed.push(`Only the first ${MOST_REFERENCES} references were read.`);
+  // A video linked and brought by its channel's link too is read once (`unread`).
+  const taken = expanded.slice(0, MOST_REFERENCES);
+  if (expanded.length > taken.length && !missed.some((one) => one.startsWith("Only the first"))) missed.push(`Only the first ${MOST_REFERENCES} references were read.`);
   const reads: (Read | null)[] = Array.from({ length: taken.length }, () => null);
   let cost = 0;
   let done = 0;
@@ -602,12 +636,12 @@ export async function learnNow(home: string, dir: string, script: Script, work: 
   // What the learner reads now: a style kept over is saved against the version read here, never a newer one kept meanwhile.
   const channel = script.channel;
   const readAt = (name: string, given: "channel" | undefined) => lanes.styleAt(channel, name, given);
-  const snapshot = new Map<string, { latest: number | null; style: styles.Style | null }>();
+  const snapshot = new Map<string, { latest: number | null; key: string; style: styles.Style | null }>();
   const keepRead = (name: string, given: "channel" | undefined) => {
     const key = `${given ?? "group"} ${name}`;
     if (!snapshot.has(key)) {
       const found = readAt(name, given);
-      snapshot.set(key, { latest: found?.latest ?? null, style: found === undefined ? null : styles.parse(found) });
+      snapshot.set(key, { latest: found?.latest ?? null, key: lanes.styleKey(channel, name, given), style: found === undefined ? null : styles.parse(found) });
     }
     return snapshot.get(key)!;
   };
@@ -615,6 +649,9 @@ export async function learnNow(home: string, dir: string, script: Script, work: 
     keepRead(one.name, undefined);
     keepRead(one.name, "channel");
   }
+  // Where each scope's styles went as the learner was asked.
+  const placesAtAsk = { group: channels.keptIn(channel, "script", undefined).place, channel: channels.keptIn(channel, "script", "channel").place };
+  const keyAtAsk = (name: string, given: "channel" | undefined) => v2cloud.ownKey("skill", placesAtAsk[given ?? "group"], name);
   job.stage("Learning the style");
   const prompt = [
     `THE PRODUCER'S MESSAGE\n${words}`,
@@ -635,7 +672,8 @@ export async function learnNow(home: string, dir: string, script: Script, work: 
   job.stage("Keeping the style");
   const given = plan.channel_only === true ? "channel" : undefined;
   // Only the examples of the style kept where this one goes are kept with it: never a channel's own carried into its group's.
-  const read = snapshot.get(`${given ?? "group"} ${name}`) ?? { latest: null, style: null };
+  // A new style's place is where it goes as the learner was asked: a move of group meanwhile is caught when it's kept.
+  const read = snapshot.get(`${given ?? "group"} ${name}`) ?? { latest: null, key: keyAtAsk(name, given), style: null };
   const before = read.style;
   // The same reference again replaces its earlier reading: never kept twice.
   const readNow = new Set(reads.map((read) => read.about));
@@ -643,7 +681,7 @@ export async function learnNow(home: string, dir: string, script: Script, work: 
   const text = styles.compose(before?.title ?? title, guide.slice(0, styles.GUIDE_MOST), examples);
   const reason = `${[...work.request].slice(0, 300).join("")}${work.request.length > 300 ? "…" : ""}`;
   const note = `A script style: written in when a script asks for it${plan.default === true ? ", and the channel's default" : ""}`;
-  await lanes.keepStyle(script.channel, name, text, reason, note, given, { latest: read.latest });
+  await lanes.keepStyle(script.channel, name, text, reason, note, given, { latest: read.latest, key: read.key });
   if (plan.default === true) await lanes.keepDefaultStyle(script.channel, name, reason, given);
   await lanes.refresh();
   const useHere = plan.use_here === true || work.build === true;
@@ -664,9 +702,18 @@ export async function learnNow(home: string, dir: string, script: Script, work: 
 /** A message that wasn't a style after all, carried on as it would have been: its footage first, else the build or revision. */
 async function handOnAsAsked(app: App, data: string, id: string, work: Learning, job: Job): Promise<Outcome> {
   const resumed = { ...job, resumed: true, asked: true };
+  const dir = store.scriptDir(data, id);
+  // Held to what any message is held to: only a style's references may run long.
+  if (!work.build && [...work.request].length > MOST_ASKED) {
+    const said = `Keep the request under ${MOST_ASKED.toLocaleString("en-US")} characters.`;
+    chat.add(dir, "editor", said, null, true);
+    throw new Error(said);
+  }
   const urls = links.footageLinks(work.request);
-  const script = store.read(store.scriptDir(data, id));
+  const script = store.read(dir);
   if (!script.commentary && (urls.length > 0 || (work.files ?? []).length > 0)) return links.addFootage(app, data, id, { urls, ...(work.files ? { files: work.files } : {}), ...(work.build ? { build: true } : {}), request: work.request, focus: work.focus }, resumed);
+  // One that may ask for more of the case's footage is looked for first, as it would have been (routes.ts).
+  if (!script.commentary && finder.mayAsk(work.request)) return finder.findFootage(app, data, id, { request: work.request, focus: work.focus, ...(work.build ? { build: true } : {}) }, resumed);
   if (work.build) return buildAndReview(app, data, id, work.request, undefined, scriptFreshEyes(undefined), resumed);
   return reviseWith(data, id, work.request, work.request, work.focus, false, resumed);
 }

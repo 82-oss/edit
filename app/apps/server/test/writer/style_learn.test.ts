@@ -31,11 +31,12 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   const { references, words } = learn.referencesIn(
     `Learn this style from https://youtu.be/5kFYKil24A0?si=x and https://www.youtube.com/watch?v=5kFYKil24A0, https://www.youtube.com/@DrInsanity and https://docs.google.com/document/d/abc123/edit.\n${pasted}`,
   );
+  // The paste first, so links can never crowd it out.
   expect(references).toEqual([
+    { kind: "text", text: expect.stringContaining("The detective leans in.") },
     { kind: "video", id: "5kFYKil24A0" },
     { kind: "channel", url: "https://www.youtube.com/@DrInsanity" },
     { kind: "page", url: "https://docs.google.com/document/d/abc123/edit" },
-    { kind: "text", text: expect.stringContaining("The detective leans in.") },
   ]);
   // The learner reads what was asked, and that a script was pasted, not the paste twice.
   expect(words).toContain("Learn this style from");
@@ -47,6 +48,16 @@ test("a message's references: each video once, a channel, a Doc, and a long past
   expect(learn.mayAsk(`${lines}\nThat's a Dr Insanity script: write ours in this style.`)).toBe(true);
   expect(learn.mayAsk(`${lines}\nTighten the intro.`)).toBe(false);
   expect(learn.split(`Pick up the style: ${pasted}`)[1]).toContain("Pick up the style");
+  // A pasted script's own citations stay in it, never references of their own.
+  const cited = Array.from({ length: 30 }, (_, at) => `Line ${at}: the detective leans in (https://news.example/${at}).`).join("\n");
+  const withCites = learn.referencesIn(`Learn the style from this script:\n\n${cited}`);
+  expect(withCites.references).toHaveLength(1);
+  expect(withCites.references[0]!.kind).toBe("text");
+  // A short script marked as following the ask is taken as one.
+  const short = Array.from({ length: 10 }, (_, at) => `Line ${at}: the detective leans in and waits.`).join("\n");
+  expect(learn.split(`Learn the writing style from the script below:\n${short}`)).toEqual(["Learn the writing style from the script below:", short]);
+  expect(learn.mayAsk(`Learn the writing style from the script below:\n${short}`)).toBe(true);
+  expect(learn.split(`Tighten the intro:\n${short}`)[1]).toBe("");
 });
 
 const word = (text: string, start: number, speaker: string): transcribe.Word => ({ text, start, end: start + 0.3, speaker });
@@ -88,6 +99,12 @@ test("a video is rebuilt as narration and clips in turn, its furniture left out 
   expect(text).toContain("Left out, the channel's own: sponsor read at 0:40.");
   expect(text).toContain("opens on narration, first clip at 0:05");
   expect(text).toContain("Chapters: 0:00 Intro");
+  // A long stretch with no words is said as one, and counted as neither narration nor a clip.
+  const gapped = learn.linesOf([...said("He thought he was smart.", 0, "n"), ...said("And then it all went wrong.", 24, "n"), ...said("Where were you?", 30, "d")]);
+  const quiet = learn.rebuild(DETAILS, "https://youtu.be/x", gapped, learn.markedOf({ narrator: "x", voices: [], narration: [{ from: 1, to: 2 }], furniture: [] }, gapped.length), true);
+  expect(quiet).toContain("NO WORDS 22 s");
+  expect(quiet).toMatch(/narration \d+% of the story's time \(0:0[45] of/u);
+  expect(quiet).toContain("with no words in 1 stretches");
   // From captions, it says so.
   expect(learn.rebuild(DETAILS, "https://youtu.be/x", lines, marked, false)).toContain("From YouTube's captions");
 });

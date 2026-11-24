@@ -183,9 +183,12 @@ export const defaultStyle = (place: Place): string | null => styles.defaultIn(le
 /** The style a script that names `picked` is written in, or null (script_styles.ts `chosen`). */
 export const chosenStyle = (place: Place, picked: string | null | undefined): styles.Style | null => styles.chosen(lessonsOf(place), picked, laneWords(place));
 
+/** The key a style of that name kept now would have (`given`, as keepStyle takes it). */
+export const styleKey = (channel: string, name: string, given?: unknown): string => v2cloud.ownKey("skill", channels.keptIn(channel, "script", given).place, name);
+
 /** The style of that name kept where a style kept now would go (`given`, as keepStyle takes it), or undefined: never one kept elsewhere (a channel's own, for its group). */
 export function styleAt(channel: string, name: string, given?: unknown): v2cloud.Skill | undefined {
-  const key = v2cloud.ownKey("skill", channels.keptIn(channel, "script", given).place, name);
+  const key = styleKey(channel, name, given);
   return lessonsOf({ channel, lane: "script" }).find((one) => one.name === name && one.key === key);
 }
 
@@ -197,11 +200,21 @@ export function styleScope(channel: string, name: string): "channel" | undefined
 }
 
 /**
+ * Where making `name` the channel's default is kept so it takes: this channel's alone when the style is its own, or
+ * when the channel already has a default of its own (one kept for its group would stay behind that).
+ */
+export function defaultScope(channel: string, name: string): "channel" | undefined {
+  const place: Place = { channel, lane: "script" };
+  const ownDefault = channels.groupOf(channel) !== null && lessonsOf(place).some((one) => one.name === styles.DEFAULT && ownLesson(one, place));
+  return styleScope(channel, name) ?? (ownDefault ? "channel" : undefined);
+}
+
+/**
  * A script style kept whole (writer/style_learn.ts): a teacher's, in the channel's Script lane (its group's unless
  * `given` says this channel's). Never checked against the lessons: a style is meant to differ from them, and wins only
  * for the scripts written in it (script_styles.ts).
  */
-export async function keepStyle(channel: string, name: string, text: string, reason: string, note: string, given?: unknown, read: { latest: number | null } | null = null): Promise<string> {
+export async function keepStyle(channel: string, name: string, text: string, reason: string, note: string, given?: unknown, read: { latest: number | null; key: string } | null = null): Promise<string> {
   needCloud();
   await refresh();
   teacherOnly("Keeping a script style");
@@ -212,7 +225,8 @@ export async function keepStyle(channel: string, name: string, text: string, rea
   const kept = channels.keptIn(channel, "script", given);
   const key = v2cloud.ownKey("skill", kept.place, name);
   const before = lessonsOf(place).find((one) => one.name === name && one.key === key);
-  // Saved over the version its learner read (`read`), never a newer one another teacher kept meanwhile: that one is said, and learned again.
+  // Saved over the version its learner read (`read`), never a newer one another teacher kept meanwhile, nor where it goes changed meanwhile (the channel moved group): said, and learned again.
+  if (read !== null && read.key !== key) throw new Error("This channel's group changed while the style was learned, so it wasn't kept: ask again.");
   if (read !== null && read.latest === null && before !== undefined) throw new Error(`Someone else kept a ${name.slice(styles.PREFIX.length)} style while this was learned: ask again to add to theirs.`);
   const latest = read !== null ? read.latest : (before?.latest ?? null);
   const saved = await v2cloud.saveSkill(name, text, reason, note, { key, ...(latest !== null ? { latest } : {}) });
