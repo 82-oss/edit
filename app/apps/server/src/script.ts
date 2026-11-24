@@ -2520,16 +2520,50 @@ export async function excerpts(source: string, ranges: [number, number][], onCut
  * Cuts `start`..`to` seconds of `source` (a file or a presigned URL: FFmpeg
  * seeks before reading, so only that stretch is fetched) into `out`: picture
  * copied from the keyframe at `start`, sound re-encoded to start with it.
+ *
+ * From a file on this disk, a copied cut that FFmpeg refused or that came out
+ * the wrong length is cut once more with its picture encoded, which is exact
+ * in any container; one still wrong then is wrong every time
+ * (`failure.SameEveryTime`), never tried again by downloading the footage
+ * anew. Nov 24, JJ's "Cops Catch Killer at Airport": three ASF files, each
+ * downloaded whole for up to an hour, cut a second long, refused, and
+ * downloaded again on every retry.
  */
 export async function cut(source: string, start: number, to: number, out: string): Promise<void> {
+  const copy = await picturePasses(source, out);
+  try {
+    await cutOnce(source, start, to, out, copy);
+  } catch (error) {
+    if (!copy || tools.isUrl(source) || !(error instanceof CutRefused)) throw error;
+    diag.warn("script", `cutting an excerpt: ${error.message.replace(/\.$/u, "")}; cut again with its picture encoded`);
+    try {
+      await cutOnce(source, start, to, out, false);
+    } catch (again) {
+      if (again instanceof CutRefused && again.wrong !== null) {
+        throw new failure.SameEveryTime(`This footage can't be cut: its excerpt comes out the wrong length every time it's cut (${again.wrong}).`);
+      }
+      throw again;
+    }
+  }
+}
+
+/** A cut FFmpeg refused, or one that came out wrong (`wrong` says how). Its words are what `cloud_media.cutsBetterHere` reads. */
+class CutRefused extends Error {
+  constructor(
+    message: string,
+    readonly wrong: string | null,
+  ) {
+    super(message);
+  }
+}
+
+/** One cut of `cut`'s: its picture copied, or encoded (odd sizes padded a pixel: 4:2:0 H.264 takes even sizes only). */
+async function cutOnce(source: string, start: number, to: number, out: string, copy: boolean): Promise<void> {
   let output: { ok: boolean; stderr: string };
   // From the cloud's address: cut for as long as the excerpt's file grows. From a file here: within a fixed time.
   const remote = tools.isUrl(source);
   try {
-    // Encoded, a picture of odd width or height gets a pixel's edge: 4:2:0 H.264 takes even sizes only.
-    const picture = (await picturePasses(source, out))
-      ? ["-c:v", "copy"]
-      : ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
+    const picture = copy ? ["-c:v", "copy"] : ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"];
     const command = [
       tools.ffmpeg(),
       "-v",
@@ -2573,13 +2607,13 @@ export async function cut(source: string, start: number, to: number, out: string
       const need = await bitRateOf(source).then((rate) => (rate === null ? 0 : Math.ceil(((to - start) * rate) / 8 / 1e6) * 1e6), () => 0);
       throw new failure.NoRoom(need, need > 0 ? `Needs ${need >= 1e9 ? `${(need / 1e9).toFixed(1)} GB` : `${Math.round(need / 1e6)} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.` : "This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.");
     }
-    throw new Error("Couldn't cut an excerpt from the footage.");
+    throw new CutRefused("Couldn't cut an excerpt from the footage.", null);
   }
   const problem = await excerptProblem(source, start, to, out);
   if (problem !== null) {
     fs.rmSync(out, { force: true });
     diag.warn("script", `cutting an excerpt: ${problem}`);
-    throw new Error(`The excerpt cut from the footage came out wrong (${problem}).`);
+    throw new CutRefused(`The excerpt cut from the footage came out wrong (${problem}).`, problem);
   }
 }
 

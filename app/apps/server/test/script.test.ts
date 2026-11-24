@@ -45,6 +45,8 @@ import { scratch } from "./helpers/home.ts";
 import { media, project as newProject, stubNative } from "./helpers/model.ts";
 import type { Word } from "../src/transcribe.ts";
 import { THIS_MACHINE } from "../src/machine.ts";
+import * as failure from "../src/failure.ts";
+import * as diag from "../src/diag.ts";
 
 const DOC = `<html><head><title>Kent crash</title><style>.c1{color:red}</style></head><body>
 <p><span>Kent crash</span></p><p><span>Total Duration: 27m</span></p>
@@ -200,6 +202,45 @@ test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
       } finally {
         void server.stop(true);
       }
+    } finally {
+      cleanup();
+    }
+  },
+  60_000,
+);
+
+test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
+  "a_copied_cut_that_comes_out_wrong_is_cut_again_encoded_and_one_still_wrong_stops",
+  async () => {
+    // Nov 24, JJ's ASF files: a copied cut read a second long, was refused, and the whole file came down again on every
+    // retry. From a file here the cut is made again with its picture encoded; one still wrong is wrong every time.
+    stubNative();
+    const { dir, cleanup } = scratch("excerpt-again");
+    try {
+      const source = `${dir}/bodycam.asf`;
+      const made = Bun.spawnSync([
+        ffmpeg!, "-v", "error", "-y",
+        "-f", "lavfi", "-i", "color=gray:s=64x36:r=30:d=120",
+        "-f", "lavfi", "-i", "sine=f=300:d=120",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source,
+      ]);
+      expect(made.exitCode).toBe(0);
+      // Copied into ASF or MKV it reads 2 s long (ASF's preroll); encoded, both come out right.
+      for (const out of [`${dir}/again.asf`, `${dir}/again.mkv`]) {
+        await cutExcerpt(source, 40, 76, out);
+        expect(Math.abs((await durationOf(out)) - 36)).toBeLessThan(0.5);
+      }
+      // A file whose index promises more than it holds: no cut of 60-90 s reads back, copied or encoded.
+      const whole = `${dir}/whole.mp4`;
+      expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-i", source, "-c", "copy", "-movflags", "+faststart", whole]).exitCode).toBe(0);
+      const short = `${dir}/short.mp4`;
+      fs.writeFileSync(short, fs.readFileSync(whole).subarray(0, Math.floor(fs.statSync(whole).size * 0.4)));
+      const error = await cutExcerpt(short, 60, 90, `${dir}/never.mp4`).then(() => null, (thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(failure.SameEveryTime);
+      // Broken, never waited out, and still so from the words a job keeps across a restart.
+      expect(failure.kindOf(error)).toBe("broken");
+      expect(failure.kindOf(diag.messageOf(error))).toBe("broken");
+      expect(fs.existsSync(`${dir}/never.mp4`)).toBe(false);
     } finally {
       cleanup();
     }
