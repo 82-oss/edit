@@ -239,7 +239,18 @@ test("an edge inside a fade moves out of it, so the picture fades as it did", ()
   expect(applyBringBack(project, 1770, 1790, 6, false)).toMatchObject({ pieces: 1, from: 1740, to: 1800 });
   const pictures = project.clips.filter((one) => one.type === "video").sort((a, b) => a.start - b.start);
   expect(pictures.map((one) => [one.start, one.duration, one.fade_out])).toEqual([[0, 1740, 0], [1740, 60, 60]]);
-  expect(outOfFades(project, 900, "start")).toBe(900);
+  expect(outOfFades(project, 900, "start", () => true)).toBe(900);
+});
+
+test("only what the cut goes through moves an edge: a music bed fading in under it doesn't", () => {
+  const project = edit();
+  project.media.push(media({ id: "song", name: "song.wav", path: "/nowhere/song.wav", kind: "audio", duration: 90, has_audio: true, library: "music" } as never));
+  const bedTrack = structuredClone(project.tracks.find((one) => one.kind === "audio")!);
+  bedTrack.id = "a9";
+  project.tracks.push(bedTrack);
+  project.clips.push(clip({ id: "bed", type: "audio", track: "a9", media: "song", start: 0, duration: 1800, source_in: 0, speed: 1, volume_db: -20, fade_in: 900 }));
+  expect(applyBringBack(project, 300, 330, 6, false)).toMatchObject({ pieces: 1, from: 300, to: 330 });
+  expect(project.clips.find((one) => one.id === "bed")!.duration).toBe(1800);
 });
 
 test("a muted track is never paid for", () => {

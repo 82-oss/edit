@@ -63,12 +63,18 @@ function isFootageSound(project: Project, clip: Clip): clip is AudioClip {
 }
 
 /** The sounds in frames from–to that remove_music should clean, by the source they play. */
-export function soundsToClean(project: Project, from: number, to: number): Map<string, AudioClip[]> {
-  const out = new Map<string, AudioClip[]>();
+/** Which sounds remove_music cleans, wherever they are. */
+function cleanableIn(project: Project): (clip: Clip) => clip is AudioClip {
   // A muted track isn't heard, so it's never paid for.
   const muted = new Set(project.tracks.filter((track) => track.muted).map((track) => track.id));
+  return (clip): clip is AudioClip => !muted.has(clip.track) && isFootageSound(project, clip) && !isOriginalPiece(clip) && !oneSide(clip);
+}
+
+export function soundsToClean(project: Project, from: number, to: number): Map<string, AudioClip[]> {
+  const out = new Map<string, AudioClip[]>();
+  const cleanable = cleanableIn(project);
   for (const clip of project.clips) {
-    if (clipEnd(clip) <= from || clip.start >= to || muted.has(clip.track) || !isFootageSound(project, clip) || isOriginalPiece(clip) || oneSide(clip)) continue;
+    if (clipEnd(clip) <= from || clip.start >= to || !cleanable(clip)) continue;
     const media = mediaOf(project, clip.media)!;
     const source = cleanedInfo(media)?.of ?? media.id;
     out.set(source, [...(out.get(source) ?? []), clip]);
@@ -230,8 +236,9 @@ export async function removeMusic(app: App, id: string, from: number | null, to:
   const live = app.store.get(id);
   if (live === null) throw new Error("no such project");
   const [asked, until] = spanFrames(fpsOf(live.project), from, to);
-  const first = from === null ? asked : outOfFades(live.project, asked, "start");
-  const last = to === null ? until : outOfFades(live.project, until, "end");
+  const cleanable = cleanableIn(live.project);
+  const first = from === null ? asked : outOfFades(live.project, asked, "start", cleanable);
+  const last = to === null ? until : outOfFades(live.project, until, "end", cleanable);
   const groups = soundsToClean(live.project, first, last);
   const sided = oneSidedIn(live.project, first, last);
   if (groups.size === 0) throw new Error(sided > 0 ? "the footage sound there plays one side of its source (left or right), which music removal can't keep apart" : "there's no footage sound in that span");
@@ -319,15 +326,9 @@ async function cleanSource(app: App, id: string, originalId: string, key: string
   return [paidSeconds, changed];
 }
 
-/**
- * The razor at `frame` through a clip, whatever's linked to it and whatever
- * follows it (an overlay parented to it), as the timeline's split does: each
- * part after the cut follows the part it's on.
- */
-function splitLinked(project: Project, clip: Clip, frame: number): void {
+/** What a cut at `frame` through `clip` cuts (splitLinked): it, what's linked to it and what follows it, all crossing the frame. */
+function cutWith(project: Project, clip: Clip, frame: number): Clip[] {
   const crosses = (one: Clip) => one.start < frame && clipEnd(one) > frame;
-  if (!crosses(clip)) return;
-  const rate = fpsOf(project);
   const group: Clip[] = [];
   const add = (one: Clip) => {
     if (group.includes(one)) return;
@@ -337,7 +338,19 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
       if ((one.link !== undefined && other.link === one.link) || other.parent === one.id) add(other);
     }
   };
-  add(clip);
+  if (crosses(clip)) add(clip);
+  return group;
+}
+
+/**
+ * The razor at `frame` through a clip, whatever's linked to it and whatever
+ * follows it (an overlay parented to it), as the timeline's split does: each
+ * part after the cut follows the part it's on.
+ */
+function splitLinked(project: Project, clip: Clip, frame: number): void {
+  const group = cutWith(project, clip, frame);
+  if (group.length === 0) return;
+  const rate = fpsOf(project);
   const links = new Map<string, string>();
   const halves = new Map<string, string>();
   for (const one of group) {
@@ -485,8 +498,9 @@ function setSeams(media: Media, seams: Record<string, number>): void {
  */
 export function applyBringBack(project: Project, asked: number, until: number, fade: number, undo: boolean): { pieces: number; undone: number; from: number; to: number } {
   if (!(until > asked)) throw new Error("end must be after start");
-  const from = undo ? asked : outOfFades(project, asked, "start");
-  const to = undo ? until : outOfFades(project, until, "end");
+  const cleanedSound = (clip: Clip) => clip.type === "audio" && cleanedInfo(mediaOf(project, clip.media) ?? { markers: [] }) !== null;
+  const from = undo ? asked : outOfFades(project, asked, "start", cleanedSound);
+  const to = undo ? until : outOfFades(project, until, "end", cleanedSound);
   let undone = 0;
   const seams = new Set<number>();
   for (const clip of project.clips) {
@@ -554,19 +568,22 @@ export function applyBringBack(project: Project, asked: number, until: number, f
 }
 
 /**
- * `frame` moved out of any fade it falls in, the span made wider (earlier for
- * its start, later for its end): a cut through a fade would change how the
- * picture or sound fades, and each part's fade only starts at its own edge.
+ * `frame` moved out of any fade the cut there would go through, the span made
+ * wider (earlier for its start, later for its end): each part's fade only
+ * starts at its own edge, so a cut through one changes how it fades. Only
+ * what's cut counts: the sounds `cuts` picks crossing the frame, and what's
+ * linked to them or follows them (cutWith). Each move is outward to a clip's
+ * edge, so it ends.
  */
-export function outOfFades(project: Project, frame: number, side: "start" | "end"): number {
+export function outOfFades(project: Project, frame: number, side: "start" | "end", cuts: (clip: Clip) => boolean): number {
   let at = frame;
-  for (let step = 0; step < 20; step++) {
-    const clip = project.clips.find((one) => (one.start < at && at < one.start + one.fade_in) || (clipEnd(one) - one.fade_out < at && at < clipEnd(one)));
+  for (;;) {
+    const cut = project.clips.filter(cuts).flatMap((clip) => cutWith(project, clip, at));
+    const clip = cut.find((one) => (one.start < at && at < one.start + one.fade_in) || (clipEnd(one) - one.fade_out < at && at < clipEnd(one)));
     if (clip === undefined) return at;
     const inFadeIn = clip.start < at && at < clip.start + clip.fade_in;
     at = inFadeIn ? (side === "start" ? clip.start : clip.start + clip.fade_in) : side === "start" ? clipEnd(clip) - clip.fade_out : clipEnd(clip);
   }
-  return at;
 }
 
 /** `time` (a source second) moved out of any word it falls in, earlier for a start and later for an end. */
