@@ -33,6 +33,7 @@ import { dispatch } from "../src/mcp/index.ts";
 import * as wm from "../src/watermark_removal.ts";
 import type { WatermarkRemoved } from "../src/native/index.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
+import * as found from "../src/found.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 // One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
@@ -832,7 +833,14 @@ test("ours go over their subtitles only where removal takes theirs out: taught t
     await app.store.replace(project.id, null, project, "test");
     const id = project.id;
     const at = (from: number, to: number) => tr.theirsTakenOut(app, store.get(id)!.project, { clip: "f", start: from * 30, end: to * 30 });
+    // With no finder, a channel taught to take theirs out blurs only what's marked (`wantedOf`): ours wait for a mark.
     teach({ subtitles: true });
+    expect(at(10, 12)).toBe(false);
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles"], media: { m: [[9, 13]] }, mark: "add" });
+    expect(at(10, 12)).toBe(true);
+    asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles"], media: { m: [[9, 13]] }, mark: "remove" });
+    // A machine with the finder takes out all it finds: no mark needed.
+    found.useFinderForTests({ find: async () => ({ ask: [], sheets: [] }), finish: async () => { throw new Error("not read here"); } });
     expect(at(10, 12)).toBe(true);
     // Taught only their text, or their subtitles only when asked: theirs stay, so ours are refused there.
     teach({ text: true });
@@ -849,6 +857,7 @@ test("ours go over their subtitles only where removal takes theirs out: taught t
     removalSchedule.stop(app, id, ["subtitles"]);
     expect(at(20, 22)).toBe(false);
   } finally {
+    found.useFinderForTests(null);
     cleanup();
   }
 });
@@ -1026,4 +1035,19 @@ test("masksWithMarks covers the first and last whole frames when a mark starts o
   const out = tr.masksWithMarks(empty, [{ from: 278.952, to: 282.285333, box }], 30, 8368);
   expect(out[0]).toEqual([box]);
   expect(out[100]).toEqual([box]);
+});
+
+test("after their subtitles are stopped, text that goes on over the same seconds sends the model none of the stopped captions (CodeRabbit on #5)", () => {
+  const media = { id: "m" } as Media;
+  const plan = { media, source: "sha256:s", spans: [[10, 20], [40, 50]] as [number, number][], marks: [] };
+  // Subtitles on 12–14 s and 44–46 s (frames at 30 fps), a label the whole time.
+  const read = { version: 1, width: 1920, height: 1080, fps: 30, covered: [[0, 60]], masks: [[360, 419, 0, 900, 1920, 1000, "subtitle"], [1320, 1379, 0, 900, 1920, 1000, "subtitle"], [0, 1800, 0, 0, 300, 80, "label"]] } as unknown as found.Found;
+  const all = (_media: string, spans: [number, number][]) => spans;
+  // Asked of their subtitles everywhere: as planned.
+  expect(tr.subtitlesAsked([plan], all, () => read)).toEqual([plan]);
+  // Stopped after 30 s: the first stretch as planned; of the second, only the seconds with no subtitle of theirs.
+  const until30 = (_media: string, spans: [number, number][]) => spans.flatMap(([a, b]): [number, number][] => (a < 30 ? [[a, Math.min(b, 30)]] : []));
+  expect(tr.subtitlesAsked([plan], until30, () => read)[0]!.spans).toEqual([[10, 20], [40, 44], [46, 50]]);
+  // A file the finder hasn't read: left as it is.
+  expect(tr.subtitlesAsked([plan], until30, () => null)).toEqual([plan]);
 });

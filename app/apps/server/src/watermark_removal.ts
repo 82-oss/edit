@@ -470,6 +470,8 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
       }
       continue;
     }
+    // Stopped while a cached cell above was brought in: the rest stay unqueued (a Stop can't take out what isn't queued yet).
+    if ((stops.get(id) ?? 0) !== stopsBefore) return;
     note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued", tries: known?.tries ?? 0 });
     queue.push({ project: id, media: cell.media, source: cell.source, from: cell.from, to: cell.to, model: cell.model });
   }

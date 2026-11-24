@@ -135,10 +135,10 @@ pub fn saturate_u8(value: f64) -> u8 {
 // ---------------------------------------------------------------------------
 // Colour
 
-/// cvtColor RGB2GRAY on 8 bits: 0.299, 0.587, 0.114 in 14-bit fixed point.
+/// cvtColor RGB2GRAY on 8 bits: 0.299, 0.587, 0.114 in 15-bit fixed point (OpenCV 4.x `RY15`, `GY15`, `BY15`).
 #[inline]
 pub fn luma(px: Px) -> u8 {
-    ((u32::from(px[0]) * 4899 + u32::from(px[1]) * 9617 + u32::from(px[2]) * 1868 + 8192) >> 14)
+    ((u32::from(px[0]) * 9798 + u32::from(px[1]) * 19235 + u32::from(px[2]) * 3735 + 16384) >> 15)
         as u8
 }
 

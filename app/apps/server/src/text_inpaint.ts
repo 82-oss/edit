@@ -621,7 +621,9 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
   if (live === null) return;
   const was = pieces.get(id);
   const mine = new Map<string, InpaintPiece>();
-  pieces.set(id, mine);
+  // Every stretch of the plan is in the map before anything is awaited: one still running that the plan keeps stays
+  // wanted (`work`'s check) while the rest are looked at, instead of being thrown away as stopped.
+  const all: { plan: InpaintPlan; from0: number; to0: number; first: number; frames: number; from: number; to: number; key: string; piece: InpaintPiece }[] = [];
   for (const plan of given) {
     const fps = plan.media.fps || 30;
     for (const [from0, to0] of plan.spans) {
@@ -629,51 +631,56 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       if (frames < 2) continue;
       const [from, to] = [first / fps, (first + frames) / fps];
       const key = keyOf(plan.media.id, from, to);
-      const piece: InpaintPiece = was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
+      const piece: InpaintPiece = mine.get(key) ?? was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
       mine.set(key, piece);
-      const beneath = beneathOf(live.project, plan.media.id, from, to);
-      const strips = beneath.strips;
-      const under = underWith(beneath.under, plan.marks ?? [], from, to);
-      const getRange = () => rangeOf(plan.source, from0, to0);
-      // Fast O(1) path: current-version strips never inspect tracks; legacy v2 strips only check the cached y-range (never expanding per-frame masks).
-      if (current(live.project, plan.media.id, from, to, under, getRange)) {
-        piece.state = "done";
-        continue;
-      }
-      if (piece.state === "queued" || piece.state === "running") continue;
-      // Read, and nothing of theirs for the model in it: no card is rented for it, and it keeps its blur.
-      if (getRange() === null) {
-        piece.state = "done";
-        continue;
-      }
-      if (givenUp(app).has(jobKey(plan.source, from, to))) {
-        piece.state = "failed";
-        piece.why ??= "turned down twice: it stays blurred";
-        continue;
-      }
-      if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
-      // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
-      if (watermarks.pending(id, plan.media.id, from, to)) {
-        piece.state = "waiting";
-        continue;
-      }
-      const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
-      if (!stands()) return;
-      if (kept !== null) {
-        piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
-        if (!stands()) return;
-        continue;
-      }
-      // Only expand per-frame masks when we actually need to queue work.
-      const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
-      if (boxes === null) {
-        piece.state = "waiting";
-        continue;
-      }
-      piece.state = "queued";
-      queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
+      all.push({ plan, from0, to0, first, frames, from, to, key, piece });
     }
+  }
+  pieces.set(id, mine);
+  for (const { plan, from0, to0, first, frames, from, to, key, piece } of all) {
+    const fps = plan.media.fps || 30;
+    const beneath = beneathOf(live.project, plan.media.id, from, to);
+    const strips = beneath.strips;
+    const under = underWith(beneath.under, plan.marks ?? [], from, to);
+    const getRange = () => rangeOf(plan.source, from0, to0);
+    // Fast O(1) path: current-version strips never inspect tracks; legacy v2 strips only check the cached y-range (never expanding per-frame masks).
+    if (current(live.project, plan.media.id, from, to, under, getRange)) {
+      piece.state = "done";
+      continue;
+    }
+    if (piece.state === "queued" || piece.state === "running") continue;
+    // Read, and nothing of theirs for the model in it: no card is rented for it, and it keeps its blur.
+    if (getRange() === null) {
+      piece.state = "done";
+      continue;
+    }
+    if (givenUp(app).has(jobKey(plan.source, from, to))) {
+      piece.state = "failed";
+      piece.why ??= "turned down twice: it stays blurred";
+      continue;
+    }
+    if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
+    // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
+    if (watermarks.pending(id, plan.media.id, from, to)) {
+      piece.state = "waiting";
+      continue;
+    }
+    const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
+    if (!stands()) return;
+    if (kept !== null) {
+      piece.state = "done";
+      if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
+      if (!stands()) return;
+      continue;
+    }
+    // Only expand per-frame masks when we actually need to queue work.
+    const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
+    if (boxes === null) {
+      piece.state = "waiting";
+      continue;
+    }
+    piece.state = "queued";
+    queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
   }
   drain();
 }

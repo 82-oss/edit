@@ -330,3 +330,41 @@ test("which stretches the model takes: none where this machine hasn't it; in a v
   inpaint.useCleaner({ clean: async () => ({ ok: false }) });
   expect(inpaintPlan(project, plans).map((one) => one.spans)).toEqual([[[2, 4], [30, 33]]]);
 });
+
+test("a stretch still running when the plan is made again, and kept in it, stays wanted while the rest are looked at (CodeRabbit on #5: it was thrown away as stopped)", async () => {
+  const { app, cleanup } = fixtureHome("text-inpaint-kept-running");
+  try {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let wanted: (() => boolean) | undefined;
+    inpaint.useCleaner({
+      clean: async (request) => {
+        if (wanted === undefined) {
+          wanted = request.wanted;
+          await gate;
+        }
+        return { ok: false, error: "stand-in" };
+      },
+    });
+    const footage = media({ id: "m1", name: "tape.mp4", path: join(app.store.home, "tape.mp4"), kind: "video", duration: 10, width: 64, height: 36, fps: 30 }) as Media;
+    const created = app.store.create("A", { width: 1280, height: 720, fps: 30 }).project as Project;
+    await app.store.update(created.id, "test", (project) => void project.media.push(footage));
+    const masksOf: inpaint.MasksOf = (_s, _f, _t, _fps, _first, frames) => Array.from({ length: frames }, (): Box[] => [[0.1, 0.8, 0.9, 0.9]]);
+    await inpaint.ensure(app, created.id, [{ media: footage, source: "sha256:abc", spans: [[0, 2]] }], masksOf);
+    while (wanted === undefined) await Bun.sleep(1);
+    // Planned again with a new stretch looked at first and the running one kept: while the new one is looked at (its
+    // seconds asked for, before the shelf is read), the running one is still wanted.
+    const seen: boolean[] = [];
+    const rangeOf: inpaint.RangeOf = (_source, from) => {
+      if (from === 4) seen.push(wanted!());
+      return undefined;
+    };
+    await inpaint.ensure(app, created.id, [{ media: footage, source: "sha256:abc", spans: [[4, 6], [0, 2]] }], masksOf, rangeOf);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(Boolean)).toBe(true);
+    release();
+    await inpaint.settled();
+  } finally {
+    cleanup();
+  }
+});

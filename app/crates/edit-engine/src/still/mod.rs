@@ -41,6 +41,12 @@ const AROUND: f64 = 45.0;
 /// spot convincingly where a still picture can only lay a smooth patch (Nov 24, Trooper 12:17-17:05).
 const BLIND: f64 = 0.2;
 const PAD: i64 = 14;
+/// A frame whose visible pixels spread less than this (standard deviation, 0-255) is one flat colour: no room to fit.
+const FLAT: f64 = 6.0;
+/// The most one plate build may hold in its shots' counts (16 levels a pixel, a count and three sums each): a caption
+/// and a note far apart can make the band the whole frame, ~460 MB a shot at 1080p. Shots past it aren't plated, and
+/// their stretches go to the model rather than an 8 GB Mac running out of memory.
+const PLATE_BUDGET: usize = 1 << 30;
 const SIBLING_SAMPLES: f64 = 800.0;
 /// The strip's alpha is feathered at least this much (minimax_worker.py's FEATHER).
 const FEATHER: usize = 5;
@@ -206,13 +212,14 @@ fn round(value: f64) -> i64 {
 // ---------------------------------------------------------------------------
 // FFmpeg
 
-/// Raw RGB frames from an FFmpeg, at background priority.
+/// What the reader thread hands over: a frame, the end of the footage, or why it couldn't read.
+type Read1 = std::io::Result<Option<Rgb>>;
+
+/// Raw RGB frames from an FFmpeg, at background priority. Read on a thread of their own, so an FFmpeg that stays up
+/// writing nothing can't hold the stretch past its time: `next` asks whether to stop while it waits.
 struct Frames {
     child: crate::util::Watched,
-    stdout: ChildStdout,
-    w: usize,
-    h: usize,
-    buffer: Vec<u8>,
+    frames: std::sync::mpsc::Receiver<Read1>,
 }
 
 impl Frames {
@@ -228,13 +235,13 @@ impl Frames {
             .spawn()
             .map_err(|error| format!("ffmpeg is not available ({error}); install FFmpeg"))?;
         let stdout = child.stdout.take().ok_or("ffmpeg gave no output")?;
-        Ok(Self {
-            child: crate::util::Watched::new(child),
-            stdout,
-            w,
-            h,
-            buffer: vec![0; w * h * 3],
-        })
+        let child = crate::util::Watched::new(child);
+        let (send, frames) = std::sync::mpsc::sync_channel::<Read1>(2);
+        std::thread::Builder::new()
+            .name("still frames".to_owned())
+            .spawn(move || read_frames(stdout, w, h, &send))
+            .map_err(|error| format!("reading the footage: {error}"))?;
+        Ok(Self { child, frames })
     }
 
     /// read_frames: the whole picture at `w × h` through `filters`, `extra` before the input.
@@ -308,15 +315,46 @@ impl Frames {
         Self::open(args, w, y1 - y0)
     }
 
-    fn next(&mut self) -> Result<Option<Rgb>, String> {
-        match self.stdout.read_exact(&mut self.buffer) {
+    /// The next frame, or None at the footage's end; stopped (`check`) even while FFmpeg writes nothing.
+    fn next(&mut self, stopped: Stop<'_>) -> Result<Option<Rgb>, String> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            check(stopped)?;
+            match self
+                .frames
+                .recv_timeout(std::time::Duration::from_millis(250))
+            {
+                Ok(Ok(frame)) => return Ok(frame),
+                Ok(Err(error)) => return Err(format!("reading the footage: {error}")),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Ok(None),
+            }
+        }
+    }
+}
+
+/// The reader thread: whole frames off FFmpeg's output until its end, an error, or `Frames` dropped (FFmpeg killed).
+fn read_frames(
+    mut stdout: ChildStdout,
+    w: usize,
+    h: usize,
+    send: &std::sync::mpsc::SyncSender<Read1>,
+) {
+    crate::util::background_thread();
+    let mut buffer = vec![0u8; w * h * 3];
+    loop {
+        let one = match stdout.read_exact(&mut buffer) {
             Ok(()) => Ok(Some(Img {
-                w: self.w,
-                h: self.h,
-                v: self.buffer.as_chunks::<3>().0.to_vec(),
+                w,
+                h,
+                v: buffer.as_chunks::<3>().0.to_vec(),
             })),
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(error) => Err(format!("reading the footage: {error}")),
+            Err(error) => Err(error),
+        };
+        let more = matches!(one, Ok(Some(_)));
+        if send.send(one).is_err() || !more {
+            return;
         }
     }
 }
@@ -748,7 +786,14 @@ fn plate_path(job: &Job) -> PathBuf {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .take(80)
         .collect();
-    Path::new(&job.plates).join(format!("{slug}.v{PLATE_VERSION}.plate"))
+    // FNV-1a of the whole key: two keys that read the same once cleaned ("a_b", "a-b") never share a plate.
+    let digest = job
+        .key
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    Path::new(&job.plates).join(format!("{slug}-{digest:016x}.v{PLATE_VERSION}.plate"))
 }
 
 fn save_plates(
@@ -861,11 +906,14 @@ fn build_plates(
         check(stopped)?;
         let rate = (SIBLING_SAMPLES / seconds).clamp(0.25, 2.0);
         let mut frames = Frames::whole(input, input_args, w, h, &format!("fps={rate:.4},"), &[])?;
+        let last = read.iter().map(|&(_, b)| b - 0.2).fold(f64::MIN, f64::max);
         let mut at = 0usize;
-        while let Some(frame) = frames.next()? {
-            check(stopped)?;
+        while let Some(frame) = frames.next(stopped)? {
             let t = at as f64 / rate;
             at += 1;
+            if t > last {
+                break;
+            }
             if !read.iter().any(|&(a, b)| a + 0.2 <= t && t <= b - 0.2) {
                 continue;
             }
@@ -883,7 +931,11 @@ fn build_plates(
             let small = shrunk(&frame);
             let index = match shots.iter().position(|one| same_shot(&one.small, &small)) {
                 Some(index) => index,
-                None if shots.len() >= 6 => continue,
+                None if shots.len() >= 6
+                    || (shots.len() + 1) * rows * w * 16 * 14 > PLATE_BUDGET =>
+                {
+                    continue
+                }
                 None => {
                     shots.push(Shot::new(small, rows, w));
                     shots.len() - 1
@@ -1135,7 +1187,7 @@ fn stretch_plate(
         &["-ss".to_owned(), format!("{start:.3}")],
     )?;
     let mut at = 0usize;
-    while let Some(frame) = frames.next()? {
+    while let Some(frame) = frames.next(stopped)? {
         check(stopped)?;
         let t = start + at as f64 / rate;
         at += 1;
@@ -1224,8 +1276,8 @@ fn filled(
             }
             let other = other as usize;
             busy.fill(false);
-            for near in other.saturating_sub(2)..(other + 3).min(window.own.len()) {
-                let own = &window.own[near];
+            let around = other.saturating_sub(2)..(other + 3).min(window.own.len());
+            for own in window.own.range(around) {
                 for (k, slot) in busy.iter_mut().enumerate() {
                     *slot |= own.v[index(k % pw, k / pw)];
                 }
@@ -1380,11 +1432,14 @@ fn std_dev(values: impl Iterator<Item = f64> + Clone) -> f64 {
 }
 
 /// A black-and-white stretch of the video (the channel cuts to one and back): its colour channels move together.
+/// A flat frame (the channel's white flash) isn't one: a fit to a single brightness would paint the whole room that
+/// colour and match it perfectly, so it's judged against the room's own picture, and closed up when it isn't the room.
 fn is_gray(frame: &Rgb, free: &Mask) -> bool {
     let picked = picked(frame, free);
     picked.len() >= 100
         && std_dev(picked.iter().map(|px| f64::from(px[0]) - f64::from(px[2]))) < 4.0
         && std_dev(picked.iter().map(|px| f64::from(px[0]) - f64::from(px[1]))) < 4.0
+        && std_dev(picked.iter().map(|px| f64::from(px[1]))) >= FLAT
 }
 
 /// The room's colour picture in this frame's black and white: each channel a straight-line fit of the picture's
@@ -1414,6 +1469,17 @@ fn regraded(picture: &Rgb, frame: &Rgb, free: &Mask) -> Rgb {
         *fit = (gain, my - gain * mx);
     }
     lumas.map(|v| fits.map(|(gain, offset)| (gain * f64::from(v) + offset).clamp(0.0, 255.0) as u8))
+}
+
+/// The fill with what's in front of the room just outside the caption kept (a hand by the words): the feathered edge
+/// lays the fill a few pixels past the mask, and there it's the room's picture, not this frame's.
+fn kept_outside(mut fill: Rgb, frame: &Rgb, mask: &Mask, alpha: &Img<f32>) -> Rgb {
+    for k in 0..fill.v.len() {
+        if !mask.v[k] && alpha.v[k] > 0.0 && diff3(frame.v[k], fill.v[k]) > 60 {
+            fill.v[k] = frame.v[k];
+        }
+    }
+    fill
 }
 
 /// A frame that isn't the room at all (the channel's white flash between two shots): the words closed from what's round them.
@@ -1524,7 +1590,6 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
             .count();
         if in_place as f64 >= 0.9 * caps.len() as f64 {
             let every = found.fps.unwrap_or(fps);
-            let start = round(job.from * every);
             let labels: Vec<&Mark> = found.marks.iter().filter(|m| m.kind == "label").collect();
             // Wholly under the labels up at that frame: any part outside would show once the caption blur comes off.
             let blurred = |b: [f64; 4], at: i64| -> bool {
@@ -1548,7 +1613,7 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
             };
             for (index, boxes) in masks.iter().enumerate() {
                 for &b in boxes {
-                    if !inside(b) && !blurred(b, start + round(index as f64 * every / fps)) {
+                    if !inside(b) && !blurred(b, round((job.from + index as f64 / fps) * every)) {
                         return Ok(not_still("a caption away from the others"));
                     }
                 }
@@ -1598,7 +1663,7 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
             format!("{:.3}", job.from + total as f64 / fps / 2.0),
         ],
     )?
-    .next()?;
+    .next(stopped)?;
     let Some(middle) = middle else {
         return Ok(not_still("no picture"));
     };
@@ -1685,7 +1750,7 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
     while written < total {
         check(stopped)?;
         while next_frame < total && window.frames.len() - (written - off) <= REACH {
-            let Some(frame) = source.next()? else {
+            let Some(frame) = source.next(stopped)? else {
                 total = next_frame;
                 break;
             };
@@ -1734,38 +1799,35 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
             near as f64 / all.max(1) as f64
         };
         let gray_frame = any_free && is_gray(frame, &free);
-        if at % 15 == 0 && any_free {
+        let gray_plate = gray_frame.then(|| regraded(&plate, frame, &free));
+        let room_share = || on_room(gray_plate.as_ref().unwrap_or(&plate));
+        if written % 15 == 0 && any_free {
             checked += 1;
-            let share = if gray_frame {
-                on_room(&regraded(&plate, frame, &free))
-            } else {
-                on_room(&plate)
-            };
-            if share < ON_PLATE {
+            if room_share() < ON_PLATE {
                 off_looks += 1;
             }
         }
         match &marks[at] {
             Some(m) if m.any() => {
-                let fill = if gray_frame {
-                    let (plate, nearby, real) = (
-                        regraded(&plate, frame, &free),
+                let fill = if any_free && room_share() < 0.3 {
+                    closed_up(frame, m)
+                } else if let Some(plate) = &gray_plate {
+                    let (nearby, real) = (
                         regraded(&nearby, frame, &free),
                         regraded(&real, frame, &free),
                     );
                     let pictures = Pictures {
-                        plate: &plate,
+                        plate,
                         nearby: &nearby,
                         real: &real,
                         ..pictures
                     };
                     filled(frame, &pictures, m, scale, &window, at, &mut blind)
-                } else if any_free && on_room(&plate) < 0.3 {
-                    closed_up(frame, m)
                 } else {
                     filled(frame, &pictures, m, scale, &window, at, &mut blind)
                 };
-                strip.write(Some((&fill, &pixels::alpha_of(m, feather))))?;
+                let alpha = pixels::alpha_of(m, feather);
+                strip.write(Some((&kept_outside(fill, frame, m, &alpha), &alpha)))?;
             }
             _ => strip.write(None)?,
         }
@@ -1776,10 +1838,6 @@ pub fn clean(job: &Job, stopped: Stop<'_>) -> Result<Value, String> {
             marks.pop_front();
             off += 1;
         }
-    }
-    while written < wanted {
-        strip.write(None)?;
-        written += 1;
     }
     drop(source);
     // Boxes with no letters we can see in most of their frames: a style this doesn't know, for the model.

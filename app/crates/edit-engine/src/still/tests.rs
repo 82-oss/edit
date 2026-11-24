@@ -274,7 +274,10 @@ fn stretches_it_wont_clean_say_why_before_reading_any_footage() {
     );
     // Stopped: an error, and nothing written.
     let job = a_job(&dir, vec![words], Vec::new(), Value::Array(captions));
-    assert!(clean(&job, &|| true).is_err());
+    assert_eq!(
+        clean(&job, &|| true).unwrap_err(),
+        "the still clean was stopped"
+    );
     assert!(!dir.join("strip.mp4").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -297,5 +300,46 @@ fn a_kept_plate_reads_back_and_another_version_does_not() {
     bytes[0] = 9;
     std::fs::write(&path, bytes).unwrap();
     assert_eq!(load_plates(&path, 8), None, "another version");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn luma_is_opencvs_to_the_level() {
+    // cv2.cvtColor(RGB2GRAY) on OpenCV 4.x: 15-bit coefficients. A saturated blue is where 14 bits came out a level high.
+    assert_eq!(pixels::luma([0, 0, 250]), 28);
+    assert_eq!(pixels::luma([250, 0, 0]), 75);
+    assert_eq!(pixels::luma([0, 250, 0]), 147);
+    assert_eq!(pixels::luma([128, 128, 128]), 128);
+}
+
+#[test]
+fn a_flat_frame_is_no_black_and_white_room() {
+    let free = Img::filled(200, 100, true);
+    assert!(
+        !is_gray(&Img::filled(200, 100, [250, 250, 250]), &free),
+        "a white flash"
+    );
+    let room = Img {
+        w: 200,
+        h: 100,
+        v: (0..20_000)
+            .map(|k| {
+                let v = (k * 37 % 200) as u8;
+                [v, v, v]
+            })
+            .collect(),
+    };
+    assert!(is_gray(&room, &free));
+}
+
+#[test]
+fn keys_that_clean_the_same_keep_their_own_plates() {
+    let dir = std::env::temp_dir().join(format!("edit-still-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut one = a_job(&dir, Vec::new(), Vec::new(), Value::Array(Vec::new()));
+    let mut other = one.clone();
+    one.key = "youtube:aBcDeFgHi_A".to_owned();
+    other.key = "youtube:aBcDeFgHi-A".to_owned();
+    assert_ne!(plate_path(&one), plate_path(&other));
     let _ = std::fs::remove_dir_all(&dir);
 }

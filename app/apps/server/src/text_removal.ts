@@ -388,8 +388,23 @@ export function theirsTakenOut(app: App, project: Project, one: Pick<burned.Show
   const fps = fpsOf(project);
   const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
   const span: [number, number] = [at(one.start), at(one.end)];
-  const covered = asks.scope(lessonOf(project), app.store.home, project.id, "subtitles", clip.media, [span]);
+  let covered = asks.scope(lessonOf(project), app.store.home, project.id, "subtitles", clip.media, [span]);
+  // With no finder here and a channel that blurs only what's marked (`wantedOf`), only marked seconds are taken out.
+  if (!found.available() && marksOnly(project)) covered = sections.intersect(covered, markedOf(app, project, clip.media));
   return sections.minus([span], covered).every(([a, b]) => b - a < 0.05);
+}
+
+/** `media`'s marked seconds as `wantedOf` blurs them with no finder: the agent's marks, and detection's proposals when it took them all. */
+function markedOf(app: App, project: Project, media: string): [number, number][] {
+  const shots = shownSeconds(project, true);
+  const grow = (id: string, spans: [number, number][]) => shotsOf(spans, shots.get(id) ?? []);
+  const proposals = new Map<string, [number, number][]>();
+  const one = project.media.find((own) => own.id === media);
+  if (one !== undefined && asks.marksProposed(app.store.home, project.id)) {
+    const spans = textOf(one, cameraFromReads(one, null), inForceOf(app, project));
+    if (spans !== undefined) proposals.set(media, spans);
+  }
+  return asks.marked(app.store.home, project.id, proposals, grow).get(media) ?? [];
 }
 
 /** The lesson as it applies to `project` now (its parts that run by themselves, and those asked for: removal_asks.ts). */
@@ -633,6 +648,37 @@ export function inpaintPlan(project: Project, plans: blur.BlurPlan[]): inpaint.I
   });
 }
 
+/**
+ * The model's stretches cut to where their subtitles are still taken out. After the person stops their subtitles, their
+ * text can go on over the same seconds (a label, a note), and a finder's stretch there holds the stopped captions too,
+ * which the model would clean with it (CodeRabbit on #5). Where a stretch reaches past what's asked of their subtitles,
+ * only seconds with no subtitle of theirs go to the model; the rest keep their blur. A file the finder hasn't read
+ * (its stretches the agent's marks, each part to its own seconds already) is left as it is.
+ */
+export function subtitlesAsked(plans: inpaint.InpaintPlan[], subtitlesWithin: (media: string, spans: [number, number][]) => [number, number][], foundOf: (source: string) => found.Found | null): inpaint.InpaintPlan[] {
+  return plans.flatMap((plan) => {
+    const read = foundOf(plan.source);
+    if (read === null) return [plan];
+    const fps = read.fps > 0 ? read.fps : 30;
+    const subtitled = merged(read.masks.filter((mask) => mask[6] === "subtitle").map((mask): [number, number] => [mask[0] / fps, (mask[1] + 1) / fps]));
+    const asked = subtitlesWithin(plan.media.id, plan.spans);
+    const spans = plan.spans.flatMap((span): [number, number][] => {
+      const beyond = sections.minus([span], asked).filter(([a, b]) => b - a >= 0.05);
+      if (beyond.length === 0) return [span];
+      return merged([...sections.intersect([span], asked), ...sections.minus(beyond, subtitled)]).filter(([a, b]) => b - a >= 0.05);
+    });
+    return spans.length === 0 ? [] : [{ ...plan, spans }];
+  });
+}
+
+/** `subtitlesAsked` for `project` now: what its lesson and asks take out of their subtitles, with this machine's finder results. */
+function modelPlan(app: App, project: Project, plans: blur.BlurPlan[]): inpaint.InpaintPlan[] {
+  const cleaned = inpaintPlan(project, plans);
+  const taught = lessonOf(project);
+  if (!removal.kinds(inForceOf(app, project)).blur.includes("subtitles")) return cleaned;
+  return subtitlesAsked(cleaned, (media, spans) => asks.scope(taught, app.store.home, project.id, "subtitles", media, spans), (source) => found.foundOf(app, source));
+}
+
 /** Brings `id`'s tracked blurs, and where this machine has the model its cleaned stretches, up to what's marked now (removal_schedule.ts calls it as soon as edits rest). */
 export async function ensure(app: App, id: string): Promise<void> {
   // A Stop of their text while this plans: nothing from the plan (it was made before it).
@@ -644,9 +690,14 @@ export async function ensure(app: App, id: string): Promise<void> {
   if (live === null) return;
   const taken = removal.kinds(inForceOf(app, live.project)).blur.length > 0;
   // The files not read by the finder yet are read in the background (`whenFound` plans again as each is done).
-  if (taken && found.available()) found.ensure(app, id, await findWants(live.project));
+  if (taken && found.available()) {
+    const wants = await findWants(live.project);
+    // Stopped while it worked out what to read: no finder work for it.
+    if (!current()) return;
+    found.ensure(app, id, wants);
+  }
   const plans = taken ? await blurPlan(app, live.project) : [];
-  const cleaned = inpaintPlan(live.project, plans);
+  const cleaned = modelPlan(app, live.project, plans);
   if (!current()) return;
   if (taken && found.available()) await dropStale(app, id, plans, cleaned);
   if (!current()) return;
@@ -779,7 +830,7 @@ blur.whenTracked.push((app, id) => {
     const live = app.store.get(id);
     if (live === null) return;
     const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
-    const cleaned = inpaintPlan(live.project, plans);
+    const cleaned = modelPlan(app, live.project, plans);
     await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
   })()
     .catch(() => {})
