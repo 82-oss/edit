@@ -23,6 +23,7 @@ import * as lanes from "../lanes.ts";
 import { empty, json } from "../http/errors.ts";
 import { readJson, type Router } from "../http/router.ts";
 import { native } from "../native/index.ts";
+import * as otherProjects from "../other_projects.ts";
 import { join, parent } from "../paths.ts";
 import * as research from "../research.ts";
 import * as youtube from "../youtube.ts";
@@ -70,7 +71,8 @@ export const TOOLS_NOTE = `TOOLS. Before your answer you can use these tools; th
 - search_web, read_page: research on the web: news reports, court records, the case's facts and dates.
 - search_youtube, read_youtube: find videos on YouTube and read what's said in them (their captions), e.g. another channel's video on this case ("Red File Stephanie Lazarus") to see which details they give their viewers. Use the facts that hold up; never copy their wording. Bringing footage into the script is the footage search's job, not yours.
 - find_images: pictures of the case (its people, places, evidence, documents, news photos), shown to you as a numbered sheet with each one's link and page. The editor places pictures: each picture worth showing goes on the script as a note for the editor on the words it belongs under: "edit: show this photo of Sherri Rasmussen <image link> (from <page link>)". Only pictures of this case (their page is about it) and never stock. A reviewer asking for assets, images or visuals is asking for these notes, as many as the script can use, spread through it.
-A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).`;
+A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.
+- other_projects: another of the team's scripts or edits on this computer, when the producer points you at one ("do it like I told you on the Kimberly script", "the same as the Trooper edit"): what they asked for in its chat, with the answer each got, and the script itself. Take from it what they pointed you at and do it here; never say you can't see other scripts.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).`;
 
 type Args = Record<string, unknown>;
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -89,14 +91,14 @@ export function routes(router: Router<App>): void {
   router.post("/mcp/writer-turn/{token}", async (context) => {
     const token = context.params.token ?? "";
     const body = await readJson<unknown>(context);
-    const answers = (await Promise.all((Array.isArray(body) ? body : [body]).map((message) => answerTo(token, message)))).filter((one) => one !== null);
+    const answers = (await Promise.all((Array.isArray(body) ? body : [body]).map((message) => answerTo(token, message, context.app)))).filter((one) => one !== null);
     if (answers.length === 0) return empty(202);
     return json(Array.isArray(body) ? answers : answers[0]);
   });
 }
 
 /** One JSON-RPC message to a turn's tools, answered (null for a notification). */
-export async function answerTo(token: string, message: unknown): Promise<unknown> {
+export async function answerTo(token: string, message: unknown, app?: App): Promise<unknown> {
   if (typeof message !== "object" || message === null) return null;
   const { id, method, params } = message as { id?: unknown; method?: unknown; params?: Record<string, unknown> };
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
@@ -108,13 +110,13 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: session.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("script")] });
+      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: toolsOf(session) });
     case "tools/call": {
       if (session === undefined) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
       const args = (typeof params?.arguments === "object" && params.arguments !== null ? params.arguments : {}) as Args;
       try {
-        return reply({ content: await call(session, name, args) });
+        return reply({ content: await call(session, name, args, app) });
       } catch (error) {
         diag.warn("writer", `${session.id}: ${name} failed: ${diag.messageOf(error)}`);
         return reply({ content: [{ type: "text", text: diag.messageOf(error) }], isError: true });
@@ -130,8 +132,23 @@ const str = (value: unknown): string | null => (typeof value === "string" && val
 const count = (value: unknown, fallback: number, low: number, high: number): number => (typeof value === "number" && Number.isFinite(value) ? Math.min(Math.max(Math.round(value), low), high) : fallback);
 const homeOf = (session: Session): string => parent(session.data) ?? session.data;
 
-async function call(session: Session, name: string, args: Args): Promise<Content[]> {
+/**
+ * The tools a turn has. A turn fixing a review's notes (`given`: the notes a
+ * Ready for changes took) has no other_projects: it's driven by whoever holds
+ * the review link, so it reads this script alone (review_guard.ts, the edit's).
+ */
+function toolsOf(session: Session): unknown[] {
+  // Read here, not when this file loads: other_projects.ts reads revise.ts, which reads this file.
+  const own = session.given === null ? [...TOOLS, { name: "other_projects", description: otherProjects.DESCRIPTION, inputSchema: otherProjects.INPUT_SCHEMA }] : TOOLS;
+  return session.place === null ? own : [...own, ...lanes.toolsFor("script")];
+}
+
+async function call(session: Session, name: string, args: Args, app?: App): Promise<Content[]> {
   switch (name) {
+    case "other_projects":
+      if (session.given !== null) throw new Error("A turn fixing the review's notes works on this script alone: other_projects isn't here.");
+      if (app === undefined) throw new Error("other_projects isn't available here.");
+      return said(otherProjects.answer(app.store, args, session.id, "script"));
     case "pull_feedback":
       return said(args.done === true ? await doneFeedback(session) : await pullFeedback(session));
     case "search_web": {

@@ -863,7 +863,7 @@ export async function revise(dir: string, script: Script, request: string, lesso
 }
 
 /** The draft as a plan, each paragraph with its id. */
-function planWithIds(draft: Draft): Record<string, unknown> {
+export function planWithIds(draft: Draft): Record<string, unknown> {
   const plan = planOf(draft);
   (plan.sections as { paragraphs: Record<string, unknown>[] }[]).forEach((section, s) => section.paragraphs.forEach((item, p) => (item.id = draft.sections[s]!.paragraphs[p]!.id)));
   return plan;
