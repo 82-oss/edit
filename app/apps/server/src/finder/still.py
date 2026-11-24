@@ -28,7 +28,7 @@ REACH = 60
 # Frames each hidden pixel is voted on from: a pad or a hand passing through for a moment is outvoted by the room.
 SAMPLES = 5
 PAD = 14
-SIBLING_SAMPLES = 70
+SIBLING_SAMPLES = 800
 
 
 def read_frames(ffmpeg, input, args, W, H, filters, extra=()):
@@ -57,6 +57,8 @@ class Shot:
         self.counts = np.zeros((16, rows, W), np.uint16)
         self.sums = np.zeros((16, rows, W, 3), np.uint32)
         self.seen = 0
+        # Real frames of this shot with no caption in their place: the room with its grain, where the plate is an average.
+        self.real = []
 
     def add(self, band, skip):
         level = (band.mean(axis=2) / 16).astype(np.uint8).clip(0, 15)
@@ -78,6 +80,17 @@ class Shot:
             out = cv2.inpaint(out, (n == 0).astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
         return out
 
+    def keep(self, band):
+        self.real.append(band.copy())
+        if len(self.real) >= 24:
+            self.real = self.real[::2]
+
+    def real_frame(self, plate):
+        """The kept frame nearest the plate: the fewest people out of their usual place."""
+        if not self.real:
+            return plate
+        return min(self.real, key=lambda one: float(np.abs(one.astype(np.int16) - plate.astype(np.int16)).mean()))
+
     def sure(self):
         """How much of what each pixel showed was the plate's value (0-255): low where someone sat part of the time."""
         best = self.counts.argmax(axis=0)
@@ -93,6 +106,21 @@ def caps_of(found):
     return [m for m in found["masks"] if m[6] in ("subtitle", "note")]
 
 
+def place_of(caps):
+    """Where a file's captions come up (most of them), or None with too few to tell."""
+    if len(caps) < 5:
+        return None
+    return [int(np.percentile([m[2] for m in caps], 2)), int(np.percentile([m[3] for m in caps], 2)), int(np.percentile([m[4] for m in caps], 98)), int(np.percentile([m[5] for m in caps], 98))]
+
+
+def captioned(frame, place):
+    """Whether a caption's plate or shadow is in its place in this frame, read or not: near-black there. A line the finder
+    missed would otherwise win the few looks that spot gets between captions and be laid back in as the room (Nov 24,
+    Trooper: one sentence over 17 minutes)."""
+    x0, y0, x1, y1 = place
+    return float((cv2.cvtColor(np.ascontiguousarray(frame[y0:y1, x0:x1]), cv2.COLOR_RGB2GRAY) < 40).mean()) >= 0.015
+
+
 def same_shot(a, b):
     """Most of a still room's pixels stay put whoever moves in it: the median difference, not the mean."""
     return float(np.median(np.abs(a - b))) < SAME_SHOT
@@ -104,10 +132,10 @@ def build_plates(job, found, again=False):
     W, H = int(job["width"]), int(job["height"])
     key = hashlib.sha256(job["key"].encode()).hexdigest()[:24]
     os.makedirs(job["plates"], exist_ok=True)
-    path = os.path.join(job["plates"], f"{key}.v4.npz")
+    path = os.path.join(job["plates"], f"{key}.v8.npz")
     if os.path.exists(path) and not again:
         data = np.load(path)
-        return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"]) for i in range(int(data["n"]))]
+        return (int(data["y0"]), int(data["y1"])), [(data[f"s{i}"], data[f"p{i}"], data[f"c{i}"], data[f"r{i}"]) for i in range(int(data["n"]))]
     files = [{"input": job["input"], "input_args": job.get("input_args", []), "found": found}]
     for other in job.get("also", [])[:24]:
         try:
@@ -120,7 +148,7 @@ def build_plates(job, found, again=False):
     y0, y1 = max(0, min(m[3] for m in all_caps) - 40), min(H, max(m[5] for m in all_caps) + 40)
     shots = []
 
-    def place(frame, skip):
+    def place(frame, skip, clear):
         small = cv2.resize(frame, SMALL, interpolation=cv2.INTER_AREA).astype(np.int16)
         best = next((one for one in shots if same_shot(one.small, small)), None)
         if best is None:
@@ -129,16 +157,14 @@ def build_plates(job, found, again=False):
             best = Shot(small, y1 - y0, W)
             shots.append(best)
         best.add(frame[y0:y1], skip)
+        if clear:
+            best.keep(frame[y0:y1])
 
     for one in files:
         read = one["found"].get("covered") or []
         fps = one["found"].get("fps") or 30
         caps = caps_of(one["found"])
-        # Where this file's captions come up. A line the finder missed there would otherwise win the few looks that spot
-        # gets between captions, and be laid back in as the room (Nov 24, Trooper: one sentence over 17 minutes).
-        place_box = None
-        if len(caps) >= 5:
-            place_box = [float(np.percentile([m[2] for m in caps], 2)), float(np.percentile([m[3] for m in caps], 2)), float(np.percentile([m[4] for m in caps], 98)), float(np.percentile([m[5] for m in caps], 98))]
+        where = place_of(caps)
         seconds = sum(b - a for a, b in read)
         if seconds <= 0:
             continue
@@ -152,14 +178,17 @@ def build_plates(job, found, again=False):
             for m in caps:
                 if m[0] - 6 <= here <= m[1] + 6:
                     skip[max(0, m[3] - y0 - PAD):max(0, m[5] - y0 + PAD), max(0, m[2] - PAD):m[4] + PAD] = True
-            if place_box is not None:
-                # Letters anywhere in that place: none of it is the room this time (their black plate's corners included).
-                if letters(frame[y0:y1], [place_box], y0, H / 1080)[0].any():
-                    skip[max(0, int(place_box[1]) - y0 - PAD):max(0, int(place_box[3]) - y0 + PAD), max(0, int(place_box[0]) - PAD):int(place_box[2]) + PAD] = True
-            place(frame, skip)
-    out = [(one.small.astype(np.uint8), one.plate(), one.sure()) for one in shots if one.seen >= 8]
+            busy = where is not None and captioned(frame, where)
+            if busy:
+                skip[max(0, where[1] - y0 - PAD):max(0, where[3] - y0 + PAD), max(0, where[0] - PAD):where[2] + PAD] = True
+            place(frame, skip, where is not None and not busy and not any(m[0] - 6 <= here <= m[1] + 6 for m in caps))
+    out = []
+    for one in shots:
+        if one.seen >= 8:
+            picture = one.plate()
+            out.append((one.small.astype(np.uint8), picture, one.sure(), one.real_frame(picture)))
     tmp = f"{path}.{os.getpid()}.npz"
-    np.savez_compressed(tmp, y0=y0, y1=y1, n=len(out), **{f"s{i}": one[0] for i, one in enumerate(out)}, **{f"p{i}": one[1] for i, one in enumerate(out)}, **{f"c{i}": one[2] for i, one in enumerate(out)})
+    np.savez_compressed(tmp, y0=y0, y1=y1, n=len(out), **{f"s{i}": one[0] for i, one in enumerate(out)}, **{f"p{i}": one[1] for i, one in enumerate(out)}, **{f"c{i}": one[2] for i, one in enumerate(out)}, **{f"r{i}": one[3] for i, one in enumerate(out)})
     os.replace(tmp, path)
     return (y0, y1), out
 
@@ -234,18 +263,22 @@ def letters(frame, boxes, y0, scale):
 def stretch_plate(job, masks, total, W, H, y0, y1, fps):
     """The commonest picture of this stretch alone, captions left out: what's on the table now (a card put down halfway
     through the video isn't on the whole video's plate). (picture, the pixels it saw)."""
-    step = max(1, total // 48)
+    step = max(1, total // 96)
+    where = place_of(caps_of(json.load(open(job["found"]))))
     shot = Shot(np.zeros(1), y1 - y0, W)
     for at, frame in enumerate(read_frames(job["ffmpeg"], job["input"], job.get("input_args", []), W, H, f"fps={fps / step:.6f},", ("-ss", f"{float(job['from']):.3f}"))):
         index = at * step
         if index >= total:
             break
         near = [one for i in range(max(0, index - 6), min(total, index + 7)) for one in masks[i]]
-        shot.add(frame[y0:y1], solid(near, y0, y1 - y0, W))
-    return shot.plate(False), shot.counts.sum(axis=0) > 0
+        skip = solid(near, y0, y1 - y0, W)
+        if where is not None and captioned(frame, where):
+            skip[max(0, where[1] - y0 - PAD):max(0, where[3] - y0 + PAD), max(0, where[0] - PAD):where[2] + PAD] = True
+        shot.add(frame[y0:y1], skip)
+    return shot.plate(False), shot.counts.sum(axis=0) >= 2
 
 
-def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, seen):
+def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, seen, real):
     """What goes under the mask: each pixel voted on by the nearest frames with no caption on it, so a person stays as
     they are and something that only passed through doesn't land there; failing that, this stretch's own picture, then
     the room's where it can be trusted; what's left is closed from around it."""
@@ -273,11 +306,20 @@ def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, s
             break
     known = seen[c:d, a:b]
     patch[want & known] = nearby[c:d, a:b][want & known]
+    # An average has no grain and shows as a smooth patch on carpet: a real frame's pixels wherever they agree with it.
+    sharp = real[c:d, a:b]
+    agrees = np.abs(sharp.astype(np.int16) - patch.astype(np.int16)).sum(axis=2) < 60
+    patch[want & agrees] = sharp[want & agrees]
     for many in range(1, SAMPLES + 1):
         # One or two frames are a poor vote: this stretch's own picture is better, where it saw the spot.
         here = want & (count == many) & (~known if many < 3 else True)
         if here.any():
-            patch[here] = np.median(votes[:many, here], axis=0).astype(np.uint8)
+            voted = np.median(votes[:many, here], axis=0).astype(np.uint8)
+            # The nearest frame's own pixel where it agrees with the vote: the same picture, with its grain.
+            first = votes[0, here]
+            close = np.abs(first.astype(np.int16) - voted.astype(np.int16)).sum(axis=1) < 45
+            voted[close] = first[close]
+            patch[here] = voted
     # Something this stretch's picture has that the room's doesn't (the pad, held up for most of it), and that the part of
     # it we can see now shows isn't there any more: the room goes in its place. Wholly hidden, it stays (a card on the table)
     # unless that spot is nearly always plain room.
@@ -297,15 +339,13 @@ def filled(frame, plate, trust, certain, mask, scale, window, own, at, nearby, s
         back = want & gone[parts]
         patch[back] = room[back]
     left = want & (count == 0) & ~known
-    # A line or a speck one frame had (a caption's edge as it slid in) is put right from what's round it.
-    smooth = cv2.medianBlur(patch, 5)
-    odd = (np.abs(patch.astype(np.int16) - smooth.astype(np.int16)).sum(axis=2) > 60) & (holes[c:d, a:b] > 0)
+    # No frame of these seconds shows it: the room as a clear frame had it, never a smooth guess from around it.
+    patch[left] = sharp[left]
+    # A line or a speck one frame had (a caption's edge as it slid in, a dotted edge of someone's shoe in the room's picture)
+    # is put right from what's round it.
+    smooth = cv2.medianBlur(patch, 9)
+    odd = (np.abs(patch.astype(np.int16) - smooth.astype(np.int16)).sum(axis=2) > 60) & want
     patch[odd] = smooth[odd]
-    unsure = left & ~trust[c:d, a:b]
-    if unsure.any():
-        wider = cv2.dilate(holes[c:d, a:b], cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (grow * 2 + 1, grow * 2 + 1)))
-        closed = cv2.inpaint(np.ascontiguousarray(frame[c:d, a:b]), wider * 255, 3, cv2.INPAINT_TELEA)
-        patch[unsure] = closed[unsure]
     return out
 
 
@@ -344,7 +384,16 @@ def solid(boxes, y0, rows, W):
 
 def clean(job):
     W, H, fps = int(job["width"]), int(job["height"]), float(job["fps"])
+    found = json.load(open(job["found"]))
     masks = job["masks"]
+    # A box far from where this file's captions come up is a title or a screen read as one: left alone, and the strip
+    # stays the height of the captions.
+    caps = caps_of(found)
+    where = place_of(caps)
+    if where is not None:
+        inside = lambda box: where[0] - 40 <= (box[0] + box[2]) / 2 <= where[2] + 40 and where[1] - 40 <= (box[1] + box[3]) / 2 <= where[3] + 40
+        if sum(inside(m[2:6]) for m in caps) >= 0.9 * len(caps):
+            masks = [[box for box in boxes if inside(box)] for boxes in masks]
     total = len(masks)
     band = worker.band_of(masks, W, H)
     if band is None:
@@ -352,7 +401,6 @@ def clean(job):
     y0, y1 = band
     rows = y1 - y0
     scale = H / 1080
-    found = json.load(open(job["found"]))
     span, shots = build_plates(job, found)
     # A plate made before this file was read may stop short of its captions: made again with what's known now.
     words = [one for frame_boxes in masks for one in frame_boxes]
@@ -370,7 +418,7 @@ def clean(job):
         if middle is None:
             return {"still": False, "why": "no picture"}
         small = cv2.resize(middle, SMALL, interpolation=cv2.INTER_AREA).astype(np.int16)
-        ref, whole, sure = min(shots, key=lambda one: float(np.median(np.abs(one[0].astype(np.int16) - small))))
+        ref, whole, sure, grain = min(shots, key=lambda one: float(np.median(np.abs(one[0].astype(np.int16) - small))))
         if not same_shot(ref.astype(np.int16), small):
             return {"still": False, "why": "another shot"}
         # The plate, on the stretch's rows (rows it doesn't reach hold no caption: checked above).
@@ -378,6 +426,8 @@ def clean(job):
         top, bottom = max(y0, span[0]), min(y1, span[1])
         # A pixel's commonest value can differ from its neighbour's by a whole step: a line or a speck here and there.
         plate[top - y0:bottom - y0] = cv2.medianBlur(whole, 5)[top - span[0]:bottom - span[0]]
+        real = plate.copy()
+        real[top - y0:bottom - y0] = cv2.medianBlur(grain, 5)[top - span[0]:bottom - span[0]]
         known = np.zeros((rows, W), bool)
         known[top - y0:bottom - y0] = True
         trust = np.zeros((rows, W), bool)
@@ -423,11 +473,11 @@ def clean(job):
                 free = known & ~own[at]
                 gray = free.any() and is_gray(frame, free)
                 if gray:
-                    fill = filled(frame, regraded(plate, frame, free), trust, certain, m, scale, window, own, at, regraded(nearby, frame, free), seen)
+                    fill = filled(frame, regraded(plate, frame, free), trust, certain, m, scale, window, own, at, regraded(nearby, frame, free), seen, regraded(real, frame, free))
                 elif free.any() and float((np.abs(frame.astype(np.int16) - plate.astype(np.int16)).sum(axis=2)[free] < 45).mean()) < 0.3:
                     fill = closed_up(frame, m)
                 else:
-                    fill = filled(frame, plate, trust, certain, m, scale, window, own, at, nearby, seen)
+                    fill = filled(frame, plate, trust, certain, m, scale, window, own, at, nearby, seen, real)
                 strip.write(fill, worker.alpha_of(m, max(worker.FEATHER, int(round(9 * scale)))))
             written += 1
             if written - off > REACH:
