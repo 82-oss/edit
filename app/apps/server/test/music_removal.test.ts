@@ -171,6 +171,36 @@ test("an overlay following the footage with its own sound linked to it is cut an
   expect(after.find((one) => one.track === "v2")!.parent).toBe("pic");
 });
 
+test("words revealed on an overlay stay up across the cut, and its parts join again on undo", () => {
+  const project = edit();
+  const picture = project.clips.find((one) => one.id === "pic")!;
+  const v2 = structuredClone(project.tracks.find((one) => one.id === picture.track)!);
+  v2.id = "v2";
+  project.tracks.push(v2);
+  project.clips.push(
+    clip({
+      id: "said",
+      type: "text",
+      track: "v2",
+      start: 270,
+      duration: 120,
+      parent: "pic",
+      text: "one two three four",
+      style: { font: "Geist", weight: 700, size: 96, color: [1, 1, 1, 1], tracking: 0, line_height: 1.15 },
+      transform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      animation: { preset: "words", duration: 12, stagger: 1.5 },
+      opacity: 1,
+      word_times: [0, 20, 40],
+    } as never),
+  );
+  applyBringBack(project, 300, 330, 6, false);
+  const parts = project.clips.filter((one) => one.track === "v2").sort((a, b) => a.start - b.start) as Extract<Clip, { type: "text" }>[];
+  expect(parts.map((one) => [one.start, one.word_times])).toEqual([[270, [0, 20, 40]], [300, [-30, -10, 10, -25.5]], [330, [-60, -40, -20, -55.5]]]);
+  applyBringBack(project, 300, 330, 6, true);
+  const joined = project.clips.filter((one) => one.track === "v2") as Extract<Clip, { type: "text" }>[];
+  expect(joined.map((one) => [one.start, one.duration, one.word_times])).toEqual([[270, 120, [0, 20, 40]]]);
+});
+
 test("a muted track is never paid for", () => {
   const project = edit();
   project.tracks.find((track) => track.kind === "audio")!.muted = true;

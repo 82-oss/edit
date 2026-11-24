@@ -353,6 +353,8 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
     }
     if (right.type === "video" || right.type === "audio") right.source_in += (offset / rate) * right.speed;
     for (const keys of Object.values(right.keyframes ?? {})) for (const key of keys) key.frame -= offset;
+    // Words said so far stay up: their times count from the clip's start (a word before it shows from the first frame).
+    if (right.type === "text" && (right.animation.preset === "words" || right.animation.preset === "word")) right.word_times = wordTimes(right).map((time) => time - offset);
     one.duration = offset;
     one.fade_out = 0;
     project.clips.push(right);
@@ -363,6 +365,13 @@ function splitLinked(project: Project, clip: Clip, frame: number): void {
   }
 }
 
+/** When each word of a text clip appears (frames from its start), as the engine reads them: its own times, then one per `stagger`. */
+function wordTimes(clip: Extract<Clip, { type: "text" }>): number[] {
+  const words = clip.text.split(/\s+/u).filter((word) => word.length > 0).length;
+  const given = clip.word_times ?? [];
+  return Array.from({ length: Math.max(words, given.length) }, (_, index) => given[index] ?? index * Math.max(clip.animation.stagger, 0));
+}
+
 /** Whether `after` plays on from `before` in the same source (a split, not a real cut). */
 function continues(project: Project, before: AudioClip, after: AudioClip): boolean {
   if (before.track !== after.track || clipEnd(before) !== after.start || before.speed !== after.speed) return false;
@@ -370,7 +379,7 @@ function continues(project: Project, before: AudioClip, after: AudioClip): boole
 }
 
 /** What differs between the two halves of a split: everything else (a level, a side, a crop, a look) must match to join them. */
-const SEAM_FIELDS = new Set(["id", "start", "duration", "link", "source_in", "fade_in", "fade_out", "keyframes", "room", "crossfade"]);
+const SEAM_FIELDS = new Set(["id", "start", "duration", "link", "source_in", "fade_in", "fade_out", "keyframes", "room", "crossfade", "word_times"]);
 const playback = (clip: Clip) => stableStringify(Object.fromEntries(Object.entries(clip).filter(([key]) => !SEAM_FIELDS.has(key))));
 
 /** Whether `after` is the same take carrying on from `before`, nothing to tell them apart at the seam. */
@@ -384,6 +393,13 @@ function sameTake(project: Project, before: Clip, after: Clip): boolean {
   )
     return false;
   if (after.type === "audio" && (after.crossfade ?? 0) !== 0) return false;
+  // A split leaves the words' times shifted back on the right, as its keys.
+  if (before.type === "text" && after.type === "text") {
+    const same = (a: number[], b: number[]) => a.length === b.length && a.every((time, index) => Math.abs(time - b[index]! - before.duration) < 1e-6);
+    const words = before.animation.preset === "words" || before.animation.preset === "word";
+    // Times only the words presets read are shifted by a split; any others are left as they were.
+    if (words ? !same(wordTimes(before), wordTimes(after)) : JSON.stringify(before.word_times ?? []) !== JSON.stringify(after.word_times ?? [])) return false;
+  }
   // A split leaves both halves the same keys, the right one's shifted back.
   const shifted = Object.fromEntries(Object.entries(after.keyframes ?? {}).map(([param, keys]) => [param, keys.map((key) => ({ ...key, frame: key.frame + before.duration }))]));
   return JSON.stringify(shifted) === JSON.stringify(before.keyframes ?? {});
