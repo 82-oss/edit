@@ -224,6 +224,14 @@ async function mayTouch(access: Access, op: "read" | "write", key: string): Prom
   if (project !== null) await mayOpen(access, project);
 }
 
+/**
+ * The same read check as a presigned GET (Forbidden or Upstream when not): remover.ts asks it of every key a job's
+ * machine is given a signed URL for (Nov 24: a find or clean job's input was held only to its shape).
+ */
+export async function mayRead(found: Caller, env: CloudEnv, key: string): Promise<void> {
+  await mayTouch({ found, env }, "read", key);
+}
+
 /** Projects' summaries as the cloud last said, briefly: a project's files (its chat, covers, research) are presigned many times a minute. */
 const projectSummaries = new Map<string, { summary: unknown; at: number }>();
 const PROJECT_SUMMARY_MS = 30_000;

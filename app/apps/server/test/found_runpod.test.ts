@@ -69,7 +69,8 @@ test("finishSurvey keeps labels/roamers on overlay or unclear, unsure/one-offs o
   expect(result.covered).toEqual([[0, 10]]);
   // Base subtitles (clamped, degenerate dropped)
   expect(result.masks).toContainEqual([10, 40, 500, 900, 1400, 980, "subtitle"]);
-  expect(result.masks).toContainEqual([0, 299, 100, 100, 200, 140, "subtitle"]);
+  // Clamped, and (under labels along the top all through the file) a title: a label cut to their band (off_titles).
+  expect(result.masks).toContainEqual([0, 299, 100, 100, 200, 122, "label"]);
   // Approved & unclear labels kept, camera dropped
   expect(result.masks).toContainEqual([0, 299, 50, 40, 350, 80, "label"]);
   expect(result.masks).toContainEqual([10, 200, 50, 100, 250, 130, "label"]);
@@ -114,12 +115,98 @@ test("finishSurvey handles slowed-copy bundle with precomputed one-off masks", (
   ]);
 });
 
+/** A file's captions at the bottom: 25 of them, 61 frames each, a second and a third apart. */
+const bottomCaptions = (): found.Mask[] => Array.from({ length: 25 }, (_, k): found.Mask => [k * 100, k * 100 + 60, 400, 900, 1500, 980, "subtitle"]);
+
+test("finishSurvey finishes as find.py does: a title along the top made a label, and labels that were captions gone", () => {
+  const reads: found.Read[] = [
+    // Words of the channel's name along the top (its label measured far taller than them comes back to them).
+    ...Array.from({ length: 6 }, (_, k): found.Read => [1400, 10, 1600, 60, "chan", k * 10]),
+    // Words changing inside one label in the captions' place: captions, read as words standing there.
+    ...Array.from({ length: 12 }, (_, k): found.Read => [600, 920, 700, 960, `line ${k}`, 1000 + k * 30]),
+    // A logo there that reads the same every time.
+    ...Array.from({ length: 12 }, (_, k): found.Read => [1150, 920, 1250, 950, " BodyCam ", 1000 + k * 30]),
+  ];
+  const label = (text: string, mask: found.Mask): found.SurveyAsk => ({ kind: "label", text, n: 50, f: mask[0], masks: [mask] });
+  const bundle: found.SurveyBundle = {
+    version: 1,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    frames: 3000,
+    covered: [[0, 100]],
+    baseMasks: [
+      ...bottomCaptions(),
+      [500, 510, 300, 30, 900, 200, "subtitle"], // starts in the title's band: a label, cut to it
+      [700, 703, 100, 200, 300, 240, "subtitle"], // a flicker under the title: nothing
+      [700, 703, 1900, 200, 1910, 240, "subtitle"], // a flicker under nothing: kept
+    ],
+    baseNotes: [],
+    roamMasks: [],
+    ask: [
+      label("title", [0, 2999, 40, 20, 600, 70, "label"]),
+      label("channel", [0, 2999, 1200, 10, 1800, 300, "label"]),
+      label("worn", [100, 160, 400, 910, 800, 970, "label"]), // up only while a caption covers it
+      label("changing", [0, 2999, 450, 905, 850, 975, "label"]),
+      label("logo", [0, 2999, 1000, 910, 1400, 960, "label"]),
+      label("later", [2500, 2599, 450, 905, 850, 975, "label"]), // the changing words were read outside its frames
+    ],
+    sheetsB64: [],
+    reads,
+  };
+  const overlay = Object.fromEntries(bundle.ask.map((_, i) => [String(i), "overlay" as const]));
+  const { found: result } = found.finishSurvey(bundle, overlay);
+  expect(result.masks).toContainEqual([500, 510, 300, 30, 900, 200, "label"]);
+  expect(result.masks.some((m) => m[3] === 30 && m[6] === "subtitle")).toBe(false);
+  expect(result.masks.some((m) => m[2] === 100 && m[3] === 200)).toBe(false);
+  expect(result.masks).toContainEqual([700, 703, 1900, 200, 1910, 240, "subtitle"]);
+  expect(result.masks).toContainEqual([0, 2999, 1200, 10, 1800, 68, "label"]);
+  expect(result.masks).toContainEqual([0, 2999, 40, 20, 600, 70, "label"]);
+  expect(result.masks.some((m) => m[0] === 100 && m[6] === "label")).toBe(false);
+  expect(result.masks.some((m) => m[0] === 0 && m[2] === 450)).toBe(false);
+  expect(result.masks).toContainEqual([0, 2999, 1000, 910, 1400, 960, "label"]);
+  expect(result.masks).toContainEqual([2500, 2599, 450, 905, 850, 975, "label"]);
+
+  // A bundle from before the pod sent its reads: what needs none is still done (the worn label goes), the rest stays.
+  const { found: unread } = found.finishSurvey({ ...bundle, reads: undefined }, overlay);
+  expect(unread.masks.some((m) => m[0] === 100 && m[6] === "label")).toBe(false);
+  expect(unread.masks).toContainEqual([0, 2999, 450, 905, 850, 975, "label"]);
+  expect(unread.masks).toContainEqual([0, 2999, 1200, 10, 1800, 300, "label"]);
+});
+
+test("a record read before Nov 24 is read as the rules say now: a label that was a caption's goes, a logo stays", async () => {
+  const app = makeApp(path.join(tmpDir, "before"));
+  const old = {
+    version: 1,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    covered: [[0, 100]],
+    masks: [...bottomCaptions(), [100, 160, 400, 910, 800, 970, "label"], [0, 2999, 1000, 910, 1400, 960, "label"]],
+  };
+  const file = path.join(app.store.cacheDir(), "cleaned", "found", "drive-before.v1.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(old));
+  const read = found.foundOf(app, "drive:before")!;
+  expect(read.masks.some((m) => m[0] === 100 && m[6] === "label")).toBe(false);
+  expect(read.masks).toContainEqual([0, 2999, 1000, 910, 1400, 960, "label"]);
+  expect(read.masks.filter((m) => m[6] === "subtitle")).toHaveLength(25);
+  // Still read, not scanned again: its coverage is what it was.
+  expect(found.covers(read, [[0, 100]])).toBe(true);
+  await found.settled();
+});
+
 // ---------------------------------------------------------------------------
 // 2. End-to-end RunPod flow in found.ts (stand-in relay + R2)
 
 let tmpDir: string;
 let relayServer: ReturnType<typeof Bun.serve>;
 let r2Store: Map<string, string>;
+/** Each R2 object's version (its ETag), and GETs held or answered after (another machine's write in between). */
+let r2Versions: Map<string, number>;
+let holdGets: Map<string, Promise<void>>;
+let gotHeld: Set<string>;
+let afterGet: ((key: string, found: boolean) => void) | null;
 let jobsPosted: { id: string; kind: string; worker: string; request: Record<string, unknown> }[];
 let jobsCancelled: string[];
 let activePolls: Map<string, number>;
@@ -149,18 +236,8 @@ function makeMedia(id: string, name: string, original?: string): Media {
   } as unknown as Media;
 }
 
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "edit-found-runpod-"));
-  r2Store = new Map();
-  jobsPosted = [];
-  jobsCancelled = [];
-  activePolls = new Map();
-  holdJobIds = new Set();
-  holdInputs = new Set();
-  sharedJobIds = new Set();
-  releaseHeld = null;
-  judgeCalls = [];
-  bundleForInput = (input) => ({
+function defaultBundle(input: string): found.SurveyBundle {
+  return {
     version: 1,
     width: 1920,
     height: 1080,
@@ -173,7 +250,25 @@ beforeEach(() => {
     ask: [{ kind: "label", text: `lbl-${path.basename(input)}`, n: 50, f: 60, masks: [[0, 3599, 40, 30, 300, 70, "label"]] }],
     sheetsB64: [Buffer.from("fake-jpeg").toString("base64")],
     parentState: { zone: { W: 1920, H: 1080, fps: 30, zone: [0.7, 0.9] }, marks: [], notes: [], cands: [], roamExt: null },
-  });
+  };
+}
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "edit-found-runpod-"));
+  r2Store = new Map();
+  r2Versions = new Map();
+  holdGets = new Map();
+  gotHeld = new Set();
+  afterGet = null;
+  jobsPosted = [];
+  jobsCancelled = [];
+  activePolls = new Map();
+  holdJobIds = new Set();
+  holdInputs = new Set();
+  sharedJobIds = new Set();
+  releaseHeld = null;
+  judgeCalls = [];
+  bundleForInput = defaultBundle;
 
   relayServer = Bun.serve({
     port: 0,
@@ -196,13 +291,23 @@ beforeEach(() => {
       }
       if (url.pathname.startsWith("/r2/")) {
         const key = decodeURIComponent(url.pathname.slice(4));
+        const etag = () => `"v${r2Versions.get(key) ?? 0}"`;
         if (request.method === "PUT") {
+          // R2's conditional PutObject: If-None-Match "*" only creates, If-Match only replaces the version named.
+          const none = request.headers.get("if-none-match");
+          const match = request.headers.get("if-match");
+          if ((none === "*" && r2Store.has(key)) || (match !== null && (!r2Store.has(key) || match !== etag()))) return new Response("precondition failed", { status: 412 });
           r2Store.set(key, await request.text());
-          return new Response(null, { status: 200 });
+          r2Versions.set(key, (r2Versions.get(key) ?? 0) + 1);
+          return new Response(null, { status: 200, headers: { etag: etag() } });
         }
         if (request.method === "GET") {
+          if (holdGets.has(key)) gotHeld.add(key);
+          await holdGets.get(key);
           const val = r2Store.get(key);
-          return val !== undefined ? new Response(val, { status: 200, headers: { "content-type": "application/json" } }) : new Response("not found", { status: 404 });
+          const answer = val !== undefined ? new Response(val, { status: 200, headers: { "content-type": "application/json", etag: etag() } }) : new Response("not found", { status: 404 });
+          afterGet?.(key, val !== undefined);
+          return answer;
         }
       }
       if (url.pathname === "/v1/remover/jobs" && request.method === "POST") {
@@ -489,5 +594,141 @@ test("queued child never deadlocks a single-slot drain behind a stopped-and-repl
     expect(found.piecesOf("p3")[0]?.state).toBe("done");
   } finally {
     found.useFinderForTests(null);
+  }
+});
+
+const foundKeyOf = async (source: string) => {
+  const { createHash } = await import("node:crypto");
+  return `edit/cleaned/found/${createHash("sha256").update(source).digest("hex").slice(0, 32)}.v1.json`;
+};
+const record = (covered: [number, number][]) => ({ found: { version: 1, width: 1920, height: 1080, fps: 30, covered, masks: [[30, 90, 400, 900, 1500, 980, "subtitle"]] } });
+
+test("a write to R2 never replaces wider coverage another machine put there meanwhile: a backfill only creates, a scan's write is on what it read", async () => {
+  // A backfill: R2 had nothing when looked at, another machine's [0, 60] lands before this one's [0, 10] goes up.
+  const key = await foundKeyOf("drive:race");
+  afterGet = (asked, there) => {
+    if (asked === key && !there) {
+      r2Store.set(key, JSON.stringify(record([[0, 60]])));
+      r2Versions.set(key, 1);
+    }
+  };
+  const app = makeApp(path.join(tmpDir, "race"));
+  const file = path.join(app.store.cacheDir(), "cleaned", "found", "drive-race.v1.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(record([[0, 10]]).found));
+  found.foundOf(app, "drive:race");
+  for (let at = 0; at < 50 && r2Versions.get(key) === undefined; at++) await Bun.sleep(10);
+  await Bun.sleep(50);
+  expect(JSON.parse(r2Store.get(key)!).found.covered).toEqual([[0, 60]]);
+  afterGet = null;
+
+  // A scan: R2 had nothing when it started; another machine's [0, 60] lands while it scans [0, 10].
+  bundleForInput = (input, request) => ({ ...defaultBundle(input), covered: request.spans as [number, number][] });
+  holdJobIds.add("00000000-0000-4000-8000-000000000001");
+  const media = makeMedia("m1", "scan.mp4", "edit/originals/drive/scan/scan.mp4");
+  const scanKey = await foundKeyOf("drive:scan");
+  found.ensure(app, "p1", [{ media, source: "drive:scan", shown: [[0, 10]], parent: null }]);
+  for (let i = 0; i < 60 && jobsPosted.length < 1; i++) await Bun.sleep(10);
+  r2Store.set(scanKey, JSON.stringify(record([[0, 60]])));
+  r2Versions.set(scanKey, 1);
+  holdJobIds.delete("00000000-0000-4000-8000-000000000001");
+  await found.settled();
+  expect(JSON.parse(r2Store.get(scanKey)!).found.covered).toEqual([[0, 60]]);
+
+  // A scan wider than what landed meanwhile replaces it, on that one's version.
+  holdJobIds.add("00000000-0000-4000-8000-000000000002");
+  found.ensure(app, "p1", [{ media, source: "drive:scan", shown: [[0, 90]], parent: null }]);
+  for (let i = 0; i < 60 && jobsPosted.length < 2; i++) await Bun.sleep(10);
+  r2Store.set(scanKey, JSON.stringify(record([[0, 70]])));
+  r2Versions.set(scanKey, 2);
+  holdJobIds.delete("00000000-0000-4000-8000-000000000002");
+  await found.settled();
+  expect(JSON.parse(r2Store.get(scanKey)!).found.covered).toEqual([[0, 90]]);
+});
+
+test("a parent read again for its slowed copy keeps the wider read a project made of it meanwhile, and its state", async () => {
+  bundleForInput = (input, request) => {
+    const bundle = defaultBundle(input);
+    return { ...bundle, covered: request.spans as [number, number][], parentState: { ...bundle.parentState!, marks: [JSON.stringify(request.spans)] } };
+  };
+  const app = makeApp(path.join(tmpDir, "recover"));
+  // The parent was read here by an older build: its boxes over [0, 10], no state kept.
+  const file = path.join(app.store.cacheDir(), "cleaned", "found", "drive-par.v1.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(record([[0, 10]]).found));
+  const par = makeMedia("mp", "par.mp4", "edit/originals/drive/par/par.mp4");
+  const child = makeMedia("mc", "par_slow.mp4", "edit/originals/sha256/slow/par_slow.mp4");
+  // The slowed copy's project reads the parent again ([0, 10]) and is held there ...
+  holdJobIds.add("00000000-0000-4000-8000-000000000001");
+  found.ensure(app, "p1", [{ media: child, source: "sha256:slow", shown: [[0, 5]], parent: { media: par, source: "drive:par" } }]);
+  for (let i = 0; i < 60 && jobsPosted.length < 1; i++) await Bun.sleep(10);
+  expect(jobsPosted[0]!.request.spans).toEqual([[0, 10]]);
+  // ... while another project reads the parent over [0, 60] and finishes first.
+  found.ensure(app, "p2", [{ media: par, source: "drive:par", shown: [[0, 60]], parent: null }]);
+  for (let i = 0; i < 100 && !found.covers(found.foundOf(app, "drive:par")!, [[0, 60]]); i++) await Bun.sleep(10);
+  holdJobIds.delete("00000000-0000-4000-8000-000000000001");
+  await found.settled();
+  expect(found.foundOf(app, "drive:par")!.covered).toEqual([[0, 60]]);
+  expect(JSON.parse(r2Store.get(await foundKeyOf("drive:par"))!).found.covered).toEqual([[0, 60]]);
+  const childJob = jobsPosted.find((job) => job.request.input === "edit/originals/sha256/slow/par_slow.mp4")!;
+  const sent = JSON.parse(r2Store.get(String(childJob.request.parent))!) as found.ParentState;
+  expect(sent.marks).toEqual([JSON.stringify([[0, 60]])]);
+  expect(found.piecesOf("p1")[0]?.state).toBe("done");
+});
+
+test("a Stop while R2 answers for a slowed copy's parent writes nothing of it and tells no one", async () => {
+  const app = makeApp(path.join(tmpDir, "stop-fetch"));
+  const file = path.join(app.store.cacheDir(), "cleaned", "found", "drive-sp.v1.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(record([[0, 10]]).found));
+  const parentKey = await foundKeyOf("drive:sp");
+  r2Store.set(parentKey, JSON.stringify({ ...record([[0, 60]]), parentState: defaultBundle("x").parentState }));
+  let release!: () => void;
+  holdGets.set(parentKey, new Promise<void>((resolve) => (release = resolve)));
+  let asked = false;
+  const told: string[] = [];
+  const listener = (source: string) => void told.push(source);
+  found.whenRead.push(listener);
+  afterGet = (key) => void (key === parentKey && (asked = true));
+  try {
+    const par = makeMedia("mp", "sp.mp4", "edit/originals/drive/sp/sp.mp4");
+    const child = makeMedia("mc", "sp_slow.mp4", "edit/originals/sha256/spslow/sp_slow.mp4");
+    found.ensure(app, "p1", [{ media: child, source: "sha256:spslow", shown: [[0, 5]], parent: { media: par, source: "drive:sp" } }]);
+    // Held in R2's answer for the parent: Stop, then R2 answers.
+    for (let i = 0; i < 100 && !gotHeld.has(parentKey); i++) await Bun.sleep(10);
+    found.stop("p1");
+    release();
+    await found.settled();
+    expect(asked).toBe(true);
+    expect(told).toEqual([]);
+    expect(fs.existsSync(path.join(app.store.cacheDir(), "cleaned", "found", "drive-sp.v1.parent.json"))).toBe(false);
+    expect(found.foundOf(app, "drive:sp")!.covered).toEqual([[0, 10]]);
+    expect(jobsPosted).toHaveLength(0);
+  } finally {
+    found.whenRead.splice(found.whenRead.indexOf(listener), 1);
+  }
+});
+
+test("a file not uploaded from here is read from R2 when another machine read it, with no upload and no RunPod", async () => {
+  const app = makeApp(path.join(tmpDir, "no-upload"));
+  r2Store.set(await foundKeyOf("drive:elsewhere"), JSON.stringify(record([[0, 60]])));
+  const media = makeMedia("me", "elsewhere.mp4");
+  const ready: string[] = [];
+  const listener = (_app: App, id: string) => void ready.push(id);
+  found.whenFound.push(listener);
+  try {
+    found.ensure(app, "p1", [{ media, source: "drive:elsewhere", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(found.foundOf(app, "drive:elsewhere")!.covered).toEqual([[0, 60]]);
+    expect(ready).toEqual(["p1"]);
+    expect(jobsPosted).toHaveLength(0);
+    // Not on R2: it still waits for its upload, quietly, and R2 isn't asked again within the minute.
+    const other = makeMedia("mo", "other.mp4");
+    found.ensure(app, "p1", [{ media: other, source: "drive:other", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(found.foundOf(app, "drive:other")).toBeNull();
+    expect(found.piecesOf("p1")).toEqual([]);
+  } finally {
+    found.whenFound.splice(found.whenFound.indexOf(listener), 1);
   }
 });

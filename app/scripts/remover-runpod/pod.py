@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,12 @@ POD = os.environ.get("RUNPOD_POD_ID", "")
 # Nothing to do for this long: goodbye (a stretch arriving meanwhile is taken first; Edit sends a project's stretches
 # in waves as their tracks are read, so a pod waits a minute before it goes).
 IDLE_S = 60
+# Whether the finder's OCR loaded (bootstrap.sh): said on every ask, so the relay gives a pod without it cleans alone.
+CAN_FIND = os.environ.get("REMOVER_FIND") == "1"
+# A find given this long, then stopped with everything it started, and said to have failed: under the relay's 45 min
+# for a pod quiet mid-job (remover.ts RUNNING_MS), so the relay hands it on at once rather than after (Nov 24: a stalled
+# decoder or OCR child held the pod, unable to say so, until the relay gave up on it).
+FIND_S = 40 * 60
 _loaded = {"hash": None, "module": None, "model": None}
 
 
@@ -158,17 +165,32 @@ def find(job):
                 json.dump(job["spans"], f)
             pack_path = os.path.join(tmp, "pack.json")
             env = {**os.environ, "PROCS": "4"}
-            done = subprocess.run(
+            # Its own process group, so a stop reaches the decoders and OCR workers it starts too.
+            child = subprocess.Popen(
                 [sys.executable, os.path.join(fdir, "find.py"), "survey", work, "m", video, spans_path, "--pack", pack_path, *parent_args],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 env=env,
+                start_new_session=True,
             )
-            if done.returncode != 0:
-                msg = done.stderr.strip().splitlines()[-1] if done.stderr.strip() else (done.stdout.strip().splitlines()[-1] if done.stdout.strip() else f"exit {done.returncode}")
+            try:
+                stdout, stderr = child.communicate(timeout=FIND_S)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise TimeoutError(f"the finder didn't finish in {FIND_S // 60} minutes") from None
+            if child.returncode != 0:
+                msg = stderr.strip().splitlines()[-1] if stderr.strip() else (stdout.strip().splitlines()[-1] if stdout.strip() else f"exit {child.returncode}")
                 raise RuntimeError(msg)
             upload(pack_path, job["output_url"], content_type="application/json")
-            last = done.stdout.strip().splitlines()[-1] if done.stdout.strip() else "{}"
+            last = stdout.strip().splitlines()[-1] if stdout.strip() else "{}"
             summary = json.loads(last)
             return {"ok": True, "ask": len(summary.get("ask", [])), "sheets": len(summary.get("sheets", [])), "seconds": round(time.time() - started, 1)}
     except Exception as error:  # noqa: BLE001
@@ -245,9 +267,9 @@ def main():
         log(f"this card isn't fit ({why}): goodbye")
         call("/v1/remover/pod/bye", {})
         return
-    log("card checked: fit")
+    log(f"card checked: fit{'' if CAN_FIND else ' (cleans only: the OCR did not load)'}")
     while True:
-        answer = call("/v1/remover/pod/next", {})
+        answer = call("/v1/remover/pod/next", {"find": CAN_FIND})
         job = answer.get("job")
         if job is None:
             if time.time() - idle_since > IDLE_S:

@@ -158,8 +158,9 @@ export function foundOf(app: App, source: string): Found | null {
   const hit = kept.get(source);
   if (hit !== undefined && hit !== null) return hit;
   try {
-    const read = JSON.parse(fs.readFileSync(fileOf(app, source), "utf8")) as Found;
-    if (read.version !== VERSION || !Array.isArray(read.masks)) return null;
+    const raw = JSON.parse(fs.readFileSync(fileOf(app, source), "utf8")) as Found;
+    if (raw.version !== VERSION || !Array.isArray(raw.masks)) return null;
+    const read = asNow(raw);
     kept.set(source, read);
     void shareKept(app, source, read);
     return read;
@@ -204,6 +205,17 @@ export async function stillClean(app: App, source: string, media: Media[], reque
   const addon = native();
   if (addon.stillClean === undefined || standIn !== null || foundOf(app, source) === null) return null;
   const key = source.split("#")[0]!;
+  // Taken before anything is awaited: stretches of a video asked for together all found no plate being made and made
+  // it at once, each (Nov 24: five at a time on a 16 GB Mac; an 8 GB Mac's one still-clean turn hid it).
+  const before = plating.get(key);
+  let made = (): void => {};
+  if (before === undefined) {
+    const gate = new Promise<void>((resolve) => (made = resolve));
+    plating.set(key, gate);
+    void gate.then(() => {
+      if (plating.get(key) === gate) plating.delete(key);
+    });
+  }
   const others = media.filter((one) => one.kind === "video" && one.cloud?.source !== undefined && one.cloud.source !== source && one.cloud.source.split("#")[0] === key && foundOf(app, one.cloud.source) !== null);
   const also = await Promise.all(
     others.map(async (one) => {
@@ -213,14 +225,10 @@ export async function stillClean(app: App, source: string, media: Media[], reque
   );
   const job = JSON.stringify({ ...request, found: fileOf(app, source), plates: join(app.store.cacheDir(), "cleaned", "plates"), key, also: also.filter((one) => one !== null) });
   try {
-    await plating.get(key);
+    await before;
     // Still wanted once its turn comes: a stretch the person stopped while it waited (an 8 GB Mac has one turn) is
     // never started (Nov 24, the M1 Air: two of Trooper's stopped stretches took that turn for minutes, one twice).
     const going = stillSlots.with(async () => (wanted() ? await addon.stillClean!(job) : null));
-    if (!plating.has(key)) {
-      const settled = going.catch(() => {}).finally(() => plating.delete(key));
-      plating.set(key, settled);
-    }
     const answer = await going;
     if (answer === null) return null;
     if (answer.still !== true) {
@@ -231,6 +239,9 @@ export async function stillClean(app: App, source: string, media: Media[], reque
   } catch (error) {
     diag.warn("removal", `${source} from ${Math.round(request.from)} s: the still clean stopped, the model takes it: ${diag.messageOf(error)}`);
     return null;
+  } finally {
+    // The rest of the video go once the first's plate is made (or it failed: the next makes it then).
+    made();
   }
 }
 
@@ -465,7 +476,101 @@ export interface SurveyBundle {
   ask: SurveyAsk[];
   sheetsB64: string[];
   parentState?: ParentState;
+  /** What the survey read, each with its frame (find.py `finish` reads them for `off_titles` and `off_caption_labels`). */
+  reads?: Read[];
 }
+
+/** One line the survey read: [x0, y0, x1, y1, words, frame]. */
+export type Read = [number, number, number, number, string, number];
+
+/** numpy's `percentile` (linear between the two nearest). */
+function percentile(values: number[], q: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = ((sorted.length - 1) * q) / 100;
+  const [lo, hi] = [Math.floor(at), Math.ceil(at)];
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (at - lo);
+}
+
+/** assemble.py `off_titles`, as it is: a channel's title across the top is a label cut to its band, not a caption. */
+export function offTitles(masks: Mask[], height: number, reads: Read[]): Mask[] {
+  const last = masks.reduce((most, m) => Math.max(most, m[1]), 0);
+  if (last <= 0) return masks;
+  const tops = masks.filter((m) => m[6] === "label" && m[3] < 0.12 * height && m[5] < 0.35 * height);
+  // The frames a top label is up (numpy's `on[a:b+1]`), as half-open stretches.
+  const on = merged(tops.map((m): [number, number] => [Math.max(0, m[0]), Math.min(last, m[1]) + 1])).reduce((sum, [a, b]) => sum + b - a, 0);
+  if (on < 0.25 * (last + 1)) return masks;
+  const band = Math.trunc(percentile(tops.map((m) => m[5]), 90));
+  const words = reads.filter((r) => (r[1] + r[3]) / 2 < 0.35 * height);
+  const fitted = (m: Mask): number => {
+    const inside = words.filter((r) => m[2] <= (r[0] + r[2]) / 2 && (r[0] + r[2]) / 2 <= m[4] && m[3] <= (r[1] + r[3]) / 2 && (r[1] + r[3]) / 2 <= m[5]).map((r) => r[3]);
+    if (inside.length < 5) return m[5];
+    const bottom = Math.trunc(percentile(inside, 90)) + 8;
+    return m[5] - m[3] > 1.25 * (bottom - m[3]) ? bottom : m[5];
+  };
+  const out: Mask[] = [];
+  const memo = new Map<string, number>();
+  for (let m of masks) {
+    if (m[6] === "subtitle" || m[6] === "note") {
+      if (m[3] < Math.min(band, 0.12 * height)) m = [m[0], m[1], m[2], m[3], m[4], Math.min(m[5], band), "label"];
+      else if (m[3] < 0.35 * height && m[1] - m[0] <= 6 && tops.some((t) => t[0] <= m[1] && m[0] <= t[1] && t[2] < m[4] && m[2] < t[4])) continue;
+    }
+    if (m[6] === "label" && m[3] < 0.12 * height && m[5] < 0.35 * height) {
+      const key = m.slice(2, 6).join(",");
+      if (!memo.has(key)) memo.set(key, fitted(m));
+      m = [m[0], m[1], m[2], m[3], m[4], memo.get(key)!, "label"];
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * assemble.py `off_caption_labels`, as it is: a label in the captions' place that is them (its words keep changing, or
+ * it's up only while a caption covers it) goes. `reads` null: a record made before its reads were kept (Nov 24), whose
+ * finish had them; only `worn`, which needs none, is asked again (it's the same answer on a record that had it).
+ */
+export function offCaptionLabels(masks: Mask[], reads: Read[] | null): Mask[] {
+  const caps = masks.filter((m) => m[6] === "subtitle" || m[6] === "note");
+  if (caps.length < 20 || (reads !== null && reads.length === 0)) return masks;
+  const [x0, y0] = [percentile(caps.map((m) => m[2]), 5) - 10, percentile(caps.map((m) => m[3]), 5) - 10];
+  const [x1, y1] = [percentile(caps.map((m) => m[4]), 95) + 10, percentile(caps.map((m) => m[5]), 95) + 10];
+  const here = (reads ?? [])
+    .map((r) => ({ cx: (r[0] + r[2]) / 2, cy: (r[1] + r[3]) / 2, text: String(r[4]).trim().toLowerCase(), f: r[5] }))
+    .filter((r) => x0 <= r.cx && r.cx <= x1 && y0 <= r.cy && r.cy <= y1);
+  const changing = (m: Mask): boolean => {
+    const said = here.filter((r) => m[2] <= r.cx && r.cx <= m[4] && m[3] <= r.cy && r.cy <= m[5] && m[0] <= r.f && r.f <= m[1]).map((r) => r.text);
+    if (said.length < 10) return false;
+    const counts = new Map<string, number>();
+    for (const text of said) counts.set(text, (counts.get(text) ?? 0) + 1);
+    return [...counts.values()].reduce((most, n) => Math.max(most, n), 0) <= 0.2 * said.length;
+  };
+  const worn = (m: Mask): boolean => {
+    const area = Math.max(1, (m[4] - m[2]) * (m[5] - m[3]));
+    const spans: [number, number][] = [];
+    for (const c of caps) {
+      if (c[0] <= m[1] && m[0] <= c[1] && Math.max(0, Math.min(c[4], m[4]) - Math.max(c[2], m[2])) * Math.max(0, Math.min(c[5], m[5]) - Math.max(c[3], m[3])) >= 0.5 * area) {
+        spans.push([Math.max(c[0], m[0]), Math.min(c[1], m[1])]);
+      }
+    }
+    let [held, end, gap] = [0, m[0] - 1, 0];
+    for (const [a0, a1] of spans.sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+      if (a0 > end + 1) gap = Math.max(gap, a0 - end - 1);
+      if (a1 > end) {
+        held += a1 - Math.max(a0, end + 1) + 1;
+        end = a1;
+      }
+    }
+    gap = Math.max(gap, m[1] - end);
+    return held >= 0.95 * (m[1] - m[0] + 1) && gap <= 8;
+  };
+  return masks.filter((m) => !(m[6] === "label" && m[2] >= x0 && m[3] >= y0 && m[4] <= x1 && m[5] <= y1 && (changing(m) || worn(m))));
+}
+
+/** A record as the rules read it now (one made before Nov 24 may still hold a label that was a caption). */
+const asNow = (found: Found): Found => {
+  const masks = offCaptionLabels(found.masks, null);
+  return masks.length === found.masks.length ? found : { ...found, masks };
+};
 
 function padBox(b: [number, number, number, number], width: number, height: number): [number, number, number, number] {
   const h = b[3] - b[1];
@@ -535,8 +640,12 @@ export function finishSurvey(bundle: SurveyBundle, verdicts: Record<string, Verd
       out.push([Math.max(0, Math.trunc(m[0])), Math.min(last, Math.trunc(m[1])), Math.trunc(m[2]), Math.trunc(m[3]), Math.trunc(m[4]), Math.trunc(m[5]), m[6] === "note" ? "note" : m[6]]);
     }
   }
+  // find.py `finish` last: a title along the top made a label, and the labels that were captions gone (Nov 24: the pod
+  // sends its reads; a bundle without them, from before, has its labels asked again only by what needs none).
+  const reads = Array.isArray(bundle.reads) ? bundle.reads : null;
+  const finished = offCaptionLabels(offTitles(out, bundle.height, reads ?? []), reads);
   return {
-    found: { version: 1, width: bundle.width, height: bundle.height, fps: bundle.fps, covered: bundle.covered, masks: out },
+    found: { version: 1, width: bundle.width, height: bundle.height, fps: bundle.fps, covered: bundle.covered, masks: finished },
     parentVerdicts: { yes, labels },
   };
 }
@@ -657,24 +766,35 @@ const isValidCovered = (covered: unknown): covered is [number, number][] =>
     (pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "number" && Number.isFinite(pair[0]) && typeof pair[1] === "number" && Number.isFinite(pair[1]),
   );
 
-/** Shared finder boxes from R2 (so no two machines scan the same footage twice). */
-async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null> {
+/** What R2 holds for a source: its record (null when unreadable) and its ETag, the condition a write over it is made on. */
+interface CloudEntry {
+  record: CloudFoundRecord | null;
+  etag: string | null;
+}
+
+/** Shared finder boxes from R2 (so no two machines scan the same footage twice). Null: nothing there, or R2 unreachable. */
+async function fetchCloudEntry(source: string): Promise<CloudEntry | null> {
   if (standIn !== null || !cloud.enabled()) return null;
   try {
     const answer = await fetch(await cloud.presign(cloudKeyOf(source), "GET"), { signal: AbortSignal.timeout(30_000) });
     if (!answer.ok) return null;
-    const raw = (await answer.json()) as Partial<CloudFoundRecord> & Partial<Found>;
+    const etag = answer.headers.get("etag");
+    const raw = (await answer.json().catch(() => null)) as (Partial<CloudFoundRecord> & Partial<Found>) | null;
     // Accept either { found, parentState } or a bare Found record; validate coverage tuples so malformed records miss cleanly.
-    if (raw.found !== undefined && raw.found.version === VERSION && Array.isArray(raw.found.masks) && isValidCovered(raw.found.covered)) {
-      return { found: raw.found, parentState: raw.parentState };
+    let record: CloudFoundRecord | null = null;
+    if (raw !== null && raw.found !== undefined && raw.found.version === VERSION && Array.isArray(raw.found.masks) && isValidCovered(raw.found.covered)) {
+      record = { found: asNow(raw.found), parentState: raw.parentState };
+    } else if (raw !== null && raw.version === VERSION && Array.isArray(raw.masks) && isValidCovered(raw.covered)) {
+      record = { found: asNow(raw as Found) };
     }
-    if (raw.version === VERSION && Array.isArray(raw.masks) && isValidCovered(raw.covered)) {
-      return { found: raw as Found };
-    }
-    return null;
+    return { record, etag };
   } catch {
     return null;
   }
+}
+
+async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null> {
+  return (await fetchCloudEntry(source))?.record ?? null;
 }
 
 /**
@@ -682,16 +802,38 @@ async function fetchCloudFound(source: string): Promise<CloudFoundRecord | null>
  * time they're loaded, so a Mac opening the same edit doesn't pay RunPod to read the same footage again.
  */
 async function shareKept(app: App, source: string, found: Found): Promise<void> {
-  if (standIn !== null || !cloud.enabled() || (await fetchCloudFound(source)) !== null) return;
-  await saveCloudFound(source, found, readLocalParentSidecar(app, source));
+  if (standIn !== null || !cloud.enabled()) return;
+  const there = await fetchCloudEntry(source);
+  if (there?.record != null) return;
+  await saveCloudFound(source, found, readLocalParentSidecar(app, source), there);
 }
 
-async function saveCloudFound(source: string, found: Found, parentState: ParentState | null): Promise<void> {
+/**
+ * A file's boxes up on R2 over `seen` (what this machine read there before; null: nothing), made on that condition:
+ * another machine's write in between is read and decided on again, and a record reaching seconds these never looked at
+ * stays (Nov 24, the review of PR #5: a [0, 10] backfill or scan landing after another's [0, 60] replaced it).
+ */
+async function saveCloudFound(source: string, found: Found, parentState: ParentState | null, seen: CloudEntry | null): Promise<void> {
   if (standIn !== null || !cloud.enabled()) return;
+  const body = JSON.stringify(parentState === null ? { found } : { found, parentState });
+  let plain = false;
   try {
-    const body = JSON.stringify(parentState === null ? { found } : { found, parentState });
-    const put = await fetch(await cloud.presign(cloudKeyOf(source), "PUT"), { method: "PUT", body, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(60_000) });
-    if (!put.ok) diag.warn("removal", `found cache couldn't go up (${put.status})`);
+    for (let tries = 0; tries < 3; tries++) {
+      if (seen?.record != null && !covers(found, seen.record.found.covered)) return;
+      const condition: Record<string, string> = plain ? {} : seen === null ? { "if-none-match": "*" } : seen.etag === null ? {} : { "if-match": seen.etag };
+      const put = await fetch(await cloud.presign(cloudKeyOf(source), "PUT"), { method: "PUT", body, headers: { "content-type": "application/json", ...condition }, signal: AbortSignal.timeout(60_000) });
+      if (put.ok) return;
+      if (put.status === 412) {
+        seen = await fetchCloudEntry(source);
+        continue;
+      }
+      // Refused for something else: once more as before, without the condition (a write that can't go up costs a rescan).
+      if (Object.keys(condition).length === 0) {
+        diag.warn("removal", `found cache couldn't go up (${put.status})`);
+        return;
+      }
+      plain = true;
+    }
   } catch (error) {
     diag.warn("removal", `found cache couldn't go up: ${diag.messageOf(error)}`);
   }
@@ -818,7 +960,10 @@ function readLocalParentState(app: App, source: string): ParentState | null {
 async function resolveParentState(app: App, parent: { media: Media; source: string }, stopped: () => boolean): Promise<ParentState> {
   const local = readLocalParentState(app, parent.source);
   if (local !== null) return local;
-  const remote = await fetchCloudFound(parent.source);
+  const there = await fetchCloudEntry(parent.source);
+  // Stopped while R2 answered: nothing of it written, no one told (Nov 24, the review of PR #5).
+  if (stopped()) throw new Error("stopped");
+  const remote = there?.record ?? null;
   if (remote?.parentState !== undefined) {
     // Never overwrite a wider local Found record with a narrower remote one.
     const existing = foundOf(app, parent.source);
@@ -843,8 +988,14 @@ async function resolveParentState(app: App, parent: { media: Media; source: stri
   if (stopped()) throw new Error("stopped");
   const { found: parentFound, parentVerdicts } = finishSurvey(bundle, verdicts);
   const pstate: ParentState | null = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: parentVerdicts };
-  writeLocalFound(app, parent.source, parentFound, pstate);
-  await saveCloudFound(parent.source, parentFound, pstate);
+  // A project's own read of the parent may have finished while this one ran (it isn't one of `reading`'s): its state is
+  // the one kept, and a wider record of it is never replaced by this narrower one (Nov 24, the review of PR #5).
+  const since = readLocalParentState(app, parent.source);
+  if (since !== null) return since;
+  const now = foundOf(app, parent.source);
+  if (now === null || covers(parentFound, now.covered)) writeLocalFound(app, parent.source, parentFound, pstate);
+  else if (pstate !== null) writeLocalParentSidecar(app, parent.source, pstate);
+  await saveCloudFound(parent.source, parentFound, pstate, there);
   if (pstate === null) throw new Error("the file it was slowed from produced no parent state");
   return pstate;
 }
@@ -902,13 +1053,16 @@ async function find(app: App, want: Want, stopped: () => boolean): Promise<void>
   let parentState: ParentState | null = null;
   let fromCloudCache = false;
   let viaRunPod = false;
+  let seen: CloudEntry | null = null;
 
   if (standIn !== null) {
     const asked = await standIn.find({ mid, video: want.media.path, spans: want.shown, parent });
     found = await standIn.finish({ mid, parent, verdicts: await judgeHooks.judge(join(root, "judge"), asked.ask, asked.sheets) });
   } else {
     // Check shared R2 cache first: if another machine already scanned all of these spans, reuse it immediately.
-    const remote = await fetchCloudFound(want.source);
+    const there = await fetchCloudEntry(want.source);
+    seen = there;
+    const remote = there?.record ?? null;
     if (remote !== null && covers(remote.found, want.shown)) {
       found = remote.found;
       parentState = remote.parentState ?? null;
@@ -974,7 +1128,7 @@ async function find(app: App, want: Want, stopped: () => boolean): Promise<void>
   }
   if (stopped()) throw new Error("stopped");
   writeLocalFound(app, want.source, found, parentState);
-  if (!fromCloudCache && standIn === null) await saveCloudFound(want.source, found, parentState);
+  if (!fromCloudCache && standIn === null) await saveCloudFound(want.source, found, parentState, seen);
   const kinds = new Map<string, number>();
   for (const mask of found.masks) kinds.set(mask[6], (kinds.get(mask[6]) ?? 0) + 1);
   const where = fromCloudCache ? "from the cloud cache" : viaRunPod ? "on RunPod" : "here";
@@ -998,7 +1152,11 @@ export function ensure(app: App, id: string, wants: Want[]): void {
     }
     // On a machine without a local finder (e.g. a Mac), wait quietly if this file or its un-scanned parent isn't on R2 yet.
     const parentWaitingUpload = want.parent !== null && foundOf(app, want.parent.source) === null && removerCloud.keyOf(want.parent.media) === undefined;
-    if (standIn === null && !localAvailable() && (removerCloud.keyOf(want.media) === undefined || parentWaitingUpload)) continue;
+    if (standIn === null && !localAvailable() && (removerCloud.keyOf(want.media) === undefined || parentWaitingUpload)) {
+      // Another machine may have read it already: its boxes need no upload from here (Nov 24, the review of PR #5).
+      lookShared(app, id, want);
+      continue;
+    }
     const had = was?.get(key);
     if (had !== undefined && had.state === "failed") {
       mine.set(key, had);
@@ -1061,6 +1219,29 @@ export function ensure(app: App, id: string, wants: Want[]): void {
 
 const lastError = new Map<string, string>();
 
+/** When each file waiting for its upload was last looked for on R2 (once a minute at most: a project plans often). */
+const lookedShared = new Map<string, number>();
+const LOOK_SHARED_MS = 60_000;
+
+/** A file this machine can't read yet (not uploaded): R2's boxes for it, when they cover what `id` shows. */
+function lookShared(app: App, id: string, want: Want): void {
+  if (!cloud.enabled()) return;
+  const at = lookedShared.get(want.source);
+  if (at !== undefined && Date.now() - at < LOOK_SHARED_MS) return;
+  lookedShared.set(want.source, Date.now());
+  const look = fetchCloudFound(want.source)
+    .then((remote) => {
+      if (remote === null || !covers(remote.found, want.shown) || !pieces.has(id)) return;
+      const here = foundOf(app, want.source);
+      if (here !== null && (covers(here, want.shown) || !covers(remote.found, here.covered))) return;
+      writeLocalFound(app, want.source, remote.found, remote.parentState ?? null);
+      for (const listener of whenFound) listener(app, id);
+    })
+    .catch(() => {})
+    .finally(() => inFlight.delete(look));
+  inFlight.add(look);
+}
+
 /** A project's want for each footage file it shows (text_removal.ts gives the sources and what's a slowed copy of what). */
 export type { Want };
 
@@ -1071,6 +1252,7 @@ export function reset(): void {
   reading.clear();
   inFlight.clear();
   lastError.clear();
+  lookedShared.clear();
   queue.length = 0;
   availableHere = null;
 }

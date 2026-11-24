@@ -404,8 +404,8 @@ const cleaner = (app: App): Cleaner => override ?? (cloudNow() ? remoteCleaner :
 
 /** RunPod's GPUs, through the relay (apps/relay/src/remover.ts): the stretch's R2 keys go, its strip comes back by R2. */
 class RunPod implements Cleaner {
-  /** Each running piece's RunPod job (a Stop cancels it: the GPU is paid by the second). */
-  readonly jobs = new Map<string, string>();
+  /** Each running piece's RunPod job and this caller's hold on it (a Stop cancels it: the GPU is paid by the second). */
+  readonly jobs = new Map<string, Held>();
 
   async clean(request: Request): Promise<Answer> {
     if (request.inputKey === undefined) return { ok: false, error: "the footage isn't in the cloud yet" };
@@ -413,26 +413,26 @@ class RunPod implements Cleaner {
     if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
     const { from, fps, width, height, matrix, masks } = request;
     const started = Date.now();
-    const job = (await removerCloud.call<{ id: string; out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, backlog: Math.round(waitingSeconds()), request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
-    if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
+    const job = (await removerCloud.call<Held & { out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, backlog: Math.round(waitingSeconds()), request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
+    if (request.piece !== undefined) this.jobs.set(request.piece, { id: job.id, sub: job.sub });
     let misses = 0;
     try {
       for (;;) {
         // Stopped while the job was on the way (Nov 24: a Stop then had no id to cancel, and nine stopped stretches
         // each kept a lane, asking after their jobs until RunPod's refusal ten minutes later), or since: let go.
         if (request.wanted?.() === false) {
-          await this.cancel(job.id);
+          await this.cancel(job);
           return { ok: false, error: "stopped" };
         }
         await Bun.sleep(timing.pollMs);
         if (request.piece !== undefined && !this.jobs.has(request.piece)) return { ok: false, error: "stopped" };
         if (Date.now() - started > timing.deadlineMs) {
-          await this.cancel(job.id);
+          await this.cancel(job);
           return { ok: false, error: "RunPod didn't finish it in 3 hours" };
         }
-        let answer: Answer & { pending?: boolean };
+        let answer: Answer & { pending?: boolean; shared?: boolean };
         try {
-          const asked = await removerCloud.call<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
+          const asked = await removerCloud.call<Answer & { pending?: boolean; shared?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
           answer = asked.value;
           misses = 0;
           if (asked.status === 202) continue;
@@ -442,7 +442,8 @@ class RunPod implements Cleaner {
           continue;
         }
         if (answer.box != null) await cloud.download(job.out, request.out);
-        await cloud.remove([job.out]).catch(() => {});
+        // Another caller's too (the same stretch sent twice is one job): the relay takes it away once both had time to read it.
+        if (answer.shared !== true) await cloud.remove([job.out]).catch(() => {});
         return { ok: true, box: answer.box ?? null, inferred: answer.inferred, seconds: answer.seconds };
       }
     } finally {
@@ -458,9 +459,17 @@ class RunPod implements Cleaner {
     void this.cancel(job);
   }
 
-  private async cancel(job: string): Promise<void> {
-    await removerCloud.call("DELETE", `/v1/remover/jobs/${job}`).catch(() => {});
+  /** Lets go of this caller's hold on the job (sent twice, a Stop lets go of it once: another caller's hold stays). */
+  private async cancel(job: Held): Promise<void> {
+    const sub = job.sub === undefined ? "" : `?sub=${encodeURIComponent(job.sub)}`;
+    await removerCloud.call("DELETE", `/v1/remover/jobs/${job.id}${sub}`).catch(() => {});
   }
+}
+
+/** A RunPod job and this caller's hold on it (`sub`; a relay from before holds sends none). */
+interface Held {
+  id: string;
+  sub?: string;
 }
 
 const remoteCleaner = new RunPod();

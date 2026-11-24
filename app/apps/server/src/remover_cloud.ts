@@ -87,6 +87,8 @@ export async function call<T>(method: string, route: string, body?: unknown): Pr
 export interface Started {
   id: string;
   out: string;
+  /** This caller's hold on it (the same job sent twice is one job, held twice); a relay from before holds sends none. */
+  sub?: string;
 }
 
 /** Starts a job of `kind` (the relay's request for it), `worker` for GPU clean/find jobs. */
@@ -101,11 +103,11 @@ export async function wait<T>(job: Started, stopped: () => boolean = () => false
   for (;;) {
     await Bun.sleep(timing.pollMs);
     if (stopped()) {
-      await cancel(job.id);
+      await cancel(job.id, job.sub);
       throw new Error("stopped");
     }
     if (Date.now() - started > timing.deadlineMs) {
-      await cancel(job.id);
+      await cancel(job.id, job.sub);
       throw new Error("the rented machine didn't finish it in 3 hours");
     }
     try {
@@ -119,8 +121,9 @@ export async function wait<T>(job: Started, stopped: () => boolean = () => false
   }
 }
 
-export async function cancel(id: string): Promise<void> {
-  await call("DELETE", `/v1/remover/jobs/${id}`).catch(() => {});
+/** Lets go of this caller's hold on job `id` (`sub`: sent twice, a Stop lets go of it once, and another caller's hold stays). */
+export async function cancel(id: string, sub?: string): Promise<void> {
+  await call("DELETE", `/v1/remover/jobs/${id}${sub === undefined ? "" : `?sub=${encodeURIComponent(sub)}`}`).catch(() => {});
 }
 
 /** A small result left on R2 by a rented machine (JSON or text), read without deleting. */
@@ -169,19 +172,20 @@ export function watermarkEngine(key: string) {
   return {
     async learn(_input: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], _progress: (progress: number) => void): Promise<string> {
       const job = await start("learn", { input: key, size, duration, hint, avoid });
-      const answer = await wait<{ ok: boolean; error?: string }>(job);
+      const answer = await wait<{ ok: boolean; error?: string; shared?: boolean }>(job);
       // The engine's own words ("no see-through watermark", …), as from this computer's.
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be learned");
-      return take(job.out);
+      // Another caller's too: the relay takes it away once both had time to read it.
+      return answer.shared === true ? read(job.out) : take(job.out);
     },
     async remove(piece: WatermarkPiece, _progress: (progress: number) => void, stopped: () => boolean = () => false): Promise<WatermarkRemoved | null> {
       const model = await modelKey(piece.model);
       if (stopped()) throw new Error("stopped");
       const job = await start("watermark", { input: key, size: piece.size, fps: piece.fps, from: piece.from, to: piece.to, model, keep: piece.keep });
-      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null }>(job, stopped);
+      const answer = await wait<{ ok: boolean; error?: string; removed?: WatermarkRemoved | null; shared?: boolean }>(job, stopped);
       if (!answer.ok) throw new Error(answer.error ?? "the mark couldn't be taken out");
       if (answer.removed != null) await cloud.download(job.out, piece.out);
-      await cloud.remove([job.out]).catch(() => {});
+      if (answer.shared !== true) await cloud.remove([job.out]).catch(() => {});
       return answer.removed ?? null;
     },
   };

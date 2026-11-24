@@ -12,20 +12,21 @@
  * is let go; one that goes quiet is let go too (its jobs handed to another), and machines that never start stop the
  * renting, so nothing is ever paid for long after the work is done.
  *
- *   POST   /v1/remover/jobs        {kind, request, worker?} → 202 {id, out}: `out` is where its result lands on R2
+ *   POST   /v1/remover/jobs        {kind, request, worker?} → 202 {id, out, sub}: `out` is where its result lands on R2,
+ *          `sub` this caller's hold on it (the same job sent twice is one job, held twice)
  *          clean:     {input, beneath: [{key, from, box}], from, fps, width, height, matrix, masks}, worker (minimax_worker.py)
  *          learn:     {input, size, duration, hint, avoid}            → the mark's model (JSON) at `out`
  *          watermark: {input, size, fps, from, to, model, keep}       → the strip at `out`, `removed` in the answer
  *          track:     {input, size, fps, region, plan, from, to}      → the reads (JSON) at `out`
  *   GET    /v1/remover/jobs/<id>   → 200 {ok, …} | 202 {pending: true} | 502 {error}
- *   DELETE /v1/remover/jobs/<id>   → 200 {ok}: the person's Stop
+ *   DELETE /v1/remover/jobs/<id>[?sub=<sub>]   → 200 {ok}: the person's Stop (with `sub`, that hold let go at most once)
  *   POST   /v1/remover/pod/next|done|bye   the machines' own (their token, given when rented)
  *
  * The flag is `REMOVER` ("pods" on, anything else off, wrangler.toml's vars): /health says `remover: true` only when
  * it's on and the key, the queue and R2 are here.
  */
 import { allow, burstKey, type AuthEnv } from "./auth";
-import { objectUrl, r2Config, r2Fetch, validKey, type CloudEnv } from "./cloud";
+import { Forbidden, mayRead, objectUrl, r2Config, r2Fetch, Upstream, validKey, type CloudEnv } from "./cloud";
 import { BOOTSTRAP_B64, CPU_B64, CPU_BOOT_B64, POD_B64 } from "./remover_kit";
 import { RUNTIME } from "./remover_runtime";
 
@@ -50,6 +51,8 @@ const OUT_PREFIX = "edit/cleaned/work/";
 const MODEL_PREFIX = "edit/cleaned/models/";
 /** Parent finder state Edit puts up for slowed-copy find jobs (remover_cloud.ts `parentStateKey`). */
 const FINDER_PREFIX = "edit/cleaned/finder/";
+/** What the finder reads: footage (an original, a slowed copy's own original too), never a project's other files. */
+const FOOTAGE_PREFIX = "edit/originals/";
 const MAX_FRAMES = 36_000;
 const MAX_WORKER = 200_000;
 
@@ -99,6 +102,14 @@ const BOOT_FAILURES = 3;
  * still working is never failed this way: its queue is only waiting its turn.
  */
 export const RENT_REFUSED_MS = 10 * 60_000;
+/**
+ * How long a result two callers share stays on R2 after it's done: their whole wait (remover_cloud.ts, 3 hours from
+ * when each sent it, which is before it was done), so one coming back late still finds it (Nov 24: it was ten minutes,
+ * then the relay said "ready" for a result it had deleted).
+ */
+export const SHARED_OUT_MS = 3 * 3600_000;
+/** An R2 delete given this long before it's tried again on a later alarm. */
+const R2_DELETE_MS = 10_000;
 const GPU_IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404";
 /** The engine is built on Ubuntu 26.04 (glibc 2.43): its machines run the same. */
 const CPU_IMAGE = "ubuntu:26.04";
@@ -160,6 +171,7 @@ export function readRequest(kind: Kind, value: unknown): Record<string, unknown>
     return { input: r.input, size: r.size, fps: r.fps, from: r.from, to: r.to, model: r.model, keep: r.keep ?? [] };
   }
   if (kind === "find") {
+    if (!(r.input as string).startsWith(FOOTAGE_PREFIX)) return null;
     if (!Array.isArray(r.spans) || r.spans.length === 0 || r.spans.length > 2000) return null;
     if (!r.spans.every((span) => Array.isArray(span) && span.length === 2 && num(span[0], 0, 1e6) && num(span[1], 0, 1e6) && (span[1] as number) >= (span[0] as number))) return null;
     const parent = r.parent === undefined || r.parent === null ? null : validKey(r.parent) && String(r.parent).startsWith(FINDER_PREFIX) ? String(r.parent) : undefined;
@@ -214,22 +226,33 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
     if ((kind === "clean" || kind === "find") && (typeof body.worker !== "string" || body.worker.length === 0 || body.worker.length > MAX_WORKER)) return json(400, { error: "worker must be the worker's code." });
     const job = readRequest(kind, body.request);
     if (job === null) return json(400, { error: `request isn't a ${kind} job.` });
+    // Every key a machine is given a signed URL for, held to the cloud's own read rules (Nov 24: an editor could have
+    // a project's export read by the finder by its key alone). Footage and Edit's own work keys pass as they did.
+    const keys = new Set([job.input, job.parent, job.model, ...((job.beneath as Beneath[] | undefined) ?? []).map((one) => one.key)].filter((key): key is string => typeof key === "string"));
+    try {
+      await Promise.all([...keys].map((key) => mayRead(found, env, key)));
+    } catch (error) {
+      if (error instanceof Forbidden) return json(403, { error: error.message });
+      if (error instanceof Upstream) return json(502, { error: error.message });
+      throw error;
+    }
     if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `remover:${burstKey(request, found)}` })).success) return json(429, { error: "Too many jobs at once; try again in a minute." });
     const id = crypto.randomUUID();
     const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" || kind === "find" ? "json" : "mp4"}`;
     const backlog = typeof body.backlog === "number" && Number.isFinite(body.backlog) ? Math.min(Math.max(0, body.backlog), 86_400) : 0;
-    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" || kind === "find" ? body.worker : undefined, request: job, relay: url.origin, backlog });
+    const sub = crypto.randomUUID();
+    const answer = await ask(queue, "/enqueue", { id, kind, out, sub, worker: kind === "clean" || kind === "find" ? body.worker : undefined, request: job, relay: url.origin, backlog });
     if (!answer.ok) return answer;
     // The same job already queued or under way (Edit restarted mid-job and sent it again): that one, not a twin.
     const twin = (await answer.json()) as { id?: string; out?: string };
-    if (typeof twin.id === "string" && typeof twin.out === "string") return json(202, { id: twin.id, out: twin.out });
+    if (typeof twin.id === "string" && typeof twin.out === "string") return json(202, { id: twin.id, out: twin.out, sub });
     console.log(JSON.stringify({ route: "remover/jobs", queued: id, kind, input: job.input }));
-    return json(202, { id, out });
+    return json(202, { id, out, sub });
   }
 
   const match = /^\/v1\/remover\/jobs\/([0-9a-f-]{36})$/.exec(url.pathname);
   if (match !== null && request.method === "GET") return ask(queue, "/status", { id: match[1] });
-  if (match !== null && request.method === "DELETE") return ask(queue, "/cancel", { id: match[1] });
+  if (match !== null && request.method === "DELETE") return ask(queue, "/cancel", { id: match[1], sub: url.searchParams.get("sub") });
   return json(404, { error: "not found" });
 }
 
@@ -252,9 +275,12 @@ interface Job {
   twin?: string;
   /** Active callers waiting on this job (incremented on twin dedup, decremented on cancel). */
   subs?: number;
+  /** The holds still on it (`sub`, one a caller): a Stop sent twice by the same caller lets go of its own hold once
+   * (Nov 24: a repeated DELETE took a second caller's hold and stopped its work). Older callers send no `sub`. */
+  holds?: string[];
   /** True once more than one caller attached via twin dedup: clients leave `out` on R2 and tend() cleans it later. */
   shared?: boolean;
-  /** True once tend() has deleted a shared job's `out` object on R2. */
+  /** True once a shared job's `out` object has been deleted from R2 (alarm()). */
   outCleaned?: boolean;
 }
 
@@ -266,8 +292,11 @@ interface Pod {
   rentedAt: number;
   seenAt: number | null;
   jobs: string[];
-  /** True on GPU pods booted with the pod.py that handles kind "find" (older pods only understand "clean"). */
+  /** True on GPU pods booted with the pod.py that handles kind "find" (older pods only understand "clean"); a pod
+   * whose OCR didn't load says so on its first ask (`find: false`) and is given cleans alone. */
   canFind?: boolean;
+  /** Whether it has said, on an ask, if it can find. */
+  saidFind?: boolean;
 }
 
 interface Storage {
@@ -294,14 +323,41 @@ export class RemoverPods {
     return this.state.blockConcurrencyWhile(async () => {
       if (path === "/enqueue") return this.enqueue(body);
       if (path === "/status") return this.status(String(body.id));
-      if (path === "/cancel") return this.cancel(String(body.id));
+      if (path === "/cancel") return this.cancel(String(body.id), typeof body.sub === "string" ? body.sub : null);
       if (path.startsWith("/pod/")) return this.fromPod(path.slice(5), body);
       return json(404, { error: "not found" });
     });
   }
 
   async alarm(): Promise<void> {
-    await this.state.blockConcurrencyWhile(() => this.tend());
+    const due = await this.state.blockConcurrencyWhile(() => this.tend());
+    const r2 = r2Config(this.env);
+    if (due.length === 0 || r2 === null) return;
+    // Shared results' deletes run outside the queue's block, each given R2_DELETE_MS, so a slow R2 never holds the
+    // pods' and Edit's calls nor outlasts the block (Cloudflare resets an object whose block takes 30 s). One that
+    // fails or runs out of time stays due: tend() has set the next alarm for it.
+    const deleted = await Promise.all(
+      due.map(async (one) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const done = r2Fetch(r2, "DELETE", one.out, {}, { allow404: true }).then(() => true, () => false);
+        const late = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), R2_DELETE_MS)));
+        const ok = await Promise.race([done, late]);
+        clearTimeout(timer);
+        return ok ? one : null;
+      }),
+    );
+    const gone = deleted.filter((one) => one !== null);
+    if (gone.length === 0) return;
+    await this.state.blockConcurrencyWhile(async () => {
+      for (const one of gone) {
+        const job = await this.storage().get<Job>(one.key);
+        if (job === undefined || job.out !== one.out || job.outCleaned === true) continue;
+        job.outCleaned = true;
+        await this.storage().put(one.key, job);
+      }
+      // What's done with forgotten now, and the next alarm set for what's left.
+      await this.tend();
+    });
   }
 
   private storage() {
@@ -364,13 +420,15 @@ export class RemoverPods {
     const twin = [...new Uint8Array(digest)].slice(0, 16).map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const earlier = await this.storage().get<string>(`twin:${twin}`);
     const before = earlier === undefined ? undefined : await this.storage().get<Job>(`j:${earlier}`);
+    const sub = typeof body.sub === "string" ? body.sub : null;
     if (before !== undefined && (before.state === "queued" || before.state === "running")) {
       before.subs = (before.subs ?? 1) + 1;
+      if (sub !== null) before.holds = [...(before.holds ?? []), sub];
       before.shared = true;
       await this.storage().put(`j:${before.id}`, before);
       return json(200, { ok: true, id: before.id, out: before.out });
     }
-    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now(), twin, subs: 1 };
+    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now(), twin, subs: 1, ...(sub === null ? {} : { holds: [sub] }) };
     await this.storage().put(`j:${job.id}`, job);
     await this.storage().put(`twin:${twin}`, job.id);
     await this.setOrder(poolOf(kind), [...(await this.order(poolOf(kind))), job.id]);
@@ -382,6 +440,8 @@ export class RemoverPods {
   private async status(id: string): Promise<Response> {
     const job = await this.storage().get<Job>(`j:${id}`);
     if (job === undefined) return json(404, { error: "no such job" });
+    // A shared result deleted already (past SHARED_OUT_MS): never "ready", which would send a caller to read nothing.
+    if (job.state === "done" && job.outCleaned === true) return json(410, { error: "its result was cleaned up before it was read: send the job again" });
     if (job.state === "done") return json(200, { ...(job.output ?? { ok: true }), ...(job.shared ? { shared: true } : {}) });
     // Refused renting: no machine had it, RunPod's words say why.
     if (job.state === "failed") return json(502, { error: job.output?.refused === true ? String(job.output.error) : `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
@@ -389,9 +449,14 @@ export class RemoverPods {
     return json(202, { pending: true, status: job.state });
   }
 
-  private async cancel(id: string): Promise<Response> {
+  private async cancel(id: string, sub: string | null): Promise<Response> {
     const job = await this.storage().get<Job>(`j:${id}`);
     if (job !== undefined && (job.state === "queued" || job.state === "running")) {
+      if (sub !== null) {
+        // That hold let go already (a Stop sent again), or never this job's: nobody else's hold is taken for it.
+        if (!(job.holds ?? []).includes(sub)) return json(200, { ok: true });
+        job.holds = job.holds!.filter((one) => one !== sub);
+      }
       const left = (job.subs ?? 1) - 1;
       job.subs = Math.max(0, left);
       if (left <= 0) {
@@ -439,6 +504,19 @@ export class RemoverPods {
       pod.jobs = pod.jobs.filter((one) => one !== String(body.id));
       await this.storage().put("pods", pods);
       return json(200, { ok: true });
+    }
+    // A GPU pod says on its first ask whether its OCR loaded (bootstrap.sh): one that didn't is given cleans alone,
+    // and three in a row fail the finds waiting rather than renting card after card for them (Nov 24: an OCR that
+    // wouldn't load stopped the pod's setup, and with it every clean).
+    if (pod.pool === "gpu" && typeof body.find === "boolean" && pod.saidFind !== true) {
+      pod.saidFind = true;
+      pod.canFind = body.find;
+      let failures = body.find ? 0 : ((await this.storage().get<number>("findFailures")) ?? 0) + 1;
+      if (failures >= BOOT_FAILURES) {
+        await this.failWaiting("gpu", "find", { ok: false, error: `the finder couldn't start on ${BOOT_FAILURES} rented GPUs in a row (its OCR didn't load)` });
+        failures = 0;
+      }
+      await this.storage().put("findFailures", failures);
     }
     // next: the next job waiting for its kind of machine (pre-find GPU pods only take "clean" jobs).
     const order = await this.order(pod.pool);
@@ -494,7 +572,7 @@ export class RemoverPods {
    * The machines brought in line with the work, run on every change and every 30 s while anything is out: quiet or
    * unbooted machines let go (their jobs handed on), machines rented while jobs wait, old jobs forgotten.
    */
-  private async tend(): Promise<void> {
+  private async tend(): Promise<{ key: string; out: string }[]> {
     const now = Date.now();
     const pods = await this.pods();
     // Machines RunPod no longer has (stopped from its console, or gone with their host) are forgotten at once, their
@@ -551,6 +629,7 @@ export class RemoverPods {
       const lanes = pool === "gpu" ? 1 : CPU_LANES;
       const free = mine.reduce((sum, pod) => sum + Math.max(0, lanes - pod.jobs.length), 0);
       let needed: number;
+      let findsWaiting = 0;
       if (pool === "gpu") {
         // Pre-find GPU pods cannot run "find" jobs: evaluate general GPU demand and find-only demand independently
         // so legacy pods neither block finder rentals nor inflate find-only rentals with clean work.
@@ -560,6 +639,7 @@ export class RemoverPods {
         const generalNeeded = waiting > free ? Math.max(1, Math.ceil(work.total / GPU_WORK_EACH_S)) - mine.length : 0;
         const findNeeded = work.waitingFind > freeCanFind ? Math.max(1, Math.ceil(work.find / GPU_WORK_EACH_S)) - canFindPods.length : 0;
         needed = Math.max(generalNeeded, findNeeded);
+        findsWaiting = work.waitingFind;
       } else {
         needed = Math.ceil(Math.max(0, waiting - free) / lanes);
       }
@@ -573,56 +653,50 @@ export class RemoverPods {
         }
         pods[rented.id] = rented.pod;
       }
-      await this.whileRefused(pool, refused !== null && waiting > 0 && !Object.values(pods).some((pod) => pod.pool === pool) ? refused : null, now);
+      const pooled = Object.values(pods).filter((pod) => pod.pool === pool);
+      await this.whileRefused(pool, null, refused !== null && waiting > 0 && pooled.length === 0 ? refused : null, now);
+      // Finds wait for a pod that can find: one that can't (an older pod, or one whose OCR didn't load) cleaning
+      // meanwhile doesn't keep them from failing with RunPod's words (Nov 24).
+      if (pool === "gpu") await this.whileRefused(pool, "find", refused !== null && findsWaiting > 0 && pooled.length > 0 && !pooled.some((pod) => pod.canFind === true) ? refused : null, now);
       if (mine.length > 0 || waiting > 0 || want > 0) busy = true;
     }
     await this.storage().put("pods", pods);
-    // Shared outputs are cleaned 10 min after completion (giving every deduplicated caller time to read them);
-    // jobs a day old are forgotten once any shared R2 output has been deleted.
-    const SHARED_OUT_TTL_MS = 10 * 60_000;
+    // A result two callers share is left on R2 by both (remover_cloud.ts) and deleted here once their wait is over
+    // (alarm(), outside this block); a job is forgotten a day on, once its shared result is gone.
+    const due: { key: string; out: string }[] = [];
     let nextCleanupAt: number | null = null;
+    const soonest = (at: number) => (nextCleanupAt = nextCleanupAt === null ? at : Math.min(nextCleanupAt, at));
     const r2 = r2Config(this.env);
     const jobs = await this.storage().list<Job>({ prefix: "j:" });
     for (const [key, job] of jobs) {
-      if (job.state === "done" && job.shared && !job.outCleaned && r2 !== null) {
-        const dueAt = job.at + SHARED_OUT_TTL_MS;
-        if (now >= dueAt) {
-          try {
-            await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
-            job.outCleaned = true;
-            await this.storage().put(key, job);
-          } catch {
-            nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
-          }
-        } else {
-          nextCleanupAt = nextCleanupAt === null ? dueAt : Math.min(nextCleanupAt, dueAt);
-        }
-      }
-      if (!((job.state === "done" || job.state === "failed" || job.state === "cancelled") && now - job.at > 86400_000)) continue;
+      const ended = job.state === "done" || job.state === "failed" || job.state === "cancelled";
+      if (!ended) continue;
       if (job.shared && !job.outCleaned && r2 !== null) {
-        if (job.state === "done") continue;
-        try {
-          await r2Fetch(r2, "DELETE", job.out, {}, { allow404: true });
-          job.outCleaned = true;
-        } catch {
-          nextCleanupAt = nextCleanupAt === null ? now + 30_000 : Math.min(nextCleanupAt, now + 30_000);
-          continue;
-        }
+        const dueAt = job.at + (job.state === "done" ? SHARED_OUT_MS : 86400_000);
+        if (now >= dueAt) {
+          due.push({ key, out: job.out });
+          // Tried again then if this alarm's delete doesn't get through.
+          soonest(now + 30_000);
+        } else soonest(dueAt);
+        continue;
       }
+      if (now - job.at <= 86400_000) continue;
       await this.storage().delete(key);
       if (job.twin !== undefined) await this.storage().delete(`twin:${job.twin}`);
     }
     if (busy || Object.keys(pods).length > 0) await this.storage().setAlarm(now + 30_000);
     else if (nextCleanupAt !== null) await this.storage().setAlarm(Math.max(now + 1_000, nextCleanupAt));
     else await this.storage().deleteAlarm();
+    return due;
   }
 
   /**
-   * `refused` (RunPod's last words) while the pool has no machine and none can be rented; once that has lasted
-   * RENT_REFUSED_MS, what waits in the pool fails with those words. Null (a machine rented, or one there): forgotten.
+   * `refused` (RunPod's last words) while the pool has no machine (or, `only` "find", none that can find) and none can
+   * be rented; once that has lasted RENT_REFUSED_MS, what waits in the pool (of that kind) fails with those words.
+   * Null (a machine rented, or one there): forgotten.
    */
-  private async whileRefused(pool: Pool, refused: string | null, now: number): Promise<void> {
-    const key = `refusedSince:${pool}`;
+  private async whileRefused(pool: Pool, only: "find" | null, refused: string | null, now: number): Promise<void> {
+    const key = `refusedSince:${pool}${only === null ? "" : `:${only}`}`;
     if (refused === null) {
       await this.storage().delete(key);
       return;
@@ -631,13 +705,25 @@ export class RemoverPods {
     await this.storage().put(key, since);
     if (now - since < RENT_REFUSED_MS) return;
     const error = `RunPod wouldn't rent a ${pool === "gpu" ? "GPU" : "CPU machine"} for ${Math.round((now - since) / 60_000)} minutes (${refused})`;
+    await this.failWaiting(pool, only, { ok: false, error, refused: true });
+    await this.storage().delete(key);
+  }
+
+  /** What waits in `pool` (of kind `only`, or all of it) failed with `output`, and taken off the queue. */
+  private async failWaiting(pool: Pool, only: Kind | null, output: Record<string, unknown>): Promise<void> {
+    const now = Date.now();
+    const kept: string[] = [];
     for (const id of await this.order(pool)) {
       const job = await this.storage().get<Job>(`j:${id}`);
-      if (job !== undefined && job.state === "queued") await this.storage().put(`j:${id}`, { ...job, state: "failed", output: { ok: false, error, refused: true }, at: now });
+      if (job === undefined || job.state !== "queued") continue;
+      if (only !== null && (job.kind ?? "clean") !== only) {
+        kept.push(id);
+        continue;
+      }
+      await this.storage().put(`j:${id}`, { ...job, state: "failed", output, at: now });
     }
-    await this.setOrder(pool, []);
-    await this.storage().delete(key);
-    console.log(JSON.stringify({ route: "remover/tend", pool, stopped: error }));
+    await this.setOrder(pool, kept);
+    console.log(JSON.stringify({ route: "remover/tend", pool, ...(only === null ? {} : { only }), stopped: output.error }));
   }
 
   /** A machine rented for `pool` on the first kind RunPod has (cheapest first), or what RunPod said to the last asked. */

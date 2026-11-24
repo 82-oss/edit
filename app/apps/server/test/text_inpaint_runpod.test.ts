@@ -11,6 +11,8 @@ const asked: string[] = [];
 let polls = 0;
 let refuse = false;
 let slow = false;
+let shared = false;
+const cancels: string[] = [];
 
 beforeAll(() => {
   server = Bun.serve({
@@ -18,11 +20,12 @@ beforeAll(() => {
     async fetch(request) {
       const url = new URL(request.url);
       asked.push(`${request.method} ${url.pathname}`);
+      if (request.method === "DELETE") cancels.push(url.search);
       if (url.pathname === "/v1/remover/jobs" && request.method === "POST") {
         if (refuse) return Response.json({ error: "Cleaning on RunPod isn't on for this relay." }, { status: 503 });
         if (slow) {
           await Bun.sleep(100);
-          return Response.json({ id: "job-slow", out: "edit/cleaned/work/slow.mp4" }, { status: 202 });
+          return Response.json({ id: "job-slow", out: "edit/cleaned/work/slow.mp4", sub: "hold-1" }, { status: 202 });
         }
         const body = (await request.json()) as { worker: string; request: { input: string } };
         expect(body.worker.length).toBeGreaterThan(100);
@@ -32,7 +35,7 @@ beforeAll(() => {
       if (url.pathname === "/v1/remover/jobs/job-123456" && request.method === "GET") {
         polls += 1;
         if (polls < 2) return Response.json({ pending: true, status: "IN_PROGRESS" }, { status: 202 });
-        return Response.json({ ok: true, box: null, inferred: 0, seconds: 3 });
+        return Response.json({ ok: true, box: null, inferred: 0, seconds: 3, ...(shared ? { shared: true } : {}) });
       }
       if (url.pathname === "/v1/remover/jobs/job-slow") return Response.json({ pending: true, status: "IN_QUEUE" }, { status: 202 });
       if (url.pathname === "/v1/cloud/r2/delete") return Response.json({ ok: true, deleted: 1 });
@@ -83,8 +86,22 @@ test("a Stop while the job was being sent cancels it once its id comes back, and
   wanted = false;
   expect(await going).toEqual({ ok: false, error: "stopped" });
   expect(asked).toContain("DELETE /v1/remover/jobs/job-slow");
+  // This caller's own hold let go (a Stop sent twice can't take another caller's).
+  expect(cancels).toContain("?sub=hold-1");
   expect(asked).not.toContain("GET /v1/remover/jobs/job-slow");
   slow = false;
+});
+
+test("a result another caller shares (the same stretch sent twice) is left on R2 for the relay to take away", async () => {
+  polls = 0;
+  shared = true;
+  const before = asked.filter((one) => one === "POST /v1/cloud/r2/delete").length;
+  expect((await inpaint.runPodForTests.clean(request)).ok).toBe(true);
+  expect(asked.filter((one) => one === "POST /v1/cloud/r2/delete").length).toBe(before);
+  shared = false;
+  polls = 0;
+  expect((await inpaint.runPodForTests.clean(request)).ok).toBe(true);
+  expect(asked.filter((one) => one === "POST /v1/cloud/r2/delete").length).toBe(before + 1);
 });
 
 test("the relay's refusal ends it with its words", async () => {

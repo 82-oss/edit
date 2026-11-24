@@ -134,6 +134,13 @@ def pack_bundle(mid, parent, out_path):
     }
     if parent_state is not None:
         bundle["parentState"] = parent_state
+    # What the survey read, each with its frame, so Edit's finish runs off_titles and off_caption_labels as `finish` does (Nov 24).
+    reads = []
+    if os.path.exists(f"{TAG}/scan/{mid}.jsonl"):
+        for line in open(f"{TAG}/scan/{mid}.jsonl"):
+            row = json.loads(line)
+            reads += [[*L[:5], row["f"]] for L in row["lines"] if len(L) >= 6]
+    bundle["reads"] = reads
     tmp = f"{out_path}.tmp"
     with open(tmp, "w") as f:
         json.dump(bundle, f)
