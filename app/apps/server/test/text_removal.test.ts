@@ -1020,6 +1020,8 @@ test("a project waiting for an original going up from here: its export waits, na
     // Up: the project that waited is brought up to date by itself, and nothing waits on it any more.
     cloud.upEnded(key, true);
     expect(cloud.waitedFor(project.id)).toEqual([]);
+    // Still out while what waited is planned again: an export looking in that moment doesn't slip through.
+    expect(removalSchedule.progressOf(project.id).out).toBeGreaterThan(0);
     const until = Date.now() + 30_000;
     while (!tracked(app, project.id) && Date.now() < until) await Bun.sleep(100);
     await blur.settled();

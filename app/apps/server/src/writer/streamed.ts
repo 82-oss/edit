@@ -459,9 +459,11 @@ function goUp(dir: string, one: Held, local: Promise<string>): void {
   })();
   // Not in R2 until it lands (relay's copy or this Mac's upload): RunPod isn't sent its key meanwhile (cloud.ts `notUp`).
   cloud.goingUp(one.key);
+  // Failed, it's let go only when no other script here still sends the same original (its landing ends the wait then).
+  const othersGoing = () => [...going.keys()].some((other) => other !== id && other.endsWith(`\n${one.source}`));
   up.then(
     (landed) => cloud.upEnded(one.key, landed.key === one.key),
-    () => cloud.upEnded(one.key, false),
+    () => (othersGoing() ? undefined : cloud.upEnded(one.key, false)),
   );
   cloudMedia.goingUpBehind(one.source, up, watch);
   const began = Date.now();

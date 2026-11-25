@@ -3486,12 +3486,10 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
       if (!(error instanceof AsBefore)) throw error;
       diag.info("script", error.dir !== null ? `${file}: no room on ${THIS_MACHINE} to keep it whole as well as its working copy, so it goes as before (up, cut, and let go here)` : `${file}: its whole original isn't coming to ${THIS_MACHINE}, so it goes as before`);
       // Today's path finds a download where it was left; whatever it does with it, nothing of it stays after.
-      const left = error.dir;
-      try {
-        return await footageAsBefore(app, id, index, file, letGo);
-      } finally {
-        if (left !== null) fs.rmSync(left, { recursive: true, force: true });
-      }
+      // Failed, the download stays for the file's next try (nothing brought down twice); the scratch sweep has it after.
+      const done = await footageAsBefore(app, id, index, file, letGo);
+      if (error.dir !== null) fs.rmSync(error.dir, { recursive: true, force: true });
+      return done;
     }
   }
   return footageAsBefore(app, id, index, file, letGo);
@@ -3691,7 +3689,9 @@ async function originalHere(
   const got = await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress));
   // Kept whole here beside its working copy only with room for both (the download itself takes what today's path's
   // does): short, it's left in its folder for today's path, which finds it there and downloads nothing again.
-  if (!storage.roomFor(cache, localFirst.workingRoom(await durationOf(got.path).catch(() => 0)))) throw new AsBefore(dir);
+  // Its length unread, the copy is taken to be as big as the download (a copy is at most its rate, and smaller).
+  const seconds = await durationOf(got.path).catch(() => null);
+  if (!storage.roomFor(cache, seconds === null ? got.size : localFirst.workingRoom(seconds))) throw new AsBefore(dir);
   const name = safeName(got.name);
   const segment = cloudMediaModule.segment(name);
   const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/youtube/${video}/${segment}`;

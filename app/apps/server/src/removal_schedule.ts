@@ -134,7 +134,7 @@ export function progressOf(id: string): { done: number; out: number } {
   const cleans = textInpaint.piecesOf(id);
   // A file the finder is still reading counts as out too: its stretches aren't known yet (found.ts).
   // A file still going up from here that the finder or the model waits for counts as out too (cloud.ts `waitFor`).
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length;
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length + (replanning.get(id) ?? 0);
   const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
@@ -688,7 +688,15 @@ export function start(app: App): void {
   upListener = (key, waiting) => {
     for (const id of waiting) {
       diag.info("removal", `${id}: ${key} is up, so what waited for it goes`);
-      ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after ${key} went up: ${diag.messageOf(error)}`));
+      // Out until what waited is queued again: an export looking meanwhile still waits (`progressOf`).
+      replanning.set(id, (replanning.get(id) ?? 0) + 1);
+      ensure(app, id)
+        .catch((error: unknown) => diag.warn("removal", `${id}: after ${key} went up: ${diag.messageOf(error)}`))
+        .finally(() => {
+          const left = (replanning.get(id) ?? 1) - 1;
+          if (left > 0) replanning.set(id, left);
+          else replanning.delete(id);
+        });
     }
   };
   cloud.whenUp.push(upListener);
@@ -708,12 +716,15 @@ export function start(app: App): void {
 }
 
 let upListener: ((key: string, waiting: string[]) => void) | null = null;
+/** Projects being planned again after an upload they waited for landed, by how many such plans are under way. */
+const replanning = new Map<string, number>();
 
 /** For tests. */
 export function reset(): void {
   looked.clear();
   active.clear();
   wakes.clear();
+  replanning.clear();
   wakeGeneration += 1;
   if (watcher !== null) clearInterval(watcher);
   watcher = null;
