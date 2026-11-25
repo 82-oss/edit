@@ -451,7 +451,7 @@ test("a script's, an idea's or a thumbnail's agent is told its channel's lane al
   expect(lanes.section("drinsanity", "script", "lesson")).toContain('goes with scope "channel"');
   expect(lanes.section("drinsanity", "script", "none")).not.toMatch(/remember|send lesson/);
   expect(lanes.section(undefined, "ideas")).toBe("");
-  expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "read_skill", "other_channels"]);
+  expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "forget", "read_skill", "other_channels"]);
   expect(lanes.toolsFor("ideas").map((one) => one.name)).toContain("channel_videos");
 });
 
@@ -764,6 +764,14 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     expect(mock.cloud.convex.library.has("skill:@ch-samcompila--script/cases")).toBe(true);
     // Ungrouped: its own, said as before.
     expect(await lanes.call("remember", { skill: "slow", text: "Slow titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toBe("Kept as slow (version 1) in JCS (@jcs)'s ideas style: its agents have it from their next turn.");
+    // Put away again by a lane's agent (Nov 25: "this video only", and the script's agent had no way to drop the lesson it had just kept).
+    await v2cloud.refreshSkills();
+    expect(await lanes.call("forget", { skill: "slow", reason: "Sphe: this video only" }, { channel: "jcs", lane: "ideas" })).toBe("Put away slow from JCS (@jcs)'s ideas style: its agents don't have it from their next turn (its versions are kept).");
+    expect(mock.cloud.convex.library.get("skill:@jcs--ideas/slow")?.archived).toBe(true);
+    await v2cloud.refreshSkills();
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
+    await expect(lanes.call("forget", { skill: "slow", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).rejects.toThrow("no lesson slow");
+    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("its group's, so every channel in the group");
   } finally {
     channels.useChannelsForTests([]);
     cleanup();

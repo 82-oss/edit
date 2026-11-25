@@ -12,6 +12,7 @@
 // share other_channels' reach into another channel from here.
 
 import * as channels from "./channels.ts";
+import * as diag from "./diag.ts";
 import * as styles from "./script_styles.ts";
 import { CHANGE_ARG, changeLesson, changedMost, GUIDE_FROM, groupRule, keepRule, lessonRefusal, MEMORY_MOST, PART_MOST } from "./teaching.ts";
 import * as teachingConflicts from "./teaching_conflicts.ts";
@@ -276,6 +277,11 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
       },
     },
     {
+      name: "forget",
+      description: `Put one of this channel's ${word} lessons away: what the person means by forgetting or dropping something taught ("forget that", "that was for this video only"), a lesson you kept by mistake too. It leaves every one of this channel's agents from their next turn, its versions kept. To drop one line of a longer lesson, remember it with change instead; a script style is chosen with use_style, never put away here. A teacher's to do.`,
+      inputSchema: { type: "object", properties: { skill: { type: "string", description: "The lesson's name, as your instructions list it" }, reason: { type: "string", description: "What the person said, quoted" } }, required: ["skill", "reason"] },
+    },
+    {
       name: "read_skill",
       description: `Read one of this channel's ${word} parts your instructions list, once per conversation, when it fits.`,
       inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
@@ -303,7 +309,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
   return tools;
 }
 
-export const TOOL_NAMES = ["remember", "read_skill", "other_channels", "channel_videos"] as const;
+export const TOOL_NAMES = ["remember", "forget", "read_skill", "other_channels", "channel_videos"] as const;
 
 function needCloud(): void {
   if (!v2cloud.enabled()) throw new Error("A channel's lessons need this computer signed in to Edit.");
@@ -325,6 +331,7 @@ export async function call(name: string, args: Record<string, unknown>, place: P
   needCloud();
   await refresh();
   if (name === "remember") return remember(args, place);
+  if (name === "forget") return forget(args, place);
   if (name === "read_skill") {
     const wanted = nameArg(args.name, "name");
     const found = lessonsOf(place).find((one) => one.name === wanted);
@@ -376,6 +383,26 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
   return `${changing ? "Changed" : "Kept as"} ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`;
+}
+
+/**
+ * A lesson put away (Nov 25: told the watermark zoom JJ asked for on the 1957 murder script was "this video only",
+ * the script's agent couldn't drop the lesson it had just kept: "I have no tool that does that"). Its versions stay.
+ */
+async function forget(args: Record<string, unknown>, place: Place): Promise<string> {
+  teacherOnly(`Putting away a lesson of this channel's ${MANY[place.lane]}`);
+  const skill = nameArg(args.skill, "skill");
+  if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
+  const reserved = v2cloud.reservedName(skill, place.lane);
+  if (reserved !== null) throw new Error(reserved);
+  if (skill === styles.DEFAULT || styles.isStyle(skill)) throw new Error(`${skill} is a script style: use_style chooses which one a script is written in, and its lines change with remember's change.`);
+  const found = lessonsOf(place).find((one) => one.name === skill);
+  if (found?.key === undefined) throw new Error(`no lesson ${skill} in ${nameOf(place.channel)}'s ${WORD[place.lane]} style: the ones there are in your instructions`);
+  await v2cloud.archive(found.key, true);
+  v2cloud.forgetSkills();
+  diag.info("lanes", `${place.channel} ${place.lane}: put away ${found.key} (${args.reason.trim()})`);
+  const group = ownLesson(found, place) ? "" : ", its group's, so every channel in the group";
+  return `Put away ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style${group}: its agents don't have it from their next turn (its versions are kept).`;
 }
 
 // ---------------------------------------------------------------- another channel's style
