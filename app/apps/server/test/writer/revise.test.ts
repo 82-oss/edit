@@ -93,10 +93,20 @@ test("a note on a cut-in rewritten in the same answer goes on its new words (Nov
   const edits = [{ op: "write", id: "i2", narration: "He was charged with kidnapping and murder." }, { op: "note", id: "i2", on: "kidnapping and murder", text: "edit: charges on screen" }];
   const [direct] = apply(script(), edits, [], true);
   expect(direct[1]!.notes?.at(-1)?.anchor).toMatchObject({ start: 20, end: 41, quote: "kidnapping and murder" });
-  // Proposed (not yet accepted): the note waits on the words the proposal brings.
+  // Proposed (not yet accepted): the note waits with the proposal, never on the narration it may not get (Codex on #11).
   const [proposed, , proposals] = apply(script(), edits, [], false);
   expect(proposals).toHaveLength(1);
-  expect(proposed[1]!.notes?.at(-1)?.anchor?.quote).toBe("kidnapping and murder");
+  expect(proposed[1]!.notes ?? []).toEqual([]);
+  expect(proposals[0]!.notes?.map((note) => note.anchor?.quote)).toEqual(["kidnapping and murder"]);
+  // A note on words both have stays on the cut-in; a rewrite again keeps the earlier proposal's notes its words still have.
+  const both = [{ op: "write", id: "i2", narration: "He said he was home, and was charged with kidnapping and murder." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }];
+  const [kept, , once] = apply(script(), both, [], false);
+  expect(kept[1]!.notes?.map((note) => note.text)).toEqual(["edit: the porch"]);
+  expect(once[0]!.notes).toBeUndefined();
+  const again = { ...script(), clips: script().clips, proposals };
+  const [, , twice] = apply(again, [{ op: "write", id: "i2", narration: "He was charged with kidnapping and murder in 2011." }], [], false);
+  expect(twice).toHaveLength(1);
+  expect(twice[0]!.notes?.map((note) => note.text)).toEqual(["edit: charges on screen"]);
 });
 
 test("writes an empty cut-in and proposes a change to a saved one", () => {

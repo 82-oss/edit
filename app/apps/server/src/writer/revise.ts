@@ -7,7 +7,7 @@
 // decline, never a silent change.
 
 import * as lanes from "../lanes.ts";
-import type { Clip, Focus, Proposal, Research, Script, Word } from "@edit/types/writer";
+import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
 import { caseCount, isCutIn, noteAnchor } from "./blocks.ts";
 import * as claude from "./claude.ts";
@@ -285,6 +285,8 @@ class Work {
   corrections: Record<string, string>;
   /** The paragraphs written this turn, by cut-in id. */
   writes = new Map<string, string>();
+  /** The notes added this turn, by id. */
+  addedNotes = new Set<string>();
   readonly format: Format;
   /** The items the producer marked (and what an edit split off them), the only ones the whole-script passes reach; null when none were. */
   readonly pointed: Set<string> | null;
@@ -517,7 +519,9 @@ class Work {
         const clip = this.clips[this.at(text("id") ?? "")]!;
         const body = editNote(text("text") ?? "");
         const on = (text("on") ?? "").trim();
-        clip.notes = [...(clip.notes ?? []), { id: crypto.randomUUID(), text: body, at: Date.now(), ...(on !== "" ? { anchor: this.anchor(clip, on) } : {}) }];
+        const id = crypto.randomUUID();
+        clip.notes = [...(clip.notes ?? []), { id, text: body, at: Date.now(), ...(on !== "" ? { anchor: this.anchor(clip, on) } : {}) }];
+        this.addedNotes.add(id);
         return;
       }
       case "remove_note": {
@@ -595,8 +599,15 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     const before = saved.get(id);
     if (before !== undefined && before !== "" && !direct) {
       if (before !== text) {
+        // A note on words only the rewrite has waits with it: on the cut-in once accepted, gone if declined (Codex on #11).
+        const onProposed = (note: Note) => note.anchor !== undefined && noteAnchor(script, { ...clip, narration: before }, note.anchor.quote) === null;
+        const theseNotes = (clip.notes ?? []).filter((note) => work.addedNotes.has(note.id) && onProposed(note));
+        clip.notes = (clip.notes ?? []).filter((note) => !theseNotes.includes(note));
+        // An earlier proposal's notes still on words this one has carry over to it.
+        const earlier = proposals.filter((proposal) => proposal.cutIn === id).flatMap((proposal) => proposal.notes ?? []).filter((note) => note.anchor !== undefined && noteAnchor(script, { ...clip, narration: text }, note.anchor.quote) !== null);
+        const notes = [...earlier, ...theseNotes];
         proposals = proposals.filter((proposal) => proposal.cutIn !== id);
-        proposals.push({ id: crypto.randomUUID(), cutIn: id, before, after: text, at: Date.now() });
+        proposals.push({ id: crypto.randomUUID(), cutIn: id, before, after: text, at: Date.now(), ...(notes.length > 0 ? { notes } : {}) });
       }
     } else clip.narration = text;
   }
