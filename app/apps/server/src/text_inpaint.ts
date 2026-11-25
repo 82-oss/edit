@@ -42,8 +42,10 @@ import workerSource from "./minimax_worker.py" with { type: "text" };
 
 /** Where the model is installed (its Python, weights and code): a machine without it blurs. */
 export const REMOVER = join(os.homedir(), ".local", "share", "edit-remover");
-/** LaMa for the engine's caption clean (caption-removal-trial/rebuild2.py's ONNX): where it is, this machine cleans every stretch itself. */
+/** LaMa for the engine's caption clean (scripts/lama-onnx.py's ONNX): where it is, this machine cleans every stretch itself. */
 export const LAMA = join(REMOVER, "lama-v1.onnx");
+/** Where it's kept in the cloud (205 MB, the same on every machine; Sphe, Nov 25: "yes" to R2), fetched once by `fetchLama`. */
+const LAMA_KEY = "edit/models/lama-v1.onnx";
 /** A new way of cleaning is a new name on the shelf. 2: cleaned over their watermark (`beneath`); 3: mid-screen subtitle band coverage. */
 const VERSION = 3;
 /** Previous version still accepted without re-cleaning when its strip box already covers the tracked vertical range. */
@@ -111,8 +113,34 @@ export const cloudOn = async (): Promise<boolean> => override === null && (await
 export const setCloudOnForTests = (value: boolean): void => removerCloud.setOnForTests(value);
 const cloudNow = (): boolean => override === null && removerCloud.now();
 
-/** Whether this machine cleans with LaMa (the engine's caption clean): the addon has it and LaMa is installed. Never under tests (a test never starts the real model). */
-const lamaHere = (): boolean => override === null && process.env.NODE_ENV !== "test" && native().captionClean !== undefined && isFile(LAMA);
+/** Whether this machine could clean with LaMa: the addon has the caption clean (never under tests: a test never starts the real model). */
+const lamaCan = (): boolean => override === null && process.env.NODE_ENV !== "test" && native().captionClean !== undefined;
+/** Whether this machine cleans with LaMa: it could, and LaMa is here (else it's fetched: `fetchLama`). */
+const lamaHere = (): boolean => {
+  if (!lamaCan()) return false;
+  if (isFile(LAMA)) return true;
+  fetchLama();
+  return false;
+};
+
+let fetching: Promise<void> | null = null;
+/**
+ * LaMa fetched from the cloud once, in the background, the first time it's wanted on a machine that could use it and
+ * is signed in; a download cut short carries on from where it stopped (cloud.ts `download`). Until it's here a stretch
+ * is cleaned as before (RunPod, or blurred).
+ */
+function fetchLama(): void {
+  if (fetching !== null || !cloud.enabled()) return;
+  const started = Date.now();
+  diag.info("removal", `fetching LaMa for the caption clean (${LAMA_KEY})`);
+  fetching = cloud
+    .download(LAMA_KEY, LAMA)
+    .then(() => diag.info("removal", `LaMa is here (${Math.round((Date.now() - started) / 1000)} s): stretches are cleaned on this machine from now on`))
+    .catch((error) => diag.warn("removal", `LaMa couldn't be fetched (tried again when next wanted): ${diag.messageOf(error)}`))
+    .finally(() => {
+      fetching = null;
+    });
+}
 
 let availableHere: boolean | null = null;
 /** Whether stretches are cleaned with a model: LaMa on this machine, on RunPod (the relay's flag), or MiniMax on this machine (Linux, the model installed, an NVIDIA GPU). */
