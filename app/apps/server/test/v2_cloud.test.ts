@@ -803,6 +803,33 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     }
     expect(armed).toBe(false);
     expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "brief")).toBe(false);
+    // Every retry made stale, or one failing: the stale reads are never shown, and the next read shows what's there.
+    const jcs = { channel: "jcs", lane: "ideas" as const };
+    expect(await lanes.call("remember", { skill: "fresh", text: "Fresh titles.", reason: "Sphe" }, jcs)).toContain("Kept as fresh");
+    const shown = () => lanes.lessonsOf(jcs).some((one) => one.name === "fresh");
+    for (const failing of [false, true]) {
+      let reads = 0;
+      convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+        if (name.endsWith("listLibrary") && args.kind === "skill") {
+          reads++;
+          if (failing && reads === 2) return { status: "error", errorMessage: "the cloud is busy" };
+          const answer = served(name, args, base);
+          v2cloud.forgetSkills();
+          return answer;
+        }
+        return served(name, args, base);
+      };
+      try {
+        await v2cloud.refreshSkills();
+      } finally {
+        convex.call = served;
+      }
+      expect(reads).toBe(failing ? 2 : 3);
+      expect(shown()).toBe(false);
+    }
+    v2cloud.forgetSkills();
+    await v2cloud.refreshSkills();
+    expect(shown()).toBe(true);
   } finally {
     channels.useChannelsForTests([]);
     cleanup();
