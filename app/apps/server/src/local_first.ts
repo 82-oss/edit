@@ -64,6 +64,9 @@ export const WORKING = {
   segment_s: 60,
 };
 
+/** About what a working copy of `seconds` of footage takes on the disk: its picture and sound at their rates, a quarter over. */
+export const workingRoom = (seconds: number): number => Math.ceil((Math.max(seconds, 0) * (WORKING.bitrate + 160_000) * 1.25) / 8);
+
 /** Every working copy's key starts so: new, since blocks and whole copies are kept per key and the registry's proxies are shared by every project. */
 export const WORKING_KEYS = "edit/proxies/v720/";
 

@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { App } from "../src/app.ts";
+import * as cloud from "../src/cloud.ts";
 import * as found from "../src/found.ts";
 import type { Media } from "../src/model.ts";
 import * as removerCloud from "../src/remover_cloud.ts";
@@ -730,5 +731,52 @@ test("a file not uploaded from here is read from R2 when another machine read it
     expect(found.piecesOf("p1")).toEqual([]);
   } finally {
     found.whenFound.splice(found.whenFound.indexOf(listener), 1);
+  }
+});
+
+// Nov 25, the reviews of turning local-first on: a local-first import names its original's key in the project from its
+// answer, before a byte is up, so a Mac's finder sent RunPod a key R2 hadn't got, and the failed read was kept as failed.
+test("a file whose original is still going up from here waits for it, with no RunPod job, and is read once it's up", async () => {
+  const app = makeApp(path.join(tmpDir, "going-up"));
+  const key = "edit/originals/youtube/goingUp0001/clip.mp4";
+  const media = makeMedia("mg", "clip.mp4", key);
+  const told: string[] = [];
+  const listener = (up: string) => void told.push(up);
+  cloud.whenUp.push(listener);
+  cloud.goingUp(key);
+  try {
+    expect(removerCloud.keyOf(media)).toBeUndefined();
+    found.ensure(app, "p1", [{ media, source: "youtube:goingUp0001", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(jobsPosted).toHaveLength(0);
+    expect(found.piecesOf("p1")).toEqual([]);
+    // Up: whoever waits is told, and the next look reads it on RunPod.
+    cloud.upEnded(key, true);
+    expect(told).toEqual([key]);
+    expect(removerCloud.keyOf(media)).toBe(key);
+    found.ensure(app, "p1", [{ media, source: "youtube:goingUp0001", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(jobsPosted).toHaveLength(1);
+    expect(jobsPosted[0]!.request.input).toBe(key);
+    expect(found.foundOf(app, "youtube:goingUp0001")).not.toBeNull();
+  } finally {
+    cloud.upEnded(key, false);
+    cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
+  }
+});
+
+test("an original whose file went before it was up is no longer waited on, and nobody is told it's up", () => {
+  const key = "edit/originals/youtube/goneGone001/clip.mp4";
+  const told: string[] = [];
+  const listener = (up: string) => void told.push(up);
+  cloud.whenUp.push(listener);
+  try {
+    cloud.goingUp(key);
+    expect(cloud.notUp(key)).toBe(true);
+    cloud.upEnded(key, false);
+    expect(cloud.notUp(key)).toBe(false);
+    expect(told).toEqual([]);
+  } finally {
+    cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
   }
 });

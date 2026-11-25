@@ -52,10 +52,14 @@ export function setOnForTests(value: boolean | null): void {
   remote.forced = value;
 }
 
-/** A file's key on R2 (its original), if it has one Edit may use: what the rented machines read. */
+/**
+ * A file's key on R2 (its original), if it has one Edit may use: what the rented machines read. None while its original
+ * is still going up from here (a local-first import names the key before a byte is up: cloud.ts `notUp`), so a finder
+ * read, a track or a clean waits for it, or is done here, instead of asking RunPod for a file R2 hasn't got.
+ */
 export function keyOf(media: Pick<Media, "cloud">): string | undefined {
   const key = media.cloud?.original;
-  return key !== undefined && key !== "" && cloud.validKey(key) ? key : undefined;
+  return key !== undefined && key !== "" && cloud.validKey(key) && !cloud.notUp(key) ? key : undefined;
 }
 
 /** The relay refusing a job (its own words): the job failed, unlike the relay out of reach a moment. */

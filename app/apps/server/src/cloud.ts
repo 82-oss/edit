@@ -801,6 +801,24 @@ export function uploadJournals(): { key: string; size: number; up: number; parts
   });
 }
 
+/**
+ * Originals whose import's upload hasn't landed yet (going now, waiting its turn, or put off), by key. A local-first
+ * import names its original's key in the project from its answer, before a byte is up (local_first.ts), so whatever
+ * reads R2 for it (RunPod: remover_cloud.ts `keyOf`) finds nothing until it lands. cloud_media `uploadLater` keeps this;
+ * each `whenUp` is told the key once it lands.
+ */
+const notUpYet = new Set<string>();
+export const whenUp: ((key: string) => void)[] = [];
+/** Whether `key`'s original is still on its way up from here. */
+export const notUp = (key: string): boolean => notUpYet.has(key);
+/** `key`'s original is on its way up (or will be, at its next try). */
+export const goingUp = (key: string): void => void notUpYet.add(key);
+/** `key`'s original landed (`up`), or will never go from here (its file gone): no longer on its way. */
+export function upEnded(key: string, up: boolean): void {
+  if (!notUpYet.delete(key) || !up) return;
+  for (const tell of whenUp) tell(key);
+}
+
 /** Lets go of a resumable upload of `key` begun here (the object got there another way): its parts in R2 and its journal. */
 export function forgetUpload(key: string): void {
   const file = journalPath(key);

@@ -955,6 +955,8 @@ export function uploadLater(home: string, upload: Upload): void {
   // A local-first working copy goes up on a row of its own, beside its original's (local_first.ts): under the source's
   // row it took the original's place, so a restart carried on with one of them and either ending crossed off both.
   const key = jobs.begin(home, "upload", "-", { ...upload }, localFirst.isWorkingKey(upload.proxy) ? `${upload.source}#working-up` : upload.source);
+  // Not in R2 until it lands, at this try or a later one (a put-off upload stays on its way).
+  if (upload.uploadOriginal) cloud.goingUp(upload.originalKey);
   const entry = { key, home, upload, done: Promise.resolve(true) };
   entry.done = uploadSlot
     .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key))))
@@ -963,6 +965,7 @@ export function uploadLater(home: string, upload: Upload): void {
         jobs.end(home, key);
         if (upload.removeAfter === true) fs.rmSync(upload.file, { force: true });
         tellLanded(upload.file, null);
+        if (upload.uploadOriginal) cloud.upEnded(upload.originalKey, true);
         return true;
       },
       (error: unknown) => {
@@ -973,6 +976,7 @@ export function uploadLater(home: string, upload: Upload): void {
         if (gone) {
           jobs.end(home, key);
           tellLanded(upload.file, new Error("its copy here is gone"));
+          if (upload.uploadOriginal) cloud.upEnded(upload.originalKey, false);
         } else jobs.putOff(home, key, `its upload failed: ${scrub(failure(error))}`);
         return false;
       },

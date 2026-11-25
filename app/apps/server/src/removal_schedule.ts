@@ -28,6 +28,7 @@ import * as burned from "./burned_subtitles.ts";
 import { readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
+import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import * as found from "./found.ts";
@@ -45,6 +46,7 @@ import * as seams from "./seams.ts";
 import * as textBlur from "./text_blur.ts";
 import * as textInpaint from "./text_inpaint.ts";
 import * as textRemoval from "./text_removal.ts";
+import { breather } from "./thread.ts";
 import * as tools from "./tools.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
@@ -675,6 +677,12 @@ let wakeGeneration = 0;
 export function start(app: App): void {
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
+  // An original that went up from here: the projects showing it brought up to date, so what waited for it to be on R2
+  // (RunPod's finder read, track and clean: remover_cloud.ts `keyOf`) goes now, with no edit needed to wake it.
+  const before = upListener === null ? -1 : cloud.whenUp.indexOf(upListener);
+  if (before >= 0) cloud.whenUp.splice(before, 1);
+  upListener = (key) => void wakeShowing(app, key).catch((error: unknown) => diag.warn("removal", `after ${key} went up: ${diag.messageOf(error)}`));
+  cloud.whenUp.push(upListener);
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
   app.store.subscribe((event) => {
@@ -688,6 +696,22 @@ export function start(app: App): void {
     later.unref?.();
     resting.set(id, later);
   });
+}
+
+let upListener: ((key: string) => void) | null = null;
+
+/** Brings each recent project showing original `key` up to date (`resume`'s projects, those with the key among their media). */
+async function wakeShowing(app: App, key: string): Promise<void> {
+  const since = Date.now() - RESUME_WITHIN_MS;
+  const breathe = breather();
+  for (const summary of app.store.list()) {
+    await breathe();
+    if (summary.problem !== undefined || summary.modified_ms < since || summary.clips === 0) continue;
+    const project = app.store.get(summary.id)?.project;
+    if (project === undefined || !project.channel || !project.media.some((one) => one.cloud?.original === key)) continue;
+    diag.info("removal", `${summary.id}: ${key} is up, so what waited for it goes`);
+    await ensure(app, summary.id).catch((error: unknown) => diag.warn("removal", `${summary.id}: ${diag.messageOf(error)}`));
+  }
 }
 
 /** For tests. */

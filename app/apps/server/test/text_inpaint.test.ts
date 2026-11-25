@@ -10,7 +10,9 @@ import * as fs from "node:fs";
 import type { Media, Project } from "../src/model.ts";
 import type { Box } from "../src/native/index.ts";
 import { join } from "../src/paths.ts";
+import * as cloud from "../src/cloud.ts";
 import * as inpaint from "../src/text_inpaint.ts";
+import * as removerCloud from "../src/remover_cloud.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip, media } from "./helpers/model.ts";
@@ -365,6 +367,31 @@ test("a stretch still running when the plan is made again, and kept in it, stays
     release();
     await inpaint.settled();
   } finally {
+    cleanup();
+  }
+});
+
+// Nov 25, the reviews of turning local-first on: a stretch of footage whose original was still going up from here was
+// sent to RunPod for a key R2 hadn't got, and failed ("the footage isn't in the cloud yet"), blurred for good.
+test("on RunPod, a stretch of footage whose original is still going up from here waits for it, sending nothing", async () => {
+  const { app, cleanup } = fixtureHome("text-inpaint-going-up");
+  const key = "edit/originals/youtube/inpaintUp01/clip.mp4";
+  removerCloud.setOnForTests(true);
+  cloud.goingUp(key);
+  try {
+    const footage = media({ id: "m1", name: "clip.mp4", path: join(app.store.home, "clip.mp4"), kind: "video", duration: 10, width: 64, height: 36, fps: 30, cloud: { source: "youtube:inpaintUp01", original: key, proxy: key, size: 1 } }) as Media;
+    const created = app.store.create("A", { width: 1280, height: 720, fps: 30 }).project as Project;
+    await app.store.update(created.id, "test", (project) => void project.media.push(footage));
+    const plan = [{ media: footage, source: "youtube:inpaintUp01", spans: [[0, 2]] as [number, number][] }];
+    let asked = 0;
+    const masksOf: inpaint.MasksOf = (_s, _f, _t, _fps, _first, frames) => (asked++, Array.from({ length: frames }, (): Box[] => [[0.1, 0.8, 0.9, 0.9]]));
+    await inpaint.ensure(app, created.id, plan, masksOf);
+    await inpaint.settled();
+    expect(inpaint.piecesOf(created.id).map((one) => one.state)).toEqual(["waiting"]);
+    expect(asked).toBe(0);
+  } finally {
+    cloud.upEnded(key, false);
+    removerCloud.setOnForTests(null);
     cleanup();
   }
 });
