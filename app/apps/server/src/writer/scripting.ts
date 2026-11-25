@@ -129,8 +129,32 @@ async function styleNamed(dir: string, script: Script, note: string): Promise<Sc
   return store.update(dir, (now) => void (now.style = named.name), true);
 }
 
+/**
+ * A build note that asks to start from another channel's style ("start from Female Felons' script style") brings that
+ * channel's Script lane into this one's own first, as the chat's other_channels would with bring "all", so the script
+ * is written from it. A script's chat only opens once it's built, and an untaught channel's first script was written
+ * plain before (Nov 25). What it brought (or why not) heads the build's report; "" when the note asks none.
+ */
+async function bringAsked(script: Script, note: string, job: Job): Promise<string> {
+  if (!script.channel || script.commentary || note.trim() === "") return "";
+  await lanes.refresh();
+  const from = lanes.styleAskedFrom(script.channel, note);
+  if (from === null) return "";
+  job.stage(`Bringing in ${from.title}'s script style`);
+  try {
+    const said = await lanes.otherChannels(script.channel, "script", { channel: from.key, bring: "all" });
+    diag.info("writer", `${named(script.id, script.title)}: ${from.title}'s script style asked for in the note: ${said.split("\n")[0]}`);
+    return `From ${from.title}: ${said}`;
+  } catch (error) {
+    checkStopped(job);
+    diag.warn("writer", `${named(script.id, script.title)}: ${from.title}'s script style wasn't brought in: ${diag.messageOf(error)}`);
+    return `${from.title}'s script style wasn't brought in: ${diag.messageOf(error)}`;
+  }
+}
+
 export async function buildOnce(app: App, data: string, id: string, note: string, kind: Kind | undefined, job: Job): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
+  const brought = await bringAsked(store.read(dir), note, job);
   let script = await styleNamed(dir, store.read(dir), note);
   if (script.commentary) return buildCommentary(data, dir, script, note, job);
   if (kind !== undefined && kind !== script.kind) {
@@ -184,7 +208,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   } catch (error) {
     failed(dir, job, error);
   }
-  let report = `${built.report.trim()}\n\n${researchLine(found)}`;
+  let report = `${brought === "" ? "" : `${brought}\n\n`}${built.report.trim()}\n\n${researchLine(found)}`;
   checkStopped(job);
   const now = store.read(dir);
   const before = structuredClone(now);

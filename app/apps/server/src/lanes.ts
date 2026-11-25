@@ -390,6 +390,28 @@ async function styleOf(channel: string, lane: v2cloud.Lane): Promise<v2cloud.Ite
   return STYLE_KINDS.flatMap((kind) => v2cloud.forPlace(all.filter((item) => item.kind === kind && places.includes(v2cloud.ownPlaceOf(item.key) ?? "")), places));
 }
 
+/**
+ * The other channel whose style a message asks to start from ("start from Female Felons' script style"), or null:
+ * another channel named by its title or @handle, beside the word "style". A first build's note may ask it, before
+ * the script's chat (and its other_channels) exists (Sphe, Nov 25: Daily Interrogation's first script, from Female
+ * Felons' style).
+ */
+export function styleAskedFrom(mine: string, note: string): channels.Channel | null {
+  if (!/\bstyles?\b/i.test(note)) return null;
+  const words = note.toLowerCase().replace(/[’‘]/g, "'");
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const others = channels.knownChannels().filter((one) => one.key !== mine && one.archived !== true);
+  // The longest title first, so a channel whose title holds another's ("Sam's Interrogations" and "Interrogations") is the one meant.
+  const byLength = [...others].sort((a, b) => b.title.length - a.title.length);
+  return (
+    byLength.find((one) => {
+      const title = one.title.trim().toLowerCase().replace(/[’‘]/g, "'");
+      if (title !== "" && new RegExp(`(^|[^\\p{L}\\p{N}])${escape(title)}($|[^\\p{L}\\p{N}])`, "u").test(words)) return true;
+      return typeof one.handle === "string" && one.handle !== "" && new RegExp(`@${escape(one.handle.toLowerCase())}($|[^\\p{L}\\p{N}_.-])`, "u").test(words);
+    }) ?? null
+  );
+}
+
 /** The channel the words name: its key, its @handle or its title. */
 function named(all: channels.Channel[], given: string): channels.Channel {
   const words = given.trim().replace(/^@/, "").toLowerCase();
