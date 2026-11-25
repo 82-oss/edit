@@ -137,6 +137,12 @@ async function styleNamed(dir: string, script: Script, note: string): Promise<Sc
  * the writer that the style asked for is the one it's given (the first build after one said "I don't have that style").
  * Both "" when the note asks none.
  */
+/** The lessons of a style not brought, each with why, as the bring's report says it (CodeRabbit on #10). */
+export function whyHeld(held: string[], unread: string[]): string {
+  const own = held.filter((name) => !unread.includes(name));
+  return [own.length > 0 ? `${own.join(", ")}, held back for this channel's own` : "", unread.length > 0 ? `${unread.join(", ")}, which couldn't be read just now` : ""].filter((part) => part !== "").join("; and ");
+}
+
 async function bringAsked(script: Script, note: string, job: Job): Promise<{ report: string; writer: string }> {
   const none = { report: "", writer: "" };
   if (!script.channel || script.commentary || note.trim() === "") return none;
@@ -146,7 +152,7 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<{ rep
   const theirs = `${from.title}${/s$/i.test(from.title) ? "'" : "'s"}`;
   job.stage(`Bringing in ${theirs} script style`);
   try {
-    const { said, brought, here, held } = await lanes.otherChannelsOutcome(script.channel, "script", { channel: from.key, bring: "all" });
+    const { said, brought, here, held, unread } = await lanes.otherChannelsOutcome(script.channel, "script", { channel: from.key, bring: "all" });
     diag.info("writer", `${named(script.id, script.title)}: ${from.title}'s script style asked for in the note: ${said.split("\n")[0]}`);
     // Only what was brought is said to be here: a lesson held back (it clashes with this channel's, or this channel has
     // its own of that name) is named, so the writer never takes this channel's for it.
@@ -154,8 +160,8 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<{ rep
       held.length === 0
         ? `(Edit's note: ${theirs} script style was brought into this channel's own before this build, so this channel's style you're given is the one asked for. Write from it, and don't say it's missing.)`
         : brought.length === 0 && here.length === 0
-          ? `(Edit's note: ${theirs} script style was asked for, but none of it came into this channel's own: ${held.join(", ")} held back for this channel's own. Write from the style you're given, and say in your report that ${theirs} style wasn't brought.)`
-          : `(Edit's note: ${theirs} script style was brought into this channel's own before this build, all but ${held.join(", ")}, held back for this channel's own. Write from the style you're given.)`;
+          ? `(Edit's note: ${theirs} script style was asked for, but none of it came into this channel's own: ${whyHeld(held, unread)}. Write from the style you're given, and say in your report that ${theirs} style wasn't brought.)`
+          : `(Edit's note: ${theirs} script style was brought into this channel's own before this build, all but ${whyHeld(held, unread)}. Write from the style you're given.)`;
     return { report: `From ${from.title}: ${said}`, writer };
   } catch (error) {
     checkStopped(job);

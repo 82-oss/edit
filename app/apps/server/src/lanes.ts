@@ -441,10 +441,12 @@ export interface Bring {
   brought: string[];
   here: string[];
   held: string[];
+  /** Those of `held` that couldn't be read to copy, the rest held for this channel's own. */
+  unread: string[];
 }
 
 export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, args: Record<string, unknown>): Promise<Bring> {
-  const just = (said: string): Bring => ({ said, brought: [], here: [], held: [] });
+  const just = (said: string): Bring => ({ said, brought: [], here: [], held: [], unread: [] });
   const word = WORD[lane];
   const kindWord = (kind: string) => (lane === "edit" && kind === "template" ? "effect" : (KIND_WORD[kind as (typeof STYLE_KINDS)[number]] ?? kind));
   // A channel's add-ons (addons.ts) are no lesson: never listed or counted as one, and brought with the whole style
@@ -524,7 +526,7 @@ export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, arg
     (unread.length > 0 ? ` ${unread.join(", ")} couldn't be read from ${from.title}'s just now, so it isn't here: bring it again in a moment.` : "") +
     (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
     (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "");
-  return { said, brought, here: alreadyHere, held: [...kept, ...clashed, ...unread] };
+  return { said, brought, here: alreadyHere, held: [...kept, ...clashed, ...unread], unread };
 }
 
 // ---------------------------------------------------------------- YouTube's numbers

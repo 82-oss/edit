@@ -649,7 +649,7 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     mock.cloud.convex.library.set("sound:@jcs--edit/thud", { key: "sound:@jcs--edit/thud", kind: "sound", name: "thud", current: 1, latest: 1, note: "A thud.", niches: ["jcs--edit"], at: Date.now(), by: { name: "Sphe" } });
     await v2cloud.refreshSkills();
     const unreadable = await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "thud" });
-    expect(unreadable).toMatchObject({ brought: [], here: [], held: ["thud"] });
+    expect(unreadable).toMatchObject({ brought: [], here: [], held: ["thud"], unread: ["thud"] });
     expect(unreadable.said).toContain("thud couldn't be read from JCS's just now");
     expect(again.said).toContain("pacing came from it before, as it is there.");
     expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');

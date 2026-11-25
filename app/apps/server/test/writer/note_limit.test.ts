@@ -21,3 +21,10 @@ test("a note over its limit is refused on its own words, Edit's notes after it n
   expect(() => checkNote(lookalike)).toThrow("Keep the note under 2,000 characters.");
   expect(() => checkNote(lookalike, true)).not.toThrow();
 });
+
+test("a style's lessons not brought are told to the writer with why, as the report says it", async () => {
+  const { whyHeld } = await import("../../src/writer/scripting.ts");
+  expect(whyHeld(["intro", "music"], [])).toBe("intro, music, held back for this channel's own");
+  expect(whyHeld(["intro", "thud"], ["thud"])).toBe("intro, held back for this channel's own; and thud, which couldn't be read just now");
+  expect(whyHeld(["thud"], ["thud"])).toBe("thud, which couldn't be read just now");
+});
