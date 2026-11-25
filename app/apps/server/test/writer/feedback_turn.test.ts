@@ -136,10 +136,11 @@ test("each pulled note is settled by what the agent said: done with what changed
   }
 });
 
-test("a note is done here only once the review has it: one the review couldn't mark is let go, open on both sides, and said so (CodeRabbit on #11)", async () => {
+test("a note the review couldn't mark is done here, never let go to be fixed twice, and its mark is made at the next poll (CodeRabbit on #11)", async () => {
   const { home, cleanup } = fixtureHome("feedback-untold");
   try {
-    const calls = relay((call) => call.path === "reviews:resolve" && call.args.noteId !== "b");
+    let down = true;
+    const calls = relay((call) => down && call.path === "reviews:resolve" && call.args.noteId !== "b");
     const data = store.dataDir(home);
     fs.mkdirSync(join(data, "reviews"), { recursive: true });
     const open = (id: string) => note(id, { anchor: null });
@@ -152,16 +153,22 @@ test("a note is done here only once the review has it: one the review couldn't m
       { id: "b", outcome: "changed", said: "Said it word for word." },
       { id: "c", outcome: "answered", said: "He was home." },
     ]);
-    expect(done.fixed).toBe(1);
+    expect(done.fixed).toBe(3);
     expect(done.lines).toEqual([
-      "Fixed Jones's note, but the review couldn't be marked just now, so it stays open there: Said he was alone.",
+      "Fixed Jones's note, and the review is marked as soon as it can be: Said he was alone.",
       "Fixed Jones's note: Said it word for word.",
-      "Answered Jones's note, but the review couldn't be marked just now, so it stays open there: He was home.",
+      "Answered Jones's note, and the review is marked as soon as it can be: He was home.",
     ]);
-    expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["a"], ["c"]]);
-    expect(reviews.note(data, "a")?.status).toBe("open");
-    expect(reviews.note(data, "b")?.status).toBe("done");
-    expect(reviews.note(data, "c")?.status).toBe("open");
+    expect(calls.filter((call) => call.path === "reviews:release")).toEqual([]);
+    expect(["a", "b", "c"].map((id) => reviews.note(data, id)?.status)).toEqual(["done", "done", "done"]);
+    // The review back: the next poll makes the owed marks, once.
+    down = false;
+    const first = calls.length;
+    await reviews.poll(data);
+    expect(calls.slice(first).filter((call) => call.path === "reviews:resolve").map((call) => [call.args.noteId, call.args.fixSummary])).toEqual([["a", "Said he was alone."], ["c", "He was home."]]);
+    const second = calls.length;
+    await reviews.poll(data);
+    expect(calls.slice(second).filter((call) => call.path === "reviews:resolve")).toEqual([]);
   } finally {
     cleanup();
   }
