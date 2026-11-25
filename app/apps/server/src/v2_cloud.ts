@@ -463,9 +463,9 @@ export async function refreshSkills(): Promise<void> {
           if (gone !== undefined && asked < gone) continue;
           if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, latest: item.latest });
         }
-        // Something saved or put away while this read was out: it's never shown (what was there stays, a put-away already out of it), and it's read again (CodeRabbit on #11). Only a first read, with nothing before it, is shown regardless.
+        // Something saved or put away while this read was out: it's never shown (what was there stays, a put-away already out of it), and it's read again (CodeRabbit on #11). A first read made stale leaves what's taught unknown (`teachingKnown`), never taken from it.
         const current = asked === skillsChanged;
-        if (current || !skillsRead) {
+        if (current) {
           pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
           asRead(next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name)));
           skillsRead = true;

@@ -830,6 +830,24 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     v2cloud.forgetSkills();
     await v2cloud.refreshSkills();
     expect(shown()).toBe(true);
+    // A first read made stale every time leaves what's taught unknown, until one that isn't.
+    v2cloud.useSkillsForTests([], [], false);
+    v2cloud.forgetSkills();
+    convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+      const answer = served(name, args, base);
+      if (name.endsWith("listLibrary") && args.kind === "skill") v2cloud.forgetSkills();
+      return answer;
+    };
+    try {
+      await v2cloud.refreshSkills();
+    } finally {
+      convex.call = served;
+    }
+    expect(v2cloud.teachingKnown()).toBe(false);
+    expect(shown()).toBe(false);
+    await v2cloud.refreshSkills();
+    expect(v2cloud.teachingKnown()).toBe(true);
+    expect(shown()).toBe(true);
   } finally {
     channels.useChannelsForTests([]);
     cleanup();
