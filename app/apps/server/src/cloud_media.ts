@@ -959,7 +959,15 @@ export function uploadLater(home: string, upload: Upload): void {
   if (upload.uploadOriginal) cloud.goingUp(upload.originalKey);
   const entry = { key, home, upload, done: Promise.resolve(true) };
   entry.done = uploadSlot
-    .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key))))
+    .with(() =>
+      diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () =>
+        runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key), () => {
+          // Up: a retry of the row (the proxy's, after a restart) neither sends it nor counts it as not up again.
+          upload.uploadOriginal = false;
+          jobs.patch(home, key, { uploadOriginal: false });
+        }),
+      ),
+    )
     .then(
       () => {
         jobs.end(home, key);
@@ -993,7 +1001,7 @@ export function uploadLater(home: string, upload: Upload): void {
  * audit I14.e: beaten only at its first reports, a long upload read "running, nothing noted for N min" in the log and in
  * each Mac's report).
  */
-async function runUpload(upload: Upload, progressed: () => void, moving: () => void = () => {}): Promise<void> {
+async function runUpload(upload: Upload, progressed: () => void, moving: () => void = () => {}, originalUp: () => void = () => {}): Promise<void> {
   if (upload.uploadOriginal) {
     // Up already, whole (the same footage imported again while its first upload went on: the 10-hour trial,
     // Nov 4, sent 58 GB twice): the key is its content's, so it isn't sent again.
@@ -1024,6 +1032,7 @@ async function runUpload(upload: Upload, progressed: () => void, moving: () => v
       else if (record.originalKey === upload.originalKey) await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
     }
     // In R2 now, whatever becomes of the proxy's upload after it: what waited for it there goes.
+    originalUp();
     cloud.upEnded(upload.originalKey, true);
   }
   if (upload.proxy !== null && upload.local !== null) {

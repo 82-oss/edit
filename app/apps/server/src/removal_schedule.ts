@@ -35,7 +35,7 @@ import * as found from "./found.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { framingAt } from "./frames_fill.ts";
 import type { Media, Project, VideoClip } from "./model.ts";
-import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
+import { clipEnd, fps as fpsOf, mediaOf, trackOf } from "./project.ts";
 import { isOverlay } from "./clean_strips.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
@@ -94,6 +94,7 @@ export async function ensure(app: App, id: string): Promise<void> {
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
   if (removal.kinds(lesson).blur.length > 0) await textRemoval.ensure(app, id);
+  keepWaits(app, id);
   noteRun(app, id);
 }
 
@@ -134,7 +135,7 @@ export function progressOf(id: string): { done: number; out: number } {
   const cleans = textInpaint.piecesOf(id);
   // A file the finder is still reading counts as out too: its stretches aren't known yet (found.ts).
   // A file still going up from here that the finder or the model waits for counts as out too (cloud.ts `waitFor`).
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length + (replanning.get(id) ?? 0);
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length + (replanning.get(id) ?? 0) + (textRemoval.planningAfterRead(id) ? 1 : 0);
   const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
@@ -155,7 +156,7 @@ export function exportLine(id: string): string | null {
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
   const started = Date.now();
-  while (progressOf(id).out > 0) {
+  while ((keepWaits(app, id), progressOf(id).out > 0)) {
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
@@ -716,6 +717,16 @@ export function start(app: App): void {
 }
 
 let upListener: ((key: string, waiting: string[]) => void) | null = null;
+
+/** `id` waits only for uploads of footage its timeline still shows (a clip taken off lets an export go without it). */
+function keepWaits(app: App, id: string): void {
+  const project = app.store.get(id)?.project;
+  if (project === undefined) return cloud.stopWaiting(id);
+  // A slowed copy's own file reads as its parent, so the parent's upload is waited for too (text_removal `slowedFrom`).
+  const media = project.clips.flatMap((clip) => ("media" in clip && typeof clip.media === "string" ? [mediaOf(project, clip.media)] : [])).filter((one) => one !== undefined);
+  const shown = new Set([...media, ...media.map((one) => textRemoval.slowedFrom(project, one))].map((one) => one?.cloud?.original));
+  cloud.keepWaiting(id, (key) => shown.has(key));
+}
 /** Projects being planned again after an upload they waited for landed, by how many such plans are under way. */
 const replanning = new Map<string, number>();
 

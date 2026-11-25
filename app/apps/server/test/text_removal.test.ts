@@ -1030,6 +1030,14 @@ test("a project waiting for an original going up from here: its export waits, na
     cloud.goingUp(key);
     cloud.waitFor(key, project.id, "tape");
     expect(await removalSchedule.waitForPieces(app, project.id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
+    // A file the finder has just read: out until the plan it starts is in, so an export doesn't slip between them.
+    for (const listener of found.whenFound) listener(app, project.id);
+    expect(removalSchedule.progressOf(project.id).out).toBeGreaterThan(1);
+    // Its clip taken off the timeline: an export no longer waits for that footage's upload.
+    await app.store.update(project.id, "agent", (p) => void (p.clips = []));
+    expect(await removalSchedule.waitForPieces(app, project.id, 5_000).then(() => "went", (error: unknown) => String(error))).toBe("went");
+    expect(cloud.waitedFor(project.id)).toEqual([]);
+    cloud.waitFor(key, project.id, "tape");
     removalSchedule.stop(app, project.id, ["text"]);
     expect(cloud.waitedFor(project.id)).toEqual([]);
   } finally {

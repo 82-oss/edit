@@ -3581,6 +3581,9 @@ interface LocalWay {
  * range, where the local path brought it all down before the answer and sent it all back up: a 6 GB file on JJ's line,
  * 8 Mbit/s down and 2 up, about 100 min, then about 6.7 h), and a YouTube video already on its way up from somewhere,
  * or one Script mode has here (today's path cuts from that copy, or waits for its upload, and downloads nothing).
+ * The registry not answering within `REGISTRY_WAIT_MS` (the relay down or slow) is taken as nobody having it, by choice
+ * (Nov 22: nothing about playing here waits on the cloud): the video comes down and plays here, and its upload behind
+ * finds an original already up under its key and sends nothing (cloud_media `runUpload`'s look first).
  */
 async function localFirstWay(app: App, file: string, progress: (bytes: number, total: number | null, name: string) => void, letGo: () => void): Promise<LocalWay | null> {
   const source = localFirstSource(file);
@@ -3664,9 +3667,9 @@ async function originalHere(
       try {
         fs.linkSync(held.path, at);
       } catch {
-        // Another disk: Script mode's own copy is read where it is (it keeps it until the cloud has it).
-        progress(held.size, held.size, held.name);
-        return { source, key: held.key, name: held.name, path: held.path, size: held.size, upload: false };
+        // Another disk: it can't be this project's own copy (Script mode may let it go for room once it's up, while the
+        // working copy still reads it), so it goes on today's path, cut from it under Script mode's hold.
+        throw new AsBefore(null);
       }
     }
     progress(held.size, held.size, held.name);

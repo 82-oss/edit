@@ -761,6 +761,9 @@ test("an original counts as up once it lands, though its proxy's upload fails af
     expect(cloud.notUp(key)).toBe(true);
     expect(await cloudMedia.uploaded(file)).toBe(false);
     expect(cloud.notUp(key)).toBe(false);
+    // Its row, put off for the proxy, says the original is up: a start doesn't count it as not up again.
+    cloudMedia.noteOriginalsGoingUp(fixture.home);
+    expect(cloud.notUp(key)).toBe(false);
     // Its row put off for later: a start notes its original as not up until it's sent again.
     const later = "edit/originals/sha256/putoff/clip.mp4";
     const row = jobs.begin(fixture.home, "upload", "-", { file, source: "sha256:putoff", size: 1, duration: 1, originalKey: later, uploadOriginal: true, proxy: null, local: null }, "sha256:putoff");
@@ -829,3 +832,48 @@ test("an upload whose file is gone when it's started again after a restart is no
     fixture.cleanup();
   }
 });
+
+test("a Script mode copy on another disk (no link into the cache) goes on today's path, cut from it under its hold", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive-held-other-disk", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const inputs: (string | null | undefined)[] = [];
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one, _ranges, input) => {
+    inputs.push(input);
+    const proxy = `edit/proxies/drive/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  const find = copiesHere.find;
+  const held = join(fixture.dir, "held", "Bodycam 1.mp4");
+  fs.mkdirSync(join(fixture.dir, "held"), { recursive: true });
+  fs.copyFileSync(close, held);
+  let leased = 0;
+  let released = 0;
+  copiesHere.find = (source) =>
+    source === "drive:1OtherDisk001" ? (leased++, { copy: { path: held, key: "edit/originals/drive/1OtherDisk001/Bodycam 1.mp4", name: "Bodycam 1.mp4", size: fs.statSync(held).size, release: () => void released++ } }) : null;
+  const link = spyOn(fs, "linkSync").mockImplementation(() => {
+    throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+  });
+  try {
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1OtherDisk001", url: "https://drive.google.com/file/d/1OtherDisk001/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    const media = fixture.store.get(id)!.project.media[0]!;
+    expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    expect(inputs).toEqual([held]);
+    expect(leased).toBe(released);
+  } finally {
+    link.mockRestore();
+    copiesHere.find = find;
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);

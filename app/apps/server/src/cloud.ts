@@ -826,6 +826,10 @@ export function waitFor(key: string, project: string, name: string): boolean {
 export function stopWaiting(project: string): void {
   for (const waiting of notUpYet.values()) waiting.delete(project);
 }
+/** `project` waits only for the originals `still` says it needs. */
+export function keepWaiting(project: string, still: (key: string) => boolean): void {
+  for (const [key, waiting] of notUpYet) if (!still(key)) waiting.delete(project);
+}
 /** What `project` waits for to land: each original's name. */
 export function waitedFor(project: string): string[] {
   return [...notUpYet.values()].flatMap((waiting) => (waiting.has(project) ? [waiting.get(project)!] : []));
