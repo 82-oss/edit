@@ -1514,10 +1514,11 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
   if (fs.existsSync(resolved) && !hooks.ownExport(app, projectId, resolved)) throw new Error(`${resolved} exists and isn't one of this project's exports: give another name`);
   const subtitled = isSubtitled(found.project);
   const drive = bool(args.drive);
+  const exported = structuredClone(found.project) as Project;
   const started = await app.exports.start(
     app.store,
     app.library,
-    structuredClone(found.project) as Project,
+    exported,
     options,
     path,
     drive === null ? {} : { drive },
@@ -1533,7 +1534,7 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
   const eta = progress.lookAgain(projectId, ["export"]);
   if (eta !== "") said += `${said.endsWith(".") ? "" : "."}${eta}`;
   // What it goes without of what it would have waited for (RunPod refusing removal's machines): the person hears it from the agent.
-  const without = seams.broll.readyNote?.(live(app, projectId).project) ?? null;
+  const without = seams.broll.readyNote?.(exported) ?? null;
   if (without !== null) said += `${said.endsWith(".") ? "" : "."} ${without}`;
   return text(said);
 }
