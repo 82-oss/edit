@@ -457,7 +457,9 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   // An answer on which holds settles the one lesson it was about, so it counts only when one is brought by its name:
   // a whole style brought again is checked again, and the person is asked about each that clashes.
   const settled = typeof args.settled === "string" && args.settled.trim() !== "" && args.bring.trim() !== "all";
-  // What's taught here, and each lesson as it comes in, so two brought together that clash are caught too.
+  // What's taught here before this bring, never the lessons brought with it: they come from one channel, where they
+  // already stand together (Nov 25: Female Felons' style brought whole into Daily Interrogation held back its own
+  // writing, judgment-calls and never-name-the-outlet as clashing with its other lessons).
   const here = [...v2cloud.memories(channels.placesOf(mine, lane))];
   const clashing: teachingConflicts.Conflict[] = [];
   const unchecked: string[] = [];
@@ -479,7 +481,6 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
     }
     if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) {
       brought.push(itemWords(item));
-      if (typeof text === "string") here.push({ name: item.name, text, ...(item.note ? { note: item.note } : {}) });
     }
   }
   v2cloud.forgetSkills();

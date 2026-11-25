@@ -644,28 +644,29 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
       expect(left).toContain('- intro: "Our own intro." (music: stand-in clash)');
       expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/music")).toBeUndefined();
       expect((await call(app, id, "other_channels", { channel: "JCS", bring: "music", settled: "Sphe: bring it" })).content[0]!.text).toContain("to change here: lesson music.");
-      // Two brought together that clash with each other: the second is checked against the first as it came in.
+      // Two brought together from one channel are checked against what's here, never against each other: they stand together there (Nov 25).
       seed("skill:@jcs--edit/beds", "beds", "Music under every stretch of footage.", "Music beds.");
       seed("skill:@jcs--edit/quiet", "quiet", "Footage plays with its own sound only.", "Quiet footage.");
       await v2cloud.refreshSkills();
       const asked: string[] = [];
       teachingConflicts.hooks.ask = async (prompt) => {
         asked.push(prompt);
-        return prompt.startsWith('The new lesson, "quiet"') && prompt.includes("Music under every stretch of footage.") ? { conflicts: [{ skill: "beds", line: "music under EVERY stretch of footage", why: "music against none" }] } : { conflicts: [] };
+        return prompt.includes("Music under every stretch of footage.") && !prompt.startsWith('The new lesson, "beds"') ? { conflicts: [{ skill: "beds", line: "Music under every stretch of footage.", why: "music against none" }] } : { conflicts: [] };
       };
-      // An answer on which holds settles one lesson brought by its name, not a whole style.
-      const both = (await call(app, id, "other_channels", { channel: "JCS", bring: "all", settled: "Sphe: bring it" })).content[0]!.text!;
-      expect(both).toContain("lesson beds.");
-      expect(both).toContain('- beds: "music under EVERY stretch of footage" (quiet: music against none)');
-      expect(both).toContain("bring each again by its name with settled");
-      expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/quiet")).toBeUndefined();
+      const both = (await call(app, id, "other_channels", { channel: "JCS", bring: "all" })).content[0]!.text!;
+      expect(both).toContain("lesson beds, lesson quiet.");
+      expect(both).not.toContain("music against none");
+      expect(asked.some((prompt) => prompt.startsWith('The new lesson, "quiet"') && prompt.includes("Music under every stretch of footage."))).toBe(false);
+      expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/quiet")).toHaveLength(1);
+      seed("skill:@jcs--edit/hum", "hum", "Room tone under every cut.", "Room tone.");
+      await v2cloud.refreshSkills();
       // Couldn't be checked: brought, and said.
       teachingConflicts.hooks.ask = async () => {
         throw new Error("no model");
       };
-      const unsure = (await call(app, id, "other_channels", { channel: "JCS", bring: "quiet" })).content[0]!.text!;
-      expect(unsure).toContain("lesson quiet.");
-      expect(unsure).toContain("quiet couldn't be checked against what's taught here just now");
+      const unsure = (await call(app, id, "other_channels", { channel: "JCS", bring: "hum" })).content[0]!.text!;
+      expect(unsure).toContain("lesson hum.");
+      expect(unsure).toContain("hum couldn't be checked against what's taught here just now");
     } finally {
       teachingConflicts.hooks.ask = ask;
     }

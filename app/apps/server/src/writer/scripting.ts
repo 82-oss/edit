@@ -133,22 +133,26 @@ async function styleNamed(dir: string, script: Script, note: string): Promise<Sc
  * A build note that asks to start from another channel's style ("start from Female Felons' script style") brings that
  * channel's Script lane into this one's own first, as the chat's other_channels would with bring "all", so the script
  * is written from it. A script's chat only opens once it's built, and an untaught channel's first script was written
- * plain before (Nov 25). What it brought (or why not) heads the build's report; "" when the note asks none.
+ * plain before (Nov 25). `report`: what it brought (or why not), heading the build's report; `writer`: Edit's word to
+ * the writer that the style asked for is the one it's given (the first build after one said "I don't have that style").
+ * Both "" when the note asks none.
  */
-async function bringAsked(script: Script, note: string, job: Job): Promise<string> {
-  if (!script.channel || script.commentary || note.trim() === "") return "";
+async function bringAsked(script: Script, note: string, job: Job): Promise<{ report: string; writer: string }> {
+  const none = { report: "", writer: "" };
+  if (!script.channel || script.commentary || note.trim() === "") return none;
   await lanes.refresh();
   const from = lanes.styleAskedFrom(script.channel, note);
-  if (from === null) return "";
-  job.stage(`Bringing in ${from.title}${/s$/i.test(from.title) ? "'" : "'s"} script style`);
+  if (from === null) return none;
+  const theirs = `${from.title}${/s$/i.test(from.title) ? "'" : "'s"}`;
+  job.stage(`Bringing in ${theirs} script style`);
   try {
     const said = await lanes.otherChannels(script.channel, "script", { channel: from.key, bring: "all" });
     diag.info("writer", `${named(script.id, script.title)}: ${from.title}'s script style asked for in the note: ${said.split("\n")[0]}`);
-    return `From ${from.title}: ${said}`;
+    return { report: `From ${from.title}: ${said}`, writer: `(Edit's note: ${theirs} script style was brought into this channel's own before this build, so this channel's style you're given is the one asked for. Write from it, and don't say it's missing.)` };
   } catch (error) {
     checkStopped(job);
     diag.warn("writer", `${named(script.id, script.title)}: ${from.title}'s script style wasn't brought in: ${diag.messageOf(error)}`);
-    return `${from.title}'s script style wasn't brought in: ${diag.messageOf(error)}`;
+    return { report: `${theirs} script style wasn't brought in: ${diag.messageOf(error)}`, writer: "" };
   }
 }
 
@@ -204,11 +208,11 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   try {
     // Its progress kept beside it, so a restart carries on from the last phase done, not from the outline.
     // Footage not in the case is said with the producer's note, so the writer never writes around it unsaid (missing.ts).
-    built = await build.buildFast(script, withMissing(note, script), found, peaks, job.signal, job.stage, join(dir, ".build-progress.json"));
+    built = await build.buildFast(script, withMissing(brought.writer === "" ? note : `${note.trim()}\n\n${brought.writer}`, script), found, peaks, job.signal, job.stage, join(dir, ".build-progress.json"));
   } catch (error) {
     failed(dir, job, error);
   }
-  let report = `${brought === "" ? "" : `${brought}\n\n`}${built.report.trim()}\n\n${researchLine(found)}`;
+  let report = `${brought.report === "" ? "" : `${brought.report}\n\n`}${built.report.trim()}\n\n${researchLine(found)}`;
   checkStopped(job);
   const now = store.read(dir);
   const before = structuredClone(now);
