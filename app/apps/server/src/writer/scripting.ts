@@ -146,9 +146,15 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<{ rep
   const theirs = `${from.title}${/s$/i.test(from.title) ? "'" : "'s"}`;
   job.stage(`Bringing in ${theirs} script style`);
   try {
-    const said = await lanes.otherChannels(script.channel, "script", { channel: from.key, bring: "all" });
+    const { said, held } = await lanes.otherChannelsOutcome(script.channel, "script", { channel: from.key, bring: "all" });
     diag.info("writer", `${named(script.id, script.title)}: ${from.title}'s script style asked for in the note: ${said.split("\n")[0]}`);
-    return { report: `From ${from.title}: ${said}`, writer: `(Edit's note: ${theirs} script style was brought into this channel's own before this build, so this channel's style you're given is the one asked for. Write from it, and don't say it's missing.)` };
+    // Only what was brought is said to be here: a lesson held back (it clashes with this channel's, or this channel has
+    // its own of that name) is named, so the writer never takes this channel's for it.
+    const writer =
+      held.length === 0
+        ? `(Edit's note: ${theirs} script style was brought into this channel's own before this build, so this channel's style you're given is the one asked for. Write from it, and don't say it's missing.)`
+        : `(Edit's note: ${theirs} script style was brought into this channel's own before this build, all but ${held.join(", ")}, held back for this channel's own. Write from the style you're given.)`;
+    return { report: `From ${from.title}: ${said}`, writer };
   } catch (error) {
     checkStopped(job);
     diag.warn("writer", `${named(script.id, script.title)}: ${from.title}'s script style wasn't brought in: ${diag.messageOf(error)}`);

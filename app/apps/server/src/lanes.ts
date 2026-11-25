@@ -427,6 +427,21 @@ function named(all: channels.Channel[], given: string): channels.Channel {
  * piece of it (or all of it, as a base) brought into this channel's own.
  */
 export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Record<string, unknown>): Promise<string> {
+  return (await otherChannelsOutcome(mine, lane, args)).said;
+}
+
+/**
+ * What bringing another channel's style did, beside what's said of it: `held`, the lessons of it not brought because
+ * they clash with this channel's or it has its own of the same name already. A first build's note that asks for a
+ * style (writer/scripting.ts `bringAsked`) tells the writer it's here only when none was held (Codex on #10).
+ */
+export interface Bring {
+  said: string;
+  held: string[];
+}
+
+export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, args: Record<string, unknown>): Promise<Bring> {
+  const just = (said: string): Bring => ({ said, held: [] });
   const word = WORD[lane];
   const kindWord = (kind: string) => (lane === "edit" && kind === "template" ? "effect" : (KIND_WORD[kind as (typeof STYLE_KINDS)[number]] ?? kind));
   // A channel's add-ons (addons.ts) are no lesson: never listed or counted as one, and brought with the whole style
@@ -435,22 +450,25 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   const itemWords = (item: v2cloud.Item) => (item.kind === "skill" && v2cloud.isAddon(item.name) ? `add-on ${item.name.slice(v2cloud.ADDON_PREFIX.length)}` : `${kindWord(item.kind)} ${item.name}`);
   const others = (await channels.list()).filter((one) => one.key !== mine);
   if (typeof args.channel !== "string" || args.channel.trim() === "") {
-    if (others.length === 0) return "There are no other channels.";
+    if (others.length === 0) return just("There are no other channels.");
     const counts = await Promise.all(others.map(async (one) => shown(await styleOf(one.key, lane)).length));
-    return others.map((one, at) => `- ${one.title}${one.handle ? ` (@${one.handle})` : ""}: ${counts[at] === 0 ? "nothing taught yet" : `${counts[at]} ${lane === "edit" ? "lessons, effects and sounds" : lane === "thumbnails" ? "lessons and graphics" : "lessons"}`}${one.lanes[lane] ? `. Its ${word} style: ${one.lanes[lane]}` : ""}`).join("\n") + "\nother_channels with channel shows one's; bring copies a piece of it here.";
+    return just(others.map((one, at) => `- ${one.title}${one.handle ? ` (@${one.handle})` : ""}: ${counts[at] === 0 ? "nothing taught yet" : `${counts[at]} ${lane === "edit" ? "lessons, effects and sounds" : lane === "thumbnails" ? "lessons and graphics" : "lessons"}`}${one.lanes[lane] ? `. Its ${word} style: ${one.lanes[lane]}` : ""}`).join("\n") + "\nother_channels with channel shows one's; bring copies a piece of it here.");
   }
   const from = named(others, args.channel);
   const style = await styleOf(from.key, lane);
   if (args.bring === undefined) {
-    if (shown(style).length === 0) return `${from.title}'s ${word} style has nothing taught yet.`;
-    return `${from.title}'s ${word} style${from.lanes[lane] ? ` ("${from.lanes[lane]}")` : ""}:\n${shown(style).map((one) => `- ${kindWord(one.kind)} ${one.name}${one.category ? ` [${one.category}]` : ""}: ${one.note ?? ""}`).join("\n")}\nbring: a name, or "all" for the whole style as this channel's base.`;
+    if (shown(style).length === 0) return just(`${from.title}'s ${word} style has nothing taught yet.`);
+    return just(`${from.title}'s ${word} style${from.lanes[lane] ? ` ("${from.lanes[lane]}")` : ""}:\n${shown(style).map((one) => `- ${kindWord(one.kind)} ${one.name}${one.category ? ` [${one.category}]` : ""}: ${one.note ?? ""}`).join("\n")}\nbring: a name, or "all" for the whole style as this channel's base.`);
   }
   if (typeof args.bring !== "string" || args.bring.trim() === "") throw new Error(`bring is a name from that channel's style, or "all"`);
   const wanted = args.bring.trim() === "all" ? style : style.filter((one) => one.name === args.bring);
   if (wanted.length === 0) throw new Error(`${from.title}'s ${word} style has no ${args.bring}: other_channels with channel lists it`);
   teacherOnly(`Bringing another channel's ${word} style in`);
   const { place, words } = channels.keptIn(mine, lane, args.for);
-  const mineNow = new Set((await styleOf(mine, lane)).map((one) => `${one.kind}:${one.name}`));
+  const mineNow = new Map((await styleOf(mine, lane)).map((one) => [`${one.kind}:${one.name}`, one]));
+  // One of this channel's that reads as theirs (brought before) is the one asked for, never held back.
+  const sameAs = async (own: v2cloud.Item, theirs: v2cloud.Item) => own.kind === "skill" && (await v2cloud.version(own.key))?.version.text === (await v2cloud.version(theirs.key))?.version.text;
+  const alreadyHere: string[] = [];
   const brought: string[] = [];
   const kept: string[] = [];
   // A lesson brought in that contradicts this channel's is said first, as a kept one is (teaching_conflicts.ts).
@@ -462,11 +480,14 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   // writing, judgment-calls and never-name-the-outlet as clashing with its other lessons).
   const here = [...v2cloud.memories(channels.placesOf(mine, lane))];
   const clashing: teachingConflicts.Conflict[] = [];
+  const clashed: string[] = [];
   const unchecked: string[] = [];
   for (const item of wanted) {
     // What this channel has of its own already stays: bringing never writes over it.
-    if (mineNow.has(`${item.kind}:${item.name}`)) {
-      kept.push(item.name);
+    const own = mineNow.get(`${item.kind}:${item.name}`);
+    if (own !== undefined) {
+      if (await sameAs(own, item)) alreadyHere.push(item.name);
+      else kept.push(item.name);
       continue;
     }
     // An add-on is never checked against the lessons: it's no lesson.
@@ -476,6 +497,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
       if (found === null) unchecked.push(item.name);
       else if (found.length > 0) {
         clashing.push(...found.map((one) => ({ ...one, why: `${item.name}: ${one.why}` })));
+        clashed.push(item.name);
         continue;
       }
     }
@@ -484,12 +506,13 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
     }
   }
   v2cloud.forgetSkills();
-  return (
+  const said =
     (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
     (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "") +
+    (alreadyHere.length > 0 ? ` ${alreadyHere.join(", ")} came from it before, as it is there.` : "") +
     (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
-    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "")
-  );
+    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "");
+  return { said, held: [...kept, ...clashed] };
 }
 
 // ---------------------------------------------------------------- YouTube's numbers
