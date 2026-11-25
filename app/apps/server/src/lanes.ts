@@ -432,7 +432,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
 
 /**
  * What bringing another channel's style did, beside what's said of it: `held`, the lessons of it not brought because
- * they clash with this channel's or it has its own of the same name already. A first build's note that asks for a
+ * they clash with this channel's, it has its own of the same name already, or theirs couldn't be read to copy. A first build's note that asks for a
  * style (writer/scripting.ts `bringAsked`) tells the writer it's here only when none was held (Codex on #10).
  */
 export interface Bring {
@@ -490,6 +490,8 @@ export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, arg
   const here = [...v2cloud.memories(channels.placesOf(mine, lane))];
   const clashing: teachingConflicts.Conflict[] = [];
   const clashed: string[] = [];
+  // One whose words couldn't be read from the cloud to copy: not here, so never said to be (CodeRabbit on #10).
+  const unread: string[] = [];
   const unchecked: string[] = [];
   for (const item of wanted) {
     // What this channel has of its own already stays: bringing never writes over it.
@@ -512,16 +514,17 @@ export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, arg
     }
     if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) {
       brought.push(itemWords(item));
-    }
+    } else unread.push(item.name);
   }
   v2cloud.forgetSkills();
   const said =
     (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
     (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "") +
     (alreadyHere.length > 0 ? ` ${alreadyHere.join(", ")} came from it before, as it is there.` : "") +
+    (unread.length > 0 ? ` ${unread.join(", ")} couldn't be read from ${from.title}'s just now, so it isn't here: bring it again in a moment.` : "") +
     (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
     (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "");
-  return { said, brought, here: alreadyHere, held: [...kept, ...clashed] };
+  return { said, brought, here: alreadyHere, held: [...kept, ...clashed, ...unread] };
 }
 
 // ---------------------------------------------------------------- YouTube's numbers
