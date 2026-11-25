@@ -7,7 +7,7 @@
 // frames, and only a text strip ending the blur over their subtitles. The
 // engine is a stand-in here (its own tests are Rust's: edit-engine watermark).
 
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
@@ -17,6 +17,8 @@ import type { Media, Project, VideoClip } from "../src/model.ts";
 import type { WatermarkPiece, WatermarkRemoved } from "../src/native/index.ts";
 import { join } from "../src/paths.ts";
 import * as tools from "../src/tools.ts";
+import * as removalSchedule from "../src/removal_schedule.ts";
+import * as removerCloud from "../src/remover_cloud.ts";
 import * as wm from "../src/watermark_removal.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
@@ -531,3 +533,45 @@ test.skipIf(process.env.EDIT_WATERMARK_REAL === undefined)("real footage: the ma
     cleanup();
   }
 }, 1_800_000);
+
+test("a cell RunPod refused a machine for isn't waited for or sent again at once; half an hour on it is, and done once RunPod rents", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("watermark-refused");
+  const calls: WatermarkPiece[] = [];
+  const engine = standIn(calls);
+  const words = `RunPod wouldn't rent a CPU machine for 10 minutes (402: {"detail":"Your account balance is too low to rent a pod."})`;
+  let refusing = true;
+  // As the relay fails a job it couldn't rent a machine for (remover_cloud.ts `call`): its words, flagged.
+  wm.useEngine({ ...engine, remove: async (piece, ...rest) => (refusing ? (calls.push(piece), Promise.reject(new removerCloud.RelaySaid(words, true))) : engine.remove(piece, ...rest)) });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const marked = join(dir, "marked.mp4");
+    fs.writeFileSync(marked, "a stand-in tape with a mark");
+    const id = await project(app, [marked], 40);
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state, piece.refused, piece.tries])).toEqual([[0, "failed", words, 0], [30, "failed", words, 0]]);
+    // Not waited for: an export goes on without them, and says so (Nov 25, Boyfriends: up to three hours on two machines).
+    expect(removalSchedule.progressOf(id).out).toBe(0);
+    expect(removalSchedule.exportNote(id)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${words}). They're tried again within half an hour; once RunPod rents machines again (top up its account) and they're done, export again.`);
+    await removalSchedule.waitForPieces(app, id, 200);
+    // Not sent again at once (each try is refused only after ten minutes at the relay).
+    clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS - 1000);
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(calls.length).toBe(2);
+    // Half an hour on, with the account topped up: sent again, done, and nothing more to say.
+    refusing = false;
+    clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS + 1000);
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(calls.length).toBe(4);
+    expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state])).toEqual([[0, "done"], [30, "done"]]);
+    expect(removalSchedule.exportNote(id)).toBeNull();
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
+  } finally {
+    clock.mockRestore();
+    cleanup();
+  }
+}, 60_000);

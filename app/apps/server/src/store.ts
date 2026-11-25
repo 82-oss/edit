@@ -21,7 +21,7 @@ import * as diag from "./diag.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as kinds from "./kinds.ts";
 import { enforceOneLine } from "./one_line.ts";
-import { enforceCleanStrips } from "./clean_strips.ts";
+import { enforceCleanStrips, reservedNameRefusal } from "./clean_strips.ts";
 import { enforcePointers } from "./pointers.ts";
 import { enforceCleanedSound } from "./music_removed.ts";
 import { enforceSoundRoom, type Words } from "./sound_room.ts";
@@ -97,6 +97,20 @@ export type Event = Record<string, unknown>;
  * edit and isn't checked.
  */
 export const agentCalls = new AsyncLocalStorage<{ active: boolean; tool?: string }>();
+
+/** The origin of the agent's saves (mcp/index.ts `ORIGIN`): kept here so the store needn't load the tools. */
+const AGENT_ORIGIN = "agent";
+
+/** Saves made inside `restoring` (changes.ts' undo and kept versions brought back): an edit as it was, not new clips. */
+const restores = new AsyncLocalStorage<true>();
+
+/** Runs `save` as a restore: what it brings back is the edit as it was (removal's own clips with it), not the agent's making. */
+export function restoring<T>(save: () => Promise<T>): Promise<T> {
+  return restores.run(true, save);
+}
+
+/** Whether a save of `origin` is one the agent makes itself (not a restore): its clips may not take removal's names. */
+const agentMakes = (origin: string): boolean => origin === AGENT_ORIGIN && restores.getStore() !== true;
 
 /** Rules for the agent's saves that live elsewhere: set as their modules load (burned_subtitles.ts). */
 export const agentRules: { subtitlesOver: ((before: Project, after: Project) => string | null) | null } = { subtitlesOver: null };
@@ -693,6 +707,9 @@ export class Store {
       throw new TypeError("store.update's edit must be synchronous (it runs atomically)");
     }
     project.id = id;
+    // The agent's clips never take a name Edit's removal owns (it would take them away): before Edit lays its own.
+    const reserved = agentMakes(origin) ? reservedNameRefusal(current.project, project) : null;
+    if (reserved !== null) throw new Error(reserved);
     // The house rules: no subtitle takes two lines (one_line.ts), and what points at someone ends with their shot (pointers.ts).
     enforceOneLine(current.project, project);
     enforcePointers(current.project, project);
@@ -803,11 +820,14 @@ export class Store {
     const before = this.projects.get(id);
     // The house rules: no subtitle takes two lines (one_line.ts), and what points at someone ends with their shot (pointers.ts).
     const project = Object.isFrozen(given) ? (structuredClone(given) as Project) : given;
+    // The agent's clips never take a name Edit's removal owns (it would take them away): read before Edit lays its own.
+    const reserved = agentMakes(origin) ? reservedNameRefusal(before?.project ?? null, project) : null;
     enforceOneLine(before?.project ?? null, project);
     enforcePointers(before?.project ?? null, project);
     this.enforceRoom(before?.project ?? null, project);
     // Invalid before refused: a bad save says what's wrong with it first.
     const prepared = this.prepare(id, project);
+    if (reserved !== null) throw new UpdateError("refused", reserved);
     const refused = before === undefined ? null : refusalOf(before.project, project);
     if (refused !== null) throw new UpdateError("refused", refused);
     const cloud = this.cloudHook;

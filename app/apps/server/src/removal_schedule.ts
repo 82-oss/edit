@@ -25,7 +25,7 @@
 import type { App } from "./app.ts";
 import * as background from "./background.ts";
 import * as burned from "./burned_subtitles.ts";
-import { readyWaits } from "./broll.ts";
+import { readyNotes, readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
 import * as cloudMedia from "./cloud_media.ts";
@@ -144,9 +144,22 @@ export function exportLine(id: string): string | null {
 }
 
 /**
+ * Said beside an export that goes without pieces RunPod refused a machine for (null: none): failed, they're not waited
+ * for, and they're sent again REFUSED_RETRY_MS after the refusal (remover_cloud.ts), from the export row and the
+ * agent's export result.
+ */
+export function exportNote(id: string): string | null {
+  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => one.state === "failed" && one.refused !== undefined);
+  if (held.length === 0) return null;
+  const count = held.length;
+  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${held[0]!.refused}). They're tried again within half an hour; once RunPod rents machines again (top up its account) and they're done, export again.`;
+}
+
+/**
  * Waits for `id`'s pieces still out before an export (broll's `waitForMaps`,
  * which every export goes through): caught up with the edit first, then
- * until none is out.
+ * until none is out. Pieces RunPod refused a machine for aren't, until they're
+ * sent again: the export goes on without them and says so (`exportNote`).
  */
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
@@ -158,6 +171,8 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
     if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
     await Bun.sleep(1000);
   }
+  const without = exportNote(id);
+  if (without !== null) diag.warn("removal", `${id}: ${without}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +690,7 @@ let wakeGeneration = 0;
 export function start(app: App): void {
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
+  readyNotes.push(exportNote);
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
   app.store.subscribe((event) => {

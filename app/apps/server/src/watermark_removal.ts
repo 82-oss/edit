@@ -298,6 +298,9 @@ export interface Piece {
   tries?: number;
   /** Given up on after its second try: never queued again here. */
   gaveUp?: boolean;
+  /** RunPod's refusal of a machine for it (an empty account), and when: held back REFUSED_RETRY_MS before it's sent again (remover_cloud.ts). */
+  refused?: string;
+  refusedAt?: number;
 }
 
 /** A piece with more of the mark than this still found isn't clean: done once more, then left. */
@@ -458,6 +461,8 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
     const key = pieceKey(cell.media.id, cell.from);
     const known = pieces.get(id)?.get(key);
     if (known?.gaveUp === true) continue;
+    // RunPod refused a machine for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten minutes).
+    if (known?.state === "failed" && known.refusedAt !== undefined && Date.now() - known.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
     if (known !== undefined && known.state !== "failed") {
       if (known.state === "done" && cell.done === null) continue;
       if (known.state === "queued" || known.state === "running" || known.state === "none") continue;
@@ -596,6 +601,8 @@ async function work(app: App, job: Job): Promise<void> {
     if (stopped()) return;
     piece.state = "failed";
     piece.error = diag.messageOf(error);
+    // RunPod refusing it a machine: held back a while rather than sent again at once, and no try spent.
+    if (removerCloud.refusal(error)) Object.assign(piece, { refused: piece.error, refusedAt: Date.now(), tries: Math.max(0, (piece.tries ?? 1) - 1) });
     diag.warn("watermark", `${job.project}: ${label} wasn't cleaned (its watermark stays): ${piece.error}`);
   } finally {
     fs.rmSync(out, { force: true });

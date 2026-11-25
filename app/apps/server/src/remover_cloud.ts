@@ -58,8 +58,33 @@ export function keyOf(media: Pick<Media, "cloud">): string | undefined {
   return key !== undefined && key !== "" && cloud.validKey(key) ? key : undefined;
 }
 
-/** The relay refusing a job (its own words): the job failed, unlike the relay out of reach a moment. */
-export class RelaySaid extends Error {}
+/**
+ * The relay refusing a job (its own words): the job failed, unlike the relay out of reach a moment. `refused`: RunPod
+ * wouldn't rent a machine for it (an empty account), which no try soon would change (`refusal`).
+ */
+export class RelaySaid extends Error {
+  constructor(
+    message: string,
+    readonly refused = false,
+  ) {
+    super(message);
+  }
+}
+
+/** How long a piece RunPod refused a machine for waits before it's sent again (each try waits ten minutes at the relay to be refused). */
+export const REFUSED_RETRY_MS = 30 * 60_000;
+
+/**
+ * Whether a job failed because RunPod wouldn't rent a machine for it (the relay's `refused` flag, or its words from
+ * before the flag): no wait or try soon helps, so the piece is held back for REFUSED_RETRY_MS rather than sent again at
+ * once, and isn't waited for meanwhile (Nov 25, Boyfriends: the account ran dry, removal sent the refused pieces again
+ * every time, and exports on the PC and the Mac each sat behind them for up to three hours).
+ */
+export function refusal(error: unknown): boolean {
+  if (error instanceof RelaySaid && error.refused) return true;
+  const said = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return said.startsWith("RunPod wouldn't rent");
+}
 
 /**
  * A remover call to the relay. Not relay.json: that takes only a 200, and the relay answers a job started, or still
@@ -78,7 +103,8 @@ export async function call<T>(method: string, route: string, body?: unknown): Pr
   }
   if (answer.status !== 200 && answer.status !== 202) {
     const said = (value as { error?: unknown } | null)?.error;
-    throw new RelaySaid(typeof said === "string" ? said : `the relay answered ${answer.status}`);
+    const words = typeof said === "string" ? said : `the relay answered ${answer.status}`;
+    throw new RelaySaid(words, (value as { refused?: unknown } | null)?.refused === true);
   }
   return { status: answer.status, value: value as T };
 }

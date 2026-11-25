@@ -84,6 +84,7 @@ import {
 } from "./project.ts";
 import { asInt, byteLength, debugInts, debugStr, debugStrings, f32Saved as f32, fixed, isAlphanumeric, jsonForSerde, round, serdeParse, signed32, takeChars, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
+import { reservedNameRefusal } from "./clean_strips.ts";
 import { read, readStruct, SerdeError, type Field, type Struct } from "./serde.ts";
 import * as scriptComments from "./script_comments.ts";
 import * as sfx from "./sfx.ts";
@@ -464,6 +465,9 @@ async function applyEditPlan({ app, args, projectId }: ToolCall): Promise<Conten
     if (current.rev !== base) diag.info("agent", `${projectId}: the plan on rev ${base} goes on rev ${current.rev} (${background ? "only media files or sounds" : "nothing it changes"} changed between)`);
   }
   const dryRun = bool(args.dry_run) ?? false;
+  // Refused in a dry run as the save would refuse it (store.ts: the agent's clips never take a name removal owns).
+  const reserved = reservedNameRefusal(before, project);
+  if (reserved !== null) throw new Error(`${reserved} Nothing saved.`);
   const audit = scopedAudit(audited(app, project, null), changedSpan(spans, clipSpans(project)), fpsOf(project));
   let saved: { rev: number; project: Project };
   if (dryRun) {
@@ -1519,6 +1523,9 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
     drive === null ? {} : { drive },
   );
   let said = `export started → ${started}`;
+  // What it goes without of what it would have waited for (RunPod refusing removal's machines): the person hears it from the agent.
+  const without = seams.broll.readyNote?.(projectId) ?? null;
+  if (without !== null) said += `. ${without}`;
   if (drive === true || (drive === null && subtitled)) {
     said +=
       ". It's uploaded to the team's Drive when it's done (a subtitled video to Subtitles); the link is then the project's drive.url (get_edit_context).";

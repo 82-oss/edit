@@ -15,7 +15,7 @@ import type { Clip, Project } from "./model.ts";
 import * as patches from "./patch.ts";
 import { join } from "./paths.ts";
 import { registerTool, text, handlerFor } from "./mcp/registry.ts";
-import { agentCalls } from "./store.ts";
+import { agentCalls, restoring } from "./store.ts";
 import * as thread from "./thread.ts";
 
 /** Changes kept a project. */
@@ -258,7 +258,8 @@ export async function bringBack(app: App, id: string, name: string): Promise<str
   if (app.store.get(id) === null) throw new Error("no such project");
   const kept = app.store.keptVersion(id, name);
   const own = ["id", "name", "drive", "created_by", "origin", "shown", "note", "hq", "channel", "removal_held", "local_media"] as const;
-  await app.store.update(id, "agent", (project) => {
+  // A restore: the kept version's clips are the edit as it was, removal's own among them (store.ts `restoring`).
+  await restoring(() => app.store.update(id, "agent", (project) => {
     const restored = structuredClone(kept) as unknown as Record<string, unknown>;
     const current = project as unknown as Record<string, unknown>;
     for (const key of own) {
@@ -267,7 +268,7 @@ export async function bringBack(app: App, id: string, name: string): Promise<str
     }
     for (const key of Object.keys(current)) if (!(key in restored)) delete current[key];
     Object.assign(current, restored);
-  }, app.store.get(id) ?? undefined);
+  }, app.store.get(id) ?? undefined));
   return `Brought back kept version ${name} (${kept.clips.length} clips) as the edit. It's one new change: undo_changes takes it back too.`;
 }
 
@@ -309,7 +310,8 @@ export async function undo(app: App, id: string, given: { revs?: number[]; backT
     throw new Error(`rev ${moves.map((one) => one.rev).join(", ")} moved this project onto its channel, which isn't an edit and isn't undone: the person moves a project from Home. Undo the edits around it instead.`);
   }
   const newestFirst = [...chosen].sort((a, b) => b.rev - a.rev);
-  await app.store.update(id, "agent", (project) => {
+  // A restore: what it brings back is the edit as it was, removal's own clips among them (store.ts `restoring`).
+  await restoring(() => app.store.update(id, "agent", (project) => {
     let restored: Project = project;
     for (const one of newestFirst) restored = patches.apply(restored, one.undo);
     for (const key of IDENTITY) {
@@ -318,7 +320,7 @@ export async function undo(app: App, id: string, given: { revs?: number[]; backT
     }
     for (const key of Object.keys(project) as (keyof Project)[]) if (!(key in restored)) delete project[key];
     Object.assign(project, restored);
-  }, app.store.get(id) ?? undefined);
+  }, app.store.get(id) ?? undefined));
   return `Undone: ${newestFirst.map((one) => `rev ${one.rev} (${one.what})`).join("; ")}. It's one new change: undo_changes takes it back too.`;
 }
 

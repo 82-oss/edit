@@ -1218,6 +1218,18 @@ export function remakeEffect(projectId: string, name: string, key: string, unrea
 /** What else an export waits for before it starts, given the same limit (removal_schedule.ts: pieces of their text still being taken out). */
 export const readyWaits: ((app: App, projectId: string, limitMs: number, signal?: AbortSignal) => Promise<void>)[] = [];
 
+/** What an export goes without of what it would have waited for, said beside it (removal_schedule.ts: pieces RunPod won't rent machines for). */
+export const readyNotes: ((projectId: string) => string | null)[] = [];
+
+/** The first of `readyNotes`' lines for `projectId` (null: it has everything it waits for). */
+export function readyNote(projectId: string): string | null {
+  for (const note of readyNotes) {
+    const said = note(projectId);
+    if (said !== null) return said;
+  }
+  return null;
+}
+
 export async function waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal, range?: readonly [number, number] | null): Promise<void> {
   // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here by every
   // export that can wait (the agent's, the button's, a share's, a retry's); exports.start refuses the edit it's

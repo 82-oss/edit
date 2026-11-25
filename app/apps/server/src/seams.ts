@@ -979,6 +979,8 @@ export interface BrollSeam {
   /** A still as 30 s of steady footage (off macOS, where pictures don't stay images). */
   /** `signal`: its asker's Cancel (a share's): the wait ends there, and lets go of the renders it put ahead. `range`: an export of those frames, which waits only for the graphics it shows. */
   waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal, range?: readonly [number, number] | null): Promise<void>;
+  /** What an export goes without of what waitForMaps would wait for (null: nothing), said beside the export. */
+  readyNote?(projectId: string): string | null;
   /** Starts again the moving map shot whose stand-in is `first`, from its frames; false when it can't. */
   resumeMap?(app: App, projectId: string, first: string): boolean;
   stopLeftoverMaps?(): number;

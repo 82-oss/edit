@@ -327,6 +327,8 @@ describe("relay RunPod finder jobs (remover.ts)", () => {
     const failed = await status(id);
     expect(failed.status).toBe(502);
     expect(failed.body.error).toBe(`RunPod wouldn't rent a GPU for 10 minutes (402: {"error":"insufficient balance"})`);
+    // Flagged as a refusal, so Edit's export doesn't wait on it (remover_cloud.ts `rentRefused`).
+    expect(failed.body.refused).toBe(true);
     expect(await storage.get("order:gpu")).toEqual([]);
 
     // A pool with a machine at work is only waiting its turn: never failed however long RunPod refuses more.

@@ -82,6 +82,9 @@ export interface InpaintPiece {
   /** waiting: its track (text_blur's) isn't read yet; it's blurred meanwhile. */
   state: "waiting" | "queued" | "running" | "done" | "failed";
   why?: string;
+  /** RunPod's refusal of a GPU for it (an empty account), and when: held back REFUSED_RETRY_MS before it's sent again (remover_cloud.ts); gone once a try gets past it. */
+  refused?: string;
+  refusedAt?: number;
 }
 
 /** The track's boxes of their words over a stretch: text_blur hands it (its samples, per place). */
@@ -669,6 +672,8 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       continue;
     }
     if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
+    // RunPod refused a GPU for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten minutes).
+    if (piece.state === "failed" && piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
     // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
     if (watermarks.pending(id, plan.media.id, from, to)) {
       piece.state = "waiting";
@@ -737,6 +742,14 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
   } catch (error) {
     piece.state = "failed";
     piece.why = diag.messageOf(error);
+    // RunPod refusing it a GPU: held back a while rather than sent again at once, and no try spent.
+    if (removerCloud.refusal(error)) {
+      Object.assign(piece, { refused: piece.why, refusedAt: Date.now() });
+      tries.set(job, Math.max(0, (tries.get(job) ?? 1) - 1));
+    } else {
+      delete piece.refused;
+      delete piece.refusedAt;
+    }
     diag.warn("removal", `${id}: ${label} couldn't be cleaned by the model (it stays blurred): ${piece.why}`);
   } finally {
     fs.rmSync(out, { force: true });
