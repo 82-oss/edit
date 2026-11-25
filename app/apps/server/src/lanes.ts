@@ -514,7 +514,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
     (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
     (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "") +
     (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
-    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "")
+    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing, lane === "edit" ? "archive_in_library" : "forget")} (Here: bring each again by its name with settled.)` : "")
   );
 }
 
