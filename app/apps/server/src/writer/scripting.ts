@@ -140,7 +140,7 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<strin
   await lanes.refresh();
   const from = lanes.styleAskedFrom(script.channel, note);
   if (from === null) return "";
-  job.stage(`Bringing in ${from.title}'s script style`);
+  job.stage(`Bringing in ${from.title}${/s$/i.test(from.title) ? "'" : "'s"} script style`);
   try {
     const said = await lanes.otherChannels(script.channel, "script", { channel: from.key, bring: "all" });
     diag.info("writer", `${named(script.id, script.title)}: ${from.title}'s script style asked for in the note: ${said.split("\n")[0]}`);
