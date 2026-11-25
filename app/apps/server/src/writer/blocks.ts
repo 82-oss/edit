@@ -420,3 +420,12 @@ function wordRanges(before: string, after: string): [number, number][] {
   }
   return runs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
+
+/** A note for the video editor: one line or two, starting "edit:". */
+export function editNote(text: string): string {
+  const trimmed = text.trim();
+  const body = (trimmed.startsWith("edit:") || trimmed.startsWith("Edit:") ? trimmed.slice(5) : trimmed).trim();
+  if (body === "") throw new Error("Say what the editor should do in the note.");
+  if ([...body].length > 600) throw new Error("Keep an edit note under 600 characters.");
+  return `edit: ${body}`;
+}

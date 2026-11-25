@@ -30,7 +30,7 @@ import type { Format } from "./formats.ts";
 import { isFoia } from "./formats.ts";
 import { pageCount } from "./pages.ts";
 import { clock } from "./paragraphs.ts";
-import { cleanupLine, compile, evidence, formatOfScript, isTaught, itemClip, offTarget, reportOf, systemPrompt, UndatedOpening, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
+import { cleanupLine, compile, evidence, formatOfScript, isTaught, itemClip, NOTES, offTarget, reportOf, systemPrompt, UndatedOpening, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
 
 /** Items one call may add or replace: small replies, whatever the script's length. */
 const MAX_ITEMS_PER_CALL = 40;
@@ -121,7 +121,7 @@ export function stepsSystem(script: Script, format: Format): string {
   return `${base}
 
 WRITING THE PLAN WITH WRITER'S TOOLS
-Write the plan in timeline order with add_section: one call per footage block and its cut-in, or two, at most ${MAX_ITEMS_PER_CALL} items a call. Each call adds after the last item unless you name \`after\` (an item ID). Each item is checked as it arrives (its word IDs in order, recording boundaries, narration, em dashes, reused cases); if one is refused, the call adds nothing: fix that item and call again.${opening} When the whole plan is in, call review_plan: it checks the whole script as the app will save it (${checks}) and gives the totals. Fix what it reports with replace_items or remove_items, naming items by ID; never send the whole plan again. Then call finish with your report. Only the tools save the plan: don't write it out in a reply.${offTarget}`;
+Write the plan in timeline order with add_section: one call per footage block and its cut-in, or two, at most ${MAX_ITEMS_PER_CALL} items a call. Each call adds after the last item unless you name \`after\` (an item ID). Each item is checked as it arrives (its word IDs in order, recording boundaries, narration, em dashes, reused cases, a note's words); a note for the video editor goes in an item's notes, never in its narration. If one is refused, the call adds nothing: fix that item and call again.${opening} When the whole plan is in, call review_plan: it checks the whole script as the app will save it (${checks}) and gives the totals. Fix what it reports with replace_items or remove_items, naming items by ID; never send the whole plan again. Then call finish with your report. Only the tools save the plan: don't write it out in a reply.${offTarget}`;
 }
 
 const ITEM = {
@@ -133,6 +133,7 @@ const ITEM = {
     lastWordId: { type: "string", description: "lastWordId" },
     narration: { type: "string", description: "narration" },
     reuseLink: { type: "string", description: "reuseLink" },
+    notes: NOTES,
   },
   required: ["kind"],
 };

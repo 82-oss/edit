@@ -440,7 +440,7 @@ async function cutExactly(app: App, data: string, dir: string, script: Script, p
   let cut: Clip[];
   try {
     // The plan named places in the words as they were; the hearing added words since.
-    cut = compile(script, exact.replan(plan, words, script.words), peaks).clips;
+    cut = compile(script, exact.replan(plan, words, script.words), peaks, false).clips;
   } catch (error) {
     diag.warn("writer", `${named(script.id, script.title)}: the plan didn't cut again on the exact times: ${diag.messageOf(error)}`);
     cut = exact.remapFrom(words, clips, script.words, script.durationMs);

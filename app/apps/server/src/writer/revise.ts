@@ -9,7 +9,9 @@
 import * as lanes from "../lanes.ts";
 import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, isCutIn, noteAnchor } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
+// commentary.ts reads it from here, which keeps the order fixing.ts and this module load in.
+export { editNote };
 import * as claude from "./claude.ts";
 import * as formats from "./formats.ts";
 import type { Format } from "./formats.ts";
@@ -272,14 +274,6 @@ export function seen(script: Script, focus: Focus): string {
   return lines.length === 0 ? "" : `What the producer is looking at right now (use it when they say this, here or now):\n${lines.join("\n")}\n\n`;
 }
 
-/** A note for the video editor: one line or two, starting "edit:". */
-export function editNote(text: string): string {
-  const trimmed = text.trim();
-  const body = (trimmed.startsWith("edit:") || trimmed.startsWith("Edit:") ? trimmed.slice(5) : trimmed).trim();
-  if (body === "") throw new Error("Say what the editor should do in the note.");
-  if ([...body].length > 600) throw new Error("Keep an edit note under 600 characters.");
-  return `edit: ${body}`;
-}
 
 /** The timeline being edited, each item with the name Claude knows it by. */
 class Work {

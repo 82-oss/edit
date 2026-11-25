@@ -18,14 +18,14 @@
 import type { Script } from "@edit/types/writer";
 
 import * as diag from "../diag.ts";
-import { blocksOf, changed, marksOf, noteAnchor, pieceSpans, wordSpans, type Block, type Range, type Side } from "./blocks.ts";
+import { blocksOf, changed, editNote, marksOf, noteAnchor, pieceSpans, wordSpans, type Block, type Range, type Side } from "./blocks.ts";
 import * as chat from "./chat.ts";
 import * as commentary from "./commentary.ts";
 import { checkClips } from "./edits.ts";
 import * as jobs from "./jobs.ts";
 import { noteLines } from "./paragraphs.ts";
 import * as reviews from "./reviews.ts";
-import { apply, editNote, type Edit } from "./revise.ts";
+import { apply, type Edit } from "./revise.ts";
 import { peaksOf, reviseWith } from "./scripting.ts";
 import * as store from "./store.ts";
 import * as versions from "./versions.ts";

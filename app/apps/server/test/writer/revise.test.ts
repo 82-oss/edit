@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 import type { Script } from "@edit/types/writer";
 
 import { formatOf } from "../../src/writer/formats.ts";
-import { apply, current, editNote, seen, settle } from "../../src/writer/revise.ts";
+import { apply, current, seen, settle } from "../../src/writer/revise.ts";
+import { editNote } from "../../src/writer/blocks.ts";
 
 function script(): Script {
   const said = ["Hi,", "I'm", "Detective", "Smith.", "Where", "were", "you?", "Home.", "All", "night."];

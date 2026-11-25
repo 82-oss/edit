@@ -220,3 +220,26 @@ test("refuses a bad shape and em dashes", () => {
   };
   expect(refusal(script(), dash)).toContain("em dash");
 });
+
+// Nov 26, Killer Duo: a build had nowhere to put the channel's picture notes, so "[Edit: photo of …]" went into the narration.
+test("a plan's notes go on their words, never in the narration", () => {
+  const plan = (cutIn: Record<string, unknown>, clip: Record<string, unknown> = {}): Plan => ({
+    items: [
+      { kind: "clip", firstWordId: "w0", lastWordId: "w3", ...clip },
+      { kind: "cut-in", narration: "He said he was home." },
+      { kind: "clip", firstWordId: "w0", lastWordId: "w9" },
+      { kind: "cut-in", narration: "He was not.", ...cutIn },
+    ],
+    report: "",
+  });
+  const clips = compileClips(script(), plan({ notes: [{ on: "not", text: "photo of the house" }] }, { notes: [{ on: "Detective Smith.", text: "zoom in slowly" }] }));
+  expect(clips.at(-1)!.notes).toEqual([expect.objectContaining({ text: "edit: photo of the house", anchor: expect.objectContaining({ quote: "not" }) })]);
+  expect(clips[0]!.notes![0]!.text).toBe("edit: zoom in slowly");
+  expect(clips[0]!.notes![0]!.anchor!.quote).toBe("Detective Smith.");
+  expect(refusal(script(), plan({ narration: "He was not. [Edit: photo of the house]" }))).toContain("Put it in the item's notes");
+  expect(refusal(script(), plan({ notes: [{ on: "nowhere", text: "photo" }] }))).toContain("copy the words it's about");
+  // Cut again on the exact hearing's words, a note whose words moved stays on its item.
+  const moved = compile(script(), plan({ notes: [{ on: "nowhere", text: "photo" }] }), [], false).clips;
+  expect(moved.at(-1)!.notes).toEqual([expect.objectContaining({ text: "edit: photo" })]);
+  expect(moved.at(-1)!.notes![0]!.anchor).toBeUndefined();
+});
