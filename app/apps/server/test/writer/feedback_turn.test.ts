@@ -289,3 +289,18 @@ test("a lesson is changed in place, a line at a time, however long it is (Sphe, 
   expect(changedMost(2_400, 7_000)).toBe(7_400);
   expect(changedMost(2_400, 300)).toBe(2_400);
 });
+
+test("two polls at once run one after the other, so an older one never lays its status over a newer (CodeRabbit on #11)", async () => {
+  const { home, cleanup } = fixtureHome("feedback-polls");
+  try {
+    const calls = relay();
+    const data = store.dataDir(home);
+    fs.mkdirSync(join(data, "reviews"), { recursive: true });
+    fs.writeFileSync(join(data, "reviews", "notes.json"), JSON.stringify({ cursor: 1, notes: {}, links: {}, tried: {}, attempts: {}, approved: {} }));
+    await Promise.all([reviews.poll(data), reviews.poll(data)]);
+    const order = calls.map((call) => call.path).filter((path) => path === "reviews:open" || path === "reviews:changes");
+    expect(order).toEqual(["reviews:open", "reviews:changes", "reviews:open", "reviews:changes"]);
+  } finally {
+    cleanup();
+  }
+});

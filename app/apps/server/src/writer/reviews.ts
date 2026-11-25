@@ -942,8 +942,12 @@ export function markFixed(data: string, noteId: string, version: number, ranges:
 
 /** A note fixed here whose review couldn't be marked: done here, and its mark owed to the review until a poll lands it. */
 export function owe(data: string, noteId: string, version: number, ranges: Range[], summary: string, outcome?: "accepted" | "rejected"): void {
-  markFixed(data, noteId, version, ranges, summary);
-  change(data, (known) => void (known.owed[noteId] = { version, ranges, summary, ...(outcome ? { outcome } : {}), at: Date.now() }));
+  // One write for both, so a stop between can't leave it done here with nothing owed (CodeRabbit on #11).
+  change(data, (known) => {
+    const note = known.notes[noteId];
+    if (note) Object.assign(note, { status: "done", doneInVersion: version, changedRanges: ranges, fixSummary: summary, updatedAt: Date.now() });
+    known.owed[noteId] = { version, ranges, summary, ...(outcome ? { outcome } : {}), at: Date.now() };
+  });
 }
 
 /** The owed marks, tried again: each one that lands is no longer owed; one whose note is gone is let go. */
@@ -1004,7 +1008,16 @@ export function start(data: string): void {
 }
 
 /** One round of changes; says whether anything changed. */
-export async function poll(data: string): Promise<boolean> {
+/** The poll running, each waiting for the one before: two at once could lay an older status over a newer one (CodeRabbit on #11). */
+let polling: Promise<unknown> = Promise.resolve();
+
+export function poll(data: string): Promise<boolean> {
+  const run = polling.then(() => pollOnce(data));
+  polling = run.catch(() => undefined);
+  return run;
+}
+
+async function pollOnce(data: string): Promise<boolean> {
   await payOwed(data);
   // Approvals, made here or on Repack's page: only reviews:open carries them.
   const listed = await call("query", "reviews:open", {}).then((value) => (Array.isArray(value) ? (value as Record<string, unknown>[]) : null), () => null);
