@@ -28,3 +28,10 @@ test("a style's lessons not brought are told to the writer with why, as the repo
   expect(whyHeld(["intro", "thud"], ["thud"])).toBe("intro, held back for this channel's own; and thud, which couldn't be read just now");
   expect(whyHeld(["thud"], ["thud"])).toBe("thud, which couldn't be read just now");
 });
+
+test("a build's note is checked before a style is brought, a commentary's against its own 8,000", async () => {
+  const { checkBuildNote } = await import("../../src/writer/scripting.ts");
+  const long = "x".repeat(5_000);
+  expect(() => checkBuildNote({ commentary: null } as never, long)).toThrow("Keep the note under 2,000 characters.");
+  expect(() => checkBuildNote({ commentary: { draft: null } } as never, long)).not.toThrow();
+});

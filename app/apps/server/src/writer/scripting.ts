@@ -170,11 +170,19 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<{ rep
   }
 }
 
+/**
+ * A build's note within its limit, checked before a style it asks for is brought, so nothing is kept for a build that
+ * can't run (CodeRabbit on #10). A commentary's note keeps its own, longer limit (commentary.ts) and brings no style
+ * (Codex on #10).
+ */
+export function checkBuildNote(script: Script, note: string): void {
+  if (!script.commentary) build.checkNote(note);
+}
+
 export async function buildOnce(app: App, data: string, id: string, note: string, kind: Kind | undefined, job: Job): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
-  // A note over its limit is refused before a style it asks for is brought, so nothing is kept for a build that can't run (CodeRabbit on #10).
   try {
-    build.checkNote(note);
+    checkBuildNote(store.read(dir), note);
   } catch (error) {
     failed(dir, job, error);
   }
