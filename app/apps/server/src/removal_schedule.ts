@@ -155,7 +155,9 @@ export function exportNote(id: string): string | null {
   const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => one.state === "failed" && one.refused !== undefined && (shown === null || shown.has(one.media)));
   if (held.length === 0) return null;
   const count = held.length;
-  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${held[0]!.refused}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`;
+  // The relay's own sentence ("RunPod wouldn't rent a GPU for 10 minutes"), not RunPod's answer after it: that stays in the log.
+  const said = held[0]!.refused!.split(" (")[0]!;
+  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${said}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`;
 }
 
 /**
