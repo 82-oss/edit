@@ -119,6 +119,14 @@ test("a note on a cut-in rewritten in the same answer goes on its new words (Nov
   expect(later[0]!.notes?.map((note) => note.anchor?.quote)).toEqual(["charged"]);
 });
 
+test("a direct rewrite that leaves a proposal stale keeps its waiting notes on words the cut-in now has (Codex on #11)", () => {
+  const note = { id: "x", text: "edit: charges on screen", at: 0, anchor: { start: 20, end: 41, quote: "kidnapping and murder" } };
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He was charged with kidnapping and murder.", at: 0, notes: [note] }] };
+  const [clips, , proposals] = apply(waiting, [{ op: "write", id: "i2", narration: "Then he was charged with kidnapping and murder." }], [], true);
+  expect(proposals).toEqual([]);
+  expect(clips[1]!.notes?.map((one) => [one.text, one.anchor?.start])).toEqual([["edit: charges on screen", 25]]);
+});
+
 test("a note on words the cut-in keeps is anchored where they are in its saved narration, and one on words this answer's last rewrite drops is refused (CodeRabbit on #11)", () => {
   const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "Yesterday he was home." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }], [], false);
   expect(proposals).toHaveLength(1);

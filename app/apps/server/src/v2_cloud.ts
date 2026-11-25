@@ -111,6 +111,11 @@ export async function list(kind: Exclude<Kind, "effect">, archived = false): Pro
 export async function archive(key: string, archived: boolean): Promise<void> {
   await cloud.mutation("edit:archiveLibrary", { key, archived });
   forgetSkills();
+  // Put away: out of what agents are told at once, and out of any read begun before this (CodeRabbit on #11).
+  if (archived) {
+    putAway.set(key, skillsChanged);
+    asRead([...skills, ...addonSkills].filter((one) => one.key !== key));
+  } else putAway.delete(key);
 }
 
 export async function versions(key: string, text = false): Promise<Version[]> {
@@ -429,6 +434,8 @@ let skillsRead = false;
 let skillsReading: Promise<void> | null = null;
 /** Bumped by each save or put-away (`forgetSkills`): a read that began before one is read again, never kept as fresh (CodeRabbit on #11). */
 let skillsChanged = 0;
+/** Items put away here, with the `skillsChanged` they were put away at: a read begun before that leaves them out. */
+const putAway = new Map<string, number>();
 /** A failed read is tried again this soon, not after the usual 30 s. */
 const SKILLS_RETRY_MS = 5_000;
 /** How long a turn's start waits on a read; it carries on in the background, and the turn goes with what was read before. */
@@ -452,6 +459,8 @@ export async function refreshSkills(): Promise<void> {
         const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
         const next: Skill[] = [];
         for (const { item, text } of read) {
+          const gone = putAway.get(item.key);
+          if (gone !== undefined && asked < gone) continue;
           if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, latest: item.latest });
         }
         pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));

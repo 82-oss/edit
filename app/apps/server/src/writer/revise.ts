@@ -648,6 +648,17 @@ function placeNotes(script: Script, work: Work, proposals: Proposal[]): Proposal
     }
     if (clip.notes !== undefined) clip.notes = kept;
   }
+  // A proposal these edits leave stale (its cut-in now reads otherwise, a direct write): its notes on words the cut-in has now come onto it, before it goes (Codex on #11).
+  for (const proposal of proposals) {
+    const clip = work.clips.find((one) => one.id === proposal.cutIn);
+    if (clip === undefined || (clip.narration ?? "").trim() === proposal.before.trim()) continue;
+    const moved = (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {
+      const at = note.anchor === undefined ? null : noteAnchor(script, clip, note.anchor.quote, note.anchor.start);
+      return at === null ? [] : [{ ...note, anchor: at }];
+    });
+    if (moved.length > 0) clip.notes = [...(clip.notes ?? []), ...moved];
+    waiting.delete(proposal.cutIn);
+  }
   return proposals.map((proposal) => {
     const clip = work.clips.find((one) => one.id === proposal.cutIn);
     const notes = clip === undefined ? [] : (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {

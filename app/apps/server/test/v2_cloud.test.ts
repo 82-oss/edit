@@ -768,6 +768,8 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     await v2cloud.refreshSkills();
     expect(await lanes.call("forget", { skill: "slow", reason: "Sphe: this video only" }, { channel: "jcs", lane: "ideas" })).toBe("Put away slow from JCS (@jcs)'s ideas style: its agents don't have it from their next turn (its versions are kept).");
     expect(mock.cloud.convex.library.get("skill:@jcs--ideas/slow")?.archived).toBe(true);
+    // Out of what the agents are told at once, before any read.
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
     await v2cloud.refreshSkills();
     expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
     await expect(lanes.call("forget", { skill: "slow", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).rejects.toThrow("no lesson slow");
