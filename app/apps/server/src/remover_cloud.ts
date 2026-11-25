@@ -74,6 +74,14 @@ export class RelaySaid extends Error {
 /** How long a piece RunPod refused a machine for waits before it's sent again (each try waits ten minutes at the relay to be refused). */
 export const REFUSED_RETRY_MS = 30 * 60_000;
 
+/** Told of each project a piece of which RunPod refused (removal_schedule.ts: its removal planned again once REFUSED_RETRY_MS has passed). */
+export const heldBack: ((project: string) => void)[] = [];
+
+/** Project `project` has a piece held back for REFUSED_RETRY_MS: those listening plan it again then. */
+export function held(project: string): void {
+  for (const listener of heldBack) listener(project);
+}
+
 /**
  * Whether a job failed because RunPod wouldn't rent a machine for it (the relay's `refused` flag, or its words from
  * before the flag): no wait or try soon helps, so the piece is held back for REFUSED_RETRY_MS rather than sent again at

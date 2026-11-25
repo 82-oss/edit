@@ -1523,9 +1523,6 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
     drive === null ? {} : { drive },
   );
   let said = `export started → ${started}`;
-  // What it goes without of what it would have waited for (RunPod refusing removal's machines): the person hears it from the agent.
-  const without = seams.broll.readyNote?.(projectId) ?? null;
-  if (without !== null) said += `. ${without}`;
   if (drive === true || (drive === null && subtitled)) {
     said +=
       ". It's uploaded to the team's Drive when it's done (a subtitled video to Subtitles); the link is then the project's drive.url (get_edit_context).";
@@ -1535,6 +1532,9 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
   // How long it has left, so it's looked at once (progress.ts).
   const eta = progress.lookAgain(projectId, ["export"]);
   if (eta !== "") said += `${said.endsWith(".") ? "" : "."}${eta}`;
+  // What it goes without of what it would have waited for (RunPod refusing removal's machines): the person hears it from the agent.
+  const without = seams.broll.readyNote?.(projectId) ?? null;
+  if (without !== null) said += `${said.endsWith(".") ? "" : "."} ${without}`;
   return text(said);
 }
 

@@ -149,10 +149,13 @@ export function exportLine(id: string): string | null {
  * agent's export result.
  */
 export function exportNote(id: string): string | null {
-  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => one.state === "failed" && one.refused !== undefined);
+  // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again).
+  const project = removalApp.app?.store.get(id)?.project ?? null;
+  const shown = project === null ? null : new Set(project.clips.flatMap((clip) => (clip.type === "video" ? [clip.media] : [])));
+  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => one.state === "failed" && one.refused !== undefined && (shown === null || shown.has(one.media)));
   if (held.length === 0) return null;
   const count = held.length;
-  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${held[0]!.refused}). They're tried again within half an hour; once RunPod rents machines again (top up its account) and they're done, export again.`;
+  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${held[0]!.refused}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`;
 }
 
 /**
@@ -686,8 +689,26 @@ async function wake(app: App, id: string): Promise<void> {
 /** Bumped by `reset`: wake-ups waiting from before give up. */
 let wakeGeneration = 0;
 
+/** Each project's removal to plan again once the pieces RunPod refused may be sent again (`start`). */
+const retries = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** The app removal was started with (`start`): what an export's note reads the timeline from. */
+const removalApp: { app: App | null } = { app: null };
+
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
+  removalApp.app = app;
+  // A piece RunPod refused is held back REFUSED_RETRY_MS: its project's removal is planned again then (respecting a
+  // Stop), so a topped-up account gets it done without an edit or an export to set it going.
+  removerCloud.heldBack.push((id) => {
+    if (retries.has(id)) return;
+    const timer = setTimeout(() => {
+      retries.delete(id);
+      void ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after RunPod's refusal: ${diag.messageOf(error)}`));
+    }, removerCloud.REFUSED_RETRY_MS + 1000);
+    timer.unref?.();
+    retries.set(id, timer);
+  });
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
   readyNotes.push(exportNote);
@@ -708,6 +729,8 @@ export function start(app: App): void {
 
 /** For tests. */
 export function reset(): void {
+  for (const timer of retries.values()) clearTimeout(timer);
+  retries.clear();
   looked.clear();
   active.clear();
   wakes.clear();

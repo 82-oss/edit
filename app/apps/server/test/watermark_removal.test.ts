@@ -534,7 +534,7 @@ test.skipIf(process.env.EDIT_WATERMARK_REAL === undefined)("real footage: the ma
   }
 }, 1_800_000);
 
-test("a cell RunPod refused a machine for isn't waited for or sent again at once; half an hour on it is, and done once RunPod rents", async () => {
+test("a cell RunPod refused a machine for isn't waited for or sent again at once, nor are the cells queued behind it; half an hour on they are, and done once RunPod rents", async () => {
   const { app, dir, store, cleanup } = fixtureHome("watermark-refused");
   const calls: WatermarkPiece[] = [];
   const engine = standIn(calls);
@@ -543,6 +543,10 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
   // As the relay fails a job it couldn't rent a machine for (remover_cloud.ts `call`): its words, flagged.
   wm.useEngine({ ...engine, remove: async (piece, ...rest) => (refusing ? (calls.push(piece), Promise.reject(new removerCloud.RelaySaid(words, true))) : engine.remove(piece, ...rest)) });
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  // Told of the project held back, so its removal is planned again when the half hour is up (removal_schedule.ts).
+  const heldBack: string[] = [];
+  const listening = (project: string) => heldBack.push(project);
+  removerCloud.heldBack.push(listening);
   const now = Date.now();
   const clock = spyOn(Date, "now").mockReturnValue(now);
   try {
@@ -551,26 +555,30 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
     const id = await project(app, [marked], 40);
     await wm.ensure(app, id);
     await wm.settled();
+    // One cell at a time here: the first refused, the one queued behind it is held with it, never sent.
+    expect(calls.map((piece) => piece.from)).toEqual([0]);
     expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state, piece.refused, piece.tries])).toEqual([[0, "failed", words, 0], [30, "failed", words, 0]]);
     // Not waited for: an export goes on without them, and says so (Nov 25, Boyfriends: up to three hours on two machines).
     expect(removalSchedule.progressOf(id).out).toBe(0);
-    expect(removalSchedule.exportNote(id)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${words}). They're tried again within half an hour; once RunPod rents machines again (top up its account) and they're done, export again.`);
+    expect([...new Set(heldBack)]).toEqual([id]);
+    expect(removalSchedule.exportNote(id)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${words}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`);
     await removalSchedule.waitForPieces(app, id, 200);
     // Not sent again at once (each try is refused only after ten minutes at the relay).
     clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS - 1000);
     await wm.ensure(app, id);
     await wm.settled();
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBe(1);
     // Half an hour on, with the account topped up: sent again, done, and nothing more to say.
     refusing = false;
     clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS + 1000);
     await wm.ensure(app, id);
     await wm.settled();
-    expect(calls.length).toBe(4);
+    expect(calls.length).toBe(3);
     expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state])).toEqual([[0, "done"], [30, "done"]]);
     expect(removalSchedule.exportNote(id)).toBeNull();
     expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
   } finally {
+    removerCloud.heldBack.splice(removerCloud.heldBack.indexOf(listening), 1);
     clock.mockRestore();
     cleanup();
   }

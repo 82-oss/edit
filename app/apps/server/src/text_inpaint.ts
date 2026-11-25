@@ -510,7 +510,7 @@ function giveUp(app: App, job: string): void {
   fs.writeFileSync(`${file}.tmp`, JSON.stringify([...jobs]));
   fs.renameSync(`${file}.tmp`, file);
 }
-const queue: { key: string; seconds: number; run: () => Promise<void> }[] = [];
+const queue: { key: string; seconds: number; project: string; piece: InpaintPiece; run: () => Promise<void> }[] = [];
 /** Footage seconds still waiting here to be sent: the relay rents more GPUs when there's a lot (apps/relay/src/remover.ts). */
 const waitingSeconds = (): number => queue.reduce((sum, one) => sum + one.seconds, 0);
 let busy: Promise<void> | null = null;
@@ -672,8 +672,6 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       continue;
     }
     if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
-    // RunPod refused a GPU for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten minutes).
-    if (piece.state === "failed" && piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
     // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
     if (watermarks.pending(id, plan.media.id, from, to)) {
       piece.state = "waiting";
@@ -687,6 +685,9 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       if (!stands()) return;
       continue;
     }
+    // RunPod refused a GPU for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten
+    // minutes); one cleaned meanwhile on another computer (the shelf, above) is laid at once.
+    if (piece.state === "failed" && piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
     // Only expand per-frame masks when we actually need to queue work.
     const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
     if (boxes === null) {
@@ -694,13 +695,16 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       continue;
     }
     piece.state = "queued";
-    queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
+    queue.push({ key, seconds: to - from, project: id, piece, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
   }
   drain();
 }
 
 async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece, from: number, to: number, first: number, boxes: Box[][], beneath: Beneath[], under: string): Promise<void> {
   piece.state = "running";
+  // A refusal from a try before is this try's to say again, or not.
+  delete piece.refused;
+  delete piece.refusedAt;
   const job = jobKey(plan.source, from, to);
   tries.set(job, (tries.get(job) ?? 0) + 1);
   const dir = join(app.store.cacheDir(), "cleaned", "work");
@@ -742,13 +746,21 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
   } catch (error) {
     piece.state = "failed";
     piece.why = diag.messageOf(error);
-    // RunPod refusing it a GPU: held back a while rather than sent again at once, and no try spent.
+    // RunPod refusing it a GPU: held back a while rather than sent again at once, and no try spent; so is every stretch
+    // still waiting here to be sent (each would be refused only after another ten minutes at the relay).
     if (removerCloud.refusal(error)) {
-      Object.assign(piece, { refused: piece.why, refusedAt: Date.now() });
+      const at = Date.now();
+      Object.assign(piece, { refused: piece.why, refusedAt: at });
       tries.set(job, Math.max(0, (tries.get(job) ?? 1) - 1));
-    } else {
-      delete piece.refused;
-      delete piece.refusedAt;
+      removerCloud.held(id);
+      if (cloudNow()) {
+        const held = queue.splice(0, queue.length);
+        for (const one of held) {
+          Object.assign(one.piece, { state: "failed", why: piece.why, refused: piece.why, refusedAt: at });
+          removerCloud.held(one.project);
+        }
+        if (held.length > 0) diag.warn("removal", `${held.length} stretch(es) waiting to go to RunPod held back with the one it refused: ${piece.why}`);
+      }
     }
     diag.warn("removal", `${id}: ${label} couldn't be cleaned by the model (it stays blurred): ${piece.why}`);
   } finally {

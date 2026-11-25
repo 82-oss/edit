@@ -6,7 +6,6 @@ import { expect, test } from "bun:test";
 
 import { reservedNameRefusal } from "../src/clean_strips.ts";
 import type { Clip, Project } from "../src/model.ts";
-import { restoring } from "../src/store.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 const blur = (id: string, name: string, start = 0): Clip =>
@@ -27,10 +26,14 @@ test("a new clip under a name removal owns is refused; one already there under t
     // Anything named otherwise.
     expect(reservedNameRefusal(before, withClips(before, [...before.clips, blur("c3", "Logo blur · c12")]))).toBeNull();
     // A new one under removal's names, or one renamed into them.
-    for (const name of ["Text blur · c12", "Subtitles removed · c12", "Watermark removed · c12"]) {
-      expect(reservedNameRefusal(before, withClips(before, [...before.clips, blur("c3", name)]))).toContain(`"${name}" is a name Edit's removal keeps`);
+    for (const [name, type] of [["Text blur · c12", "adjustment"], ["Subtitles removed · c12", "video"], ["Watermark removed · c12", "video"]]) {
+      const clip = { ...blur("c3", name!), type } as unknown as Clip;
+      expect(reservedNameRefusal(before, withClips(before, [...before.clips, clip]))).toContain(`"${name}" is a name Edit's removal keeps`);
     }
     expect(reservedNameRefusal(before, withClips(before, [blur("c1", "Text blur · c12")]))).toContain("Logo blur");
+    // Only on the clips removal lays them on: a text clip so named is the agent's own, never taken away.
+    const callout = { ...blur("c4", "Text blur · demo"), type: "text", text: "demo" } as unknown as Clip;
+    expect(reservedNameRefusal(before, withClips(before, [...before.clips, callout]))).toBeNull();
   } finally {
     cleanup();
   }
@@ -51,7 +54,7 @@ test("the store refuses the agent's save of such a clip, and only the agent's", 
     expect(store.get(id)!.project.clips.map((clip) => clip.name)).toEqual(["Text blur · c12"]);
     // The agent's undo or a kept version brought back (changes.ts) is the edit as it was, removal's own clips with it.
     await store.update(id, "agent", (project) => Object.assign(project, withClips(project, [])));
-    await restoring(() => store.update(id, "agent", (project) => Object.assign(project, withClips(project, [blur("c50", "Text blur · c12")]))));
+    await store.update(id, "agent", (project) => Object.assign(project, withClips(project, [blur("c50", "Text blur · c12")])), undefined, { restore: true });
     expect(store.get(id)!.project.clips.map((clip) => clip.name)).toEqual(["Text blur · c12"]);
   } finally {
     cleanup();

@@ -101,16 +101,8 @@ export const agentCalls = new AsyncLocalStorage<{ active: boolean; tool?: string
 /** The origin of the agent's saves (mcp/index.ts `ORIGIN`): kept here so the store needn't load the tools. */
 const AGENT_ORIGIN = "agent";
 
-/** Saves made inside `restoring` (changes.ts' undo and kept versions brought back): an edit as it was, not new clips. */
-const restores = new AsyncLocalStorage<true>();
-
-/** Runs `save` as a restore: what it brings back is the edit as it was (removal's own clips with it), not the agent's making. */
-export function restoring<T>(save: () => Promise<T>): Promise<T> {
-  return restores.run(true, save);
-}
-
-/** Whether a save of `origin` is one the agent makes itself (not a restore): its clips may not take removal's names. */
-const agentMakes = (origin: string): boolean => origin === AGENT_ORIGIN && restores.getStore() !== true;
+/** Whether a save of `origin` is one the agent makes itself (not a restore: `restore`): its clips may not take removal's names. */
+const agentMakes = (origin: string, restore = false): boolean => origin === AGENT_ORIGIN && !restore;
 
 /** Rules for the agent's saves that live elsewhere: set as their modules load (burned_subtitles.ts). */
 export const agentRules: { subtitlesOver: ((before: Project, after: Project) => string | null) | null } = { subtitlesOver: null };
@@ -689,7 +681,7 @@ export class Store {
    * one into a conflict (edits count and collect as they go, so they aren't
    * run twice).
    */
-  async update<T>(id: string, origin: string, edit: (project: Project) => T, read?: { rev: number; project: Project }): Promise<[Live, T]> {
+  async update<T>(id: string, origin: string, edit: (project: Project) => T, read?: { rev: number; project: Project }, options: { restore?: boolean } = {}): Promise<[Live, T]> {
     if (this.get(id) === null) throw new Error(`no project ${id}`);
     const cloud = this.cloudHook;
     if (cloud !== null) {
@@ -708,7 +700,7 @@ export class Store {
     }
     project.id = id;
     // The agent's clips never take a name Edit's removal owns (it would take them away): before Edit lays its own.
-    const reserved = agentMakes(origin) ? reservedNameRefusal(current.project, project) : null;
+    const reserved = agentMakes(origin, options.restore) ? reservedNameRefusal(current.project, project) : null;
     if (reserved !== null) throw new Error(reserved);
     // The house rules: no subtitle takes two lines (one_line.ts), and what points at someone ends with their shot (pointers.ts).
     enforceOneLine(current.project, project);
