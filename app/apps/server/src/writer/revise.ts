@@ -293,6 +293,8 @@ class Work {
   addedNotes = new Set<string>();
   /** Notes for the editor waiting with a pending proposal, by its cut-in: numbered after the cut-in's own in CURRENT SCRIPT, and removed the same way (Codex on #11). */
   pending: Map<string, Note[]>;
+  /** The cut-ins whose waiting notes this answer removed: held to the marked items as any change is. */
+  pendingTouched = new Set<string>();
   readonly format: Format;
   /** The items the producer marked (and what an edit split off them), the only ones the whole-script passes reach; null when none were. */
   readonly pointed: Set<string> | null;
@@ -352,7 +354,8 @@ class Work {
     const written = this.writes.get(clip.id);
     const proposed = (this.script.proposals ?? []).find((one) => one.cutIn === clip.id)?.after;
     const script = { ...this.script, corrections: this.corrections };
-    const found = noteAnchor(script, written === undefined ? clip : { ...clip, narration: written }, on) ?? (written === undefined && proposed !== undefined ? noteAnchor(script, { ...clip, narration: proposed }, on) : null);
+    // Its words in this answer's rewrite, else in the narration as saved (a rewrite that becomes a proposal leaves it), else in a pending proposal: placeNotes sorts out where each ends up, and refuses words neither keeps (CodeRabbit on #11).
+    const found = (written === undefined ? null : noteAnchor(script, { ...clip, narration: written }, on)) ?? noteAnchor(script, clip, on) ?? (written === undefined && proposed !== undefined ? noteAnchor(script, { ...clip, narration: proposed }, on) : null);
     if (found === null) throw new Error(isCutIn(clip) ? `"${on}" isn't in that cut-in's narration: copy the words the note is on exactly.` : `"${on}" isn't said in that clip: copy the words the note is on exactly from what's said there.`);
     return found;
   }
@@ -541,7 +544,10 @@ class Work {
         const waiting = this.pending.get(clip.id) ?? [];
         if (!Number.isInteger(number) || number < 1 || number > own + waiting.length) throw new Error(`That item has ${own + waiting.length} notes: name one by its number in CURRENT SCRIPT.`);
         if (number <= own) clip.notes = (clip.notes ?? []).filter((_, at) => at !== number - 1);
-        else this.pending.set(clip.id, waiting.filter((_, at) => at !== number - own - 1));
+        else {
+          this.pending.set(clip.id, waiting.filter((_, at) => at !== number - own - 1));
+          this.pendingTouched.add(clip.id);
+        }
         return;
       }
       default:
@@ -597,7 +603,7 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     }
   }
   if (scope !== null && !scope.beyond && marked.length > 0) {
-    const past = strays(script.clips, work.clips, work.writes.keys(), new Set(marked));
+    const past = [...strays(script.clips, work.clips, work.writes.keys(), new Set(marked)), ...[...work.pendingTouched].filter((id) => !marked.includes(id)).map((id) => `changed ${work.names.get(id) ?? "a cut-in"}'s waiting notes`)];
     if (past.length > 0) {
       const names = marked.map((id) => `i${script.clips.findIndex((clip) => clip.id === id) + 1}`).join(", ");
       throw new Error(`The producer marked ${names} for this request, and these edits also ${past.join(", ")}. Change only the marked items; if the producer's words plainly ask for those other parts too, send the same edits with beyond set to true.`);

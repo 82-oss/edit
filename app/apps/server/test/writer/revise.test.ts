@@ -127,6 +127,17 @@ test("a direct rewrite that leaves a proposal stale keeps its waiting notes on w
   expect(clips[1]!.notes?.map((one) => [one.text, one.anchor?.start])).toEqual([["edit: charges on screen", 25]]);
 });
 
+test("a note on words only the saved narration keeps stays on the cut-in while a rewrite waits, and a waiting note is removed only from a marked cut-in (CodeRabbit on #11)", () => {
+  const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "He confessed." }, { op: "note", id: "i2", on: "home", text: "edit: the porch" }], [], false);
+  expect(proposals).toHaveLength(1);
+  expect(clips[1]!.notes?.at(-1)?.anchor?.quote).toBe("home");
+  const note = { id: "x", text: "edit: charges", at: 0, anchor: { start: 3, end: 12, quote: "confessed" } };
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He confessed.", at: 0, notes: [note] }] };
+  expect(() => apply(waiting, [{ op: "remove_note", id: "i2", note: 1 }], [], false, { pointed: ["c2"], beyond: false })).toThrow("changed i2's waiting notes");
+  const [, , removed] = apply(waiting, [{ op: "remove_note", id: "i2", note: 1 }], [], false, { pointed: ["n1"], beyond: false });
+  expect(removed[0]!.notes).toBeUndefined();
+});
+
 test("a note on words the cut-in keeps is anchored where they are in its saved narration, and one on words this answer's last rewrite drops is refused (CodeRabbit on #11)", () => {
   const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "Yesterday he was home." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }], [], false);
   expect(proposals).toHaveLength(1);
