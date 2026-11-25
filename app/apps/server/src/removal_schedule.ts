@@ -149,10 +149,11 @@ export function exportLine(id: string): string | null {
  * agent's export result.
  */
 export function exportNote(id: string): string | null {
-  // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again).
+  // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again); a refused
+  // stretch waiting a moment on a watermark piece over it is held all the same (text_inpaint.ts).
   const project = removalApp.app?.store.get(id)?.project ?? null;
   const shown = project === null ? null : new Set(project.clips.flatMap((clip) => (clip.type === "video" ? [clip.media] : [])));
-  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => one.state === "failed" && one.refused !== undefined && (shown === null || shown.has(one.media)));
+  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => (one.state === "failed" || one.state === "waiting") && one.refused !== undefined && (shown === null || shown.has(one.media)));
   if (held.length === 0) return null;
   const count = held.length;
   // The relay's own sentence ("RunPod wouldn't rent a GPU for 10 minutes"), not RunPod's answer after it: that stays in the log.
