@@ -152,7 +152,7 @@ export async function runWith(script: Script, dir: string, names: string[], note
     caseNames: names,
     recordings: recordingList,
     ...unvoiced(script, all),
-    task: 'List everyone who speaks in these lines, a person each, with ids p1, p2, …: their name when the conversation, title or notes give it, else null, and their role (Judge, Prosecutor, Defense Attorney, Defendant, Witness, Officer, Suspect, Victim, Dispatch, Clerk, Bailiff, Narrator, Reporter…). In how, say in a few words how to tell their lines ("asks the witness questions for the state"). In suspects, the person or people this case is about (suspect, defendant, or officer when the case concerns the officer\'s conduct); never infer guilt.',
+    task: 'List everyone who speaks in these lines, a person each, with ids p1, p2, …: their name when the conversation, title or notes give it, else null, spelled as caseNames spells that person (the transcript often mishears a name: heard "Carrie" where caseNames has "Keri S. Mazzuca", the name is Keri); a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), since one hearing of an unusual name is usually a mishearing; and their role (Judge, Prosecutor, Defense Attorney, Defendant, Witness, Officer, Suspect, Victim, Dispatch, Clerk, Bailiff, Narrator, Reporter…). In how, say in a few words how to tell their lines ("asks the witness questions for the state"). In suspects, the person or people this case is about (suspect, defendant, or officer when the case concerns the officer\'s conduct); never infer guilt.',
     lines: sample(script, all),
   });
   const [cast, castKept] = await ask(kept, CAST_SCHEMA, castPrompt);
