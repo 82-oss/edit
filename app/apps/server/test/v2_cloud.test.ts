@@ -634,7 +634,7 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/intro")).toHaveLength(1);
     // Brought whole again: what came from it before is the one asked for; only this channel's own intro is held (Codex on #10).
     const again = await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "all" });
-    expect(again.held).toEqual(["intro"]);
+    expect(again).toMatchObject({ brought: [], here: ["pacing"], held: ["intro"] });
     expect(again.said).toContain("pacing came from it before, as it is there.");
     expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');
     // One that contradicts this channel's is left, said, until the person says which holds (Nov 18).
@@ -647,7 +647,8 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
       expect(left).toContain("Nothing new brought.");
       expect(left).toContain('- intro: "Our own intro." (music: stand-in clash)');
       expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/music")).toBeUndefined();
-      expect((await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "music" })).held).toEqual(["music"]);
+      // All of what's asked clashes: nothing brought, and it's held, so the writer is never told it came (CodeRabbit on #10).
+      expect(await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "music" })).toMatchObject({ brought: [], here: [], held: ["music"] });
       expect((await call(app, id, "other_channels", { channel: "JCS", bring: "music", settled: "Sphe: bring it" })).content[0]!.text).toContain("to change here: lesson music.");
       // Two brought together from one channel are checked against what's here, never against each other: they stand together there (Nov 25).
       seed("skill:@jcs--edit/beds", "beds", "Music under every stretch of footage.", "Music beds.");

@@ -437,11 +437,14 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
  */
 export interface Bring {
   said: string;
+  /** What came in now, as it's said ("lesson pacing"), and what had come from it before, as it is there. */
+  brought: string[];
+  here: string[];
   held: string[];
 }
 
 export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, args: Record<string, unknown>): Promise<Bring> {
-  const just = (said: string): Bring => ({ said, held: [] });
+  const just = (said: string): Bring => ({ said, brought: [], here: [], held: [] });
   const word = WORD[lane];
   const kindWord = (kind: string) => (lane === "edit" && kind === "template" ? "effect" : (KIND_WORD[kind as (typeof STYLE_KINDS)[number]] ?? kind));
   // A channel's add-ons (addons.ts) are no lesson: never listed or counted as one, and brought with the whole style
@@ -512,7 +515,7 @@ export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, arg
     (alreadyHere.length > 0 ? ` ${alreadyHere.join(", ")} came from it before, as it is there.` : "") +
     (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
     (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "");
-  return { said, held: [...kept, ...clashed] };
+  return { said, brought, here: alreadyHere, held: [...kept, ...clashed] };
 }
 
 // ---------------------------------------------------------------- YouTube's numbers
