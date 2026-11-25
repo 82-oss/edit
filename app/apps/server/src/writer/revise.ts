@@ -636,6 +636,10 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
  * one waiting from before whose words a new rewrite drops goes with the old rewrite.
  */
 function placeNotes(script: Script, work: Work, proposals: Proposal[]): Proposal[] {
+  // One this answer added never just goes: refused, so it's put on words that stay (CodeRabbit on #11); one from before goes with its words.
+  const unplaced = (note: Note, clip: Clip) => {
+    if (work.addedNotes.has(note.id)) throw new Error(`The note "${note.text}" is on "${note.anchor?.quote ?? ""}", which ${work.names.get(clip.id) ?? "its cut-in"}'s narration doesn't have as these edits leave it: put it on words the narration keeps.`);
+  };
   const waiting = new Map<string, Note[]>([...work.pending].map(([id, notes]) => [id, [...notes]]));
   for (const clip of work.clips) {
     if (!isCutIn(clip)) continue;
@@ -660,6 +664,7 @@ function placeNotes(script: Script, work: Work, proposals: Proposal[]): Proposal
     if (clip === undefined || (clip.narration ?? "").trim() === proposal.before.trim()) continue;
     const moved = (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {
       const at = note.anchor === undefined ? null : noteAnchor(script, clip, note.anchor.quote, note.anchor.start);
+      if (at === null) unplaced(note, clip);
       return at === null ? [] : [{ ...note, anchor: at }];
     });
     if (moved.length > 0) clip.notes = [...(clip.notes ?? []), ...moved];
@@ -669,6 +674,7 @@ function placeNotes(script: Script, work: Work, proposals: Proposal[]): Proposal
     const clip = work.clips.find((one) => one.id === proposal.cutIn);
     const notes = clip === undefined ? [] : (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {
       const at = note.anchor === undefined ? null : noteAnchor(script, { ...clip, narration: proposal.after }, note.anchor.quote, note.anchor.start);
+      if (at === null) unplaced(note, clip);
       return at === null ? [] : [{ ...note, anchor: at }];
     });
     const { notes: _, ...rest } = proposal;

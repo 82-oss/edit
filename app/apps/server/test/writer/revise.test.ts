@@ -138,6 +138,12 @@ test("a note on words only the saved narration keeps stays on the cut-in while a
   expect(removed[0]!.notes).toBeUndefined();
 });
 
+test("a note this answer added on a pending proposal's words is refused when a later write leaves them nowhere, never dropped (CodeRabbit on #11)", () => {
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He confessed.", at: 0 }] };
+  expect(() => apply(waiting, [{ op: "note", id: "i2", on: "confessed", text: "edit: zoom" }, { op: "write", id: "i2", narration: "He ran away." }], [], true)).toThrow("doesn't have as these edits leave it");
+  expect(() => apply(waiting, [{ op: "note", id: "i2", on: "confessed", text: "edit: zoom" }, { op: "write", id: "i2", narration: "He ran away." }], [], false)).toThrow("doesn't have as these edits leave it");
+});
+
 test("a note on words the cut-in keeps is anchored where they are in its saved narration, and one on words this answer's last rewrite drops is refused (CodeRabbit on #11)", () => {
   const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "Yesterday he was home." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }], [], false);
   expect(proposals).toHaveLength(1);
