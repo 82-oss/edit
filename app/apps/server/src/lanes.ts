@@ -279,7 +279,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
     {
       name: "forget",
       description: `Put one of this channel's ${word} lessons away: what the person means by forgetting or dropping something taught ("forget that", "that was for this video only"), a lesson you kept by mistake too. It leaves every one of this channel's agents from their next turn, its versions kept. To drop one line of a longer lesson, remember it with change instead; a script style is chosen with use_style, never put away here. A teacher's to do.`,
-      inputSchema: { type: "object", properties: { skill: { type: "string", description: "The lesson's name, as your instructions list it" }, reason: { type: "string", description: "What the person said, quoted" } }, required: ["skill", "reason"] },
+      inputSchema: { type: "object", properties: { skill: { type: "string", description: "The lesson's name, as your instructions list it" }, reason: { type: "string", description: "What the person said, quoted" }, group: { type: "boolean", description: "true only when the person means every channel in the group: a group's lesson is put away for all of them" } }, required: ["skill", "reason"] },
     },
     {
       name: "read_skill",
@@ -398,6 +398,8 @@ async function forget(args: Record<string, unknown>, place: Place): Promise<stri
   if (skill === styles.DEFAULT || styles.isStyle(skill)) throw new Error(`${skill} is a script style: use_style chooses which one a script is written in, and its lines change with remember's change.`);
   const found = lessonsOf(place).find((one) => one.name === skill);
   if (found?.key === undefined) throw new Error(`no lesson ${skill} in ${nameOf(place.channel)}'s ${WORD[place.lane]} style: the ones there are in your instructions`);
+  // A group's lesson goes for every channel in it: only when that's asked, never on a second try at this channel's own (CodeRabbit on #11).
+  if (!ownLesson(found, place) && args.group !== true) throw new Error(`${skill} here is its group's, shared by every channel in the group: put it away with group: true only if the person means all of them; say so to them first.`);
   // One of that name further out (its group's, under this channel's own) takes its place: said, never "gone" (CodeRabbit on #11).
   const places = channels.placesOf(place.channel, place.lane);
   const under = (await v2cloud.list("skill")).filter((one) => one.name === skill && one.key !== found.key && places.includes(v2cloud.ownPlaceOf(one.key) ?? ""));
@@ -405,7 +407,7 @@ async function forget(args: Record<string, unknown>, place: Place): Promise<stri
   v2cloud.forgetSkills();
   diag.info("lanes", `${place.channel} ${place.lane}: put away ${found.key} (${args.reason.trim()})`);
   const group = ownLesson(found, place) ? "" : ", its group's, so every channel in the group";
-  if (under.length > 0) return `Put away this channel's own ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style, but its group's ${skill} still applies here from the next turn. To drop that too, forget ${skill} again: it goes for every channel in the group.`;
+  if (under.length > 0) return `Put away this channel's own ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style, but its group's ${skill} still applies here from the next turn. To drop that too, forget ${skill} with group: true: it goes for every channel in the group.`;
   return `Put away ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style${group}: its agents don't have it from their next turn (its versions are kept).`;
 }
 

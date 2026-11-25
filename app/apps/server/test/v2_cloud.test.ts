@@ -778,7 +778,9 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     await v2cloud.refreshSkills();
     expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("but its group's numbers still applies here");
     await v2cloud.refreshSkills();
-    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("its group's, so every channel in the group");
+    // The group's goes only when that's meant, never by asking again.
+    await expect(lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).rejects.toThrow("with group: true only if");
+    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe", group: true }, { channel: "ch-samcompila", lane: "ideas" })).toContain("its group's, so every channel in the group");
     // A read already out when a lesson is put away doesn't bring it back as fresh (CodeRabbit on #11).
     expect(await lanes.call("remember", { skill: "brief", text: "Brief titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toContain("Kept as brief");
     const convex = mock.cloud.convex;
