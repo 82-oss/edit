@@ -883,7 +883,7 @@ test("a Script mode copy on another disk (no link into the cache) goes on today'
 
 // Nov 25, the M1 Air's trial of PR #12: a 90 MB YouTube original made a 168 MB working copy (its picture at 1.8 Mbit/s
 // over a source spending under 1), and at 2 Mbit/s up it took twice the original's 6 minutes to send.
-test("a working copy never spends more than its original: a thin source's copy is made at the source's own rate", () => {
+test("a working copy spends no more than its original (but for the floor a very thin source gets): a thin source's copy is made at the source's own rate", () => {
   const minutes = (n: number) => n * 60;
   // The trial's: 90 MB over 16 minutes is about 0.75 Mbit/s, so the copy's picture is about 0.62 (its sound taken off).
   const thin = localFirst.workingRate(90e6, minutes(16));

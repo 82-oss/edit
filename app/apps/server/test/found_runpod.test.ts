@@ -790,3 +790,37 @@ test("an original whose file went before it was up is no longer waited on, nobod
     cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
   }
 });
+
+test("an original refused after its way up from here failed is read again once another computer has sent it (R2 asked), or once an upload of it lands", async () => {
+  const key = "edit/originals/youtube/elsewhere01/clip.mp4";
+  cloud.goingUp(key);
+  cloud.upEnded(key, false);
+  expect(cloud.notUp(key)).toBe(true);
+  // Another computer sends it: the next look (a minute on, at most) asks R2, which has it.
+  r2Store.set(key, "bytes");
+  const later = "edit/originals/youtube/elsewhere02/clip.mp4";
+  cloud.goingUp(later);
+  cloud.upEnded(later, false);
+  r2Store.set(later, "bytes");
+  expect(cloud.notUp(later)).toBe(true);
+  const until = Date.now() + 5_000;
+  while (cloud.notUp(later) && Date.now() < until) await Bun.sleep(20);
+  expect(cloud.notUp(later)).toBe(false);
+  // An upload of it landing here clears it at once, whatever the earlier way's end.
+  cloud.upEnded(key, true);
+  expect(cloud.notUp(key)).toBe(false);
+});
+
+test("an original going up by a way that says how far it is gives the export its share", () => {
+  const key = "edit/originals/drive/relayShare1/clip.mp4";
+  let sent = 25;
+  cloud.goingUp(key, () => sent / 100);
+  try {
+    expect(cloud.shareUp(key)).toBe(0.25);
+    sent = 60;
+    expect(cloud.shareUp(key)).toBe(0.6);
+  } finally {
+    cloud.upEnded(key, true);
+  }
+  expect(cloud.shareUp(key)).toBeNull();
+});

@@ -86,7 +86,22 @@ export async function resume(app: App): Promise<number> {
  * started on what the timeline newly shows. Nothing for a channel taught
  * nothing (theirs left, ours off them).
  */
-export async function ensure(app: App, id: string): Promise<void> {
+export function ensure(app: App, id: string): Promise<void> {
+  // One plan of a project at a time: a plan's waits on uploads are stamped with it (cloud.ts `planBegins`), and an
+  // older plan still going when a newer one began registered its waits as the newer one's, kept for good.
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id));
+  const settled = run.catch(() => {});
+  ensuring.set(id, settled);
+  void settled.finally(() => {
+    if (ensuring.get(id) === settled) ensuring.delete(id);
+  });
+  return run;
+}
+
+/** Each project's plan under way (`ensure`), the next one after it. */
+const ensuring = new Map<string, Promise<void>>();
+
+async function ensureNow(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return cloud.stopWaiting(id);
   // What this plan asks to wait for (uploads still going up from here) is all the project waits for once it's in.
@@ -149,7 +164,7 @@ export function exportLine(id: string): string | null {
   const up = cloud.waitsOf(id);
   if (up.length > 0) {
     // How far its upload is, so the line (and the export's row) moves while it goes.
-    const share = cloudMedia.upShare(up[0]!.key);
+    const share = cloud.shareUp(up[0]!.key) ?? cloudMedia.upShare(up[0]!.key);
     return `Removing their text · waiting for ${up[0]!.name}${up.length > 1 ? ` and ${up.length - 1} more` : ""} to finish uploading${share === null ? "" : ` (${Math.floor(share * 100)}%)`}`;
   }
   return out === 0 ? null : `Removing their text · ${done} of ${done + out} pieces`;
@@ -746,6 +761,7 @@ export function reset(): void {
   active.clear();
   wakes.clear();
   replanning.clear();
+  ensuring.clear();
   wakeGeneration += 1;
   if (watcher !== null) clearInterval(watcher);
   watcher = null;

@@ -814,13 +814,36 @@ const neverUp = new Set<string>();
 /** Each project's plan, counted (`planBegins`): a wait is kept only while plans since still ask for it. */
 const plans = new Map<string, number>();
 export const whenUp: ((key: string, waiting: string[]) => void)[] = [];
-/** Whether `key`'s original isn't in R2 from here: still on its way up, or its way up ended without it. */
-export const notUp = (key: string): boolean => notUpYet.has(key) || neverUp.has(key);
-/** `key`'s original is on its way up (or will be, at its next try). */
-export function goingUp(key: string): void {
+/**
+ * Whether `key`'s original isn't in R2 from here: still on its way up, or its way up ended without it. Ended without
+ * it, R2 is asked again now and then (at most once a minute a key), as another computer may have sent it since.
+ */
+export function notUp(key: string): boolean {
+  if (notUpYet.has(key)) return true;
+  if (!neverUp.has(key)) return false;
+  const at = askedR2.get(key) ?? 0;
+  if (Date.now() - at >= 60_000) {
+    askedR2.set(key, Date.now());
+    void head(key).then(
+      (there) => {
+        if (there !== null && neverUp.delete(key)) diag.info("cloud", `${key} is in the cloud after all (sent from another computer): read there again`);
+      },
+      () => {},
+    );
+  }
+  return true;
+}
+const askedR2 = new Map<string, number>();
+/** How far each original going up by a way of its own is (0 to 1, null when it can't say): Script mode's, the relay's copy. */
+const shares = new Map<string, () => number | null>();
+/** `key`'s original is on its way up (or will be, at its next try); `share`, how far it is when its sender can say. */
+export function goingUp(key: string, share?: () => number | null): void {
   neverUp.delete(key);
+  if (share !== undefined) shares.set(key, share);
   if (!notUpYet.has(key)) notUpYet.set(key, new Map());
 }
+/** How far `key`'s original is on its way up, by the sender that said (`goingUp`); null when none can say. */
+export const shareUp = (key: string): number | null => (notUpYet.has(key) ? (shares.get(key)?.() ?? null) : null);
 /** Project `project` waits for `key`'s original (`name`) to land, when it's still on its way; whether it is. */
 export function waitFor(key: string, project: string, name: string): boolean {
   const waiting = notUpYet.get(key);
@@ -857,6 +880,8 @@ export const waitedFor = (project: string): string[] => waitsOf(project).map((on
  * waited for it is let go, said once a project.
  */
 export function upEnded(key: string, up: boolean): void {
+  shares.delete(key);
+  if (up) neverUp.delete(key);
   const waiting = notUpYet.get(key);
   if (waiting === undefined) return;
   notUpYet.delete(key);

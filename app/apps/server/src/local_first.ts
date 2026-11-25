@@ -373,8 +373,9 @@ export function stretchCommand(input: string, probe: Probe, n: number, out: stri
 }
 
 /**
- * The working copy's picture rate for an original of `bytes` over `seconds`: `WORKING.bitrate` at most, and never
- * more than the original's own picture spends (Nov 25, the M1 Air's trial: a 90 MB YouTube original made a 168 MB
+ * The working copy's picture rate for an original of `bytes` over `seconds`: `WORKING.bitrate` at most, and no
+ * more than the original's own picture spends (but for a source thinner than `WORKING.least_bitrate`, rare, whose copy
+ * is given that) (Nov 25, the M1 Air's trial: a 90 MB YouTube original made a 168 MB
  * copy, its picture at 1.8 Mbit/s over a source of under 1, and sent up at 2 Mbit/s it took twice the original's
  * 6 minutes). The original's sound is taken off its rate at the copy's own (`WORKING.audio`); `WORKING.least_bitrate`
  * at least, so a copy of a source with a broken length still reads.
