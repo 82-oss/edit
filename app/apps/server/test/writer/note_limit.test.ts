@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 
-import { producerPart } from "../../src/writer/build.ts";
+import { checkNote, producerPart } from "../../src/writer/build.ts";
 
 test("Edit's notes after a producer's note are left out of its length", () => {
   const theirs = "x".repeat(1_900);
@@ -11,4 +11,9 @@ test("Edit's notes after a producer's note are left out of its length", () => {
   expect(producerPart(sent)).toBe(theirs);
   expect(producerPart("(Edit's note on the footage: one clip is missing.)")).toBe("");
   expect(producerPart("Keep it tight. Edit's note style, please.")).toBe("Keep it tight. Edit's note style, please.");
+});
+
+test("a note over its limit is refused on its own words, Edit's notes after it never counted", () => {
+  expect(() => checkNote(`${"x".repeat(1_900)}\n\n(Edit's note: ${"y".repeat(500)})`)).not.toThrow();
+  expect(() => checkNote("x".repeat(2_001))).toThrow("Keep the note under 2,000 characters.");
 });

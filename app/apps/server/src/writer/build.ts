@@ -435,6 +435,11 @@ function finish(draft: Draft, given: string): string {
   throw new Error(`${said} Fix the length with replace_items or remove_items, then call finish again (a second finish keeps it as it is).`);
 }
 
+/** A producer's build note within its limit, else the error they're shown; checked before anything else of a build happens. */
+export function checkNote(note: string): void {
+  if ([...producerPart(note.trim())].length > 2_000) throw new Error("Keep the note under 2,000 characters.");
+}
+
 /** A build note's own words, before the notes Edit adds to it ("(Edit's note…", scripting.ts `withMissing`, `bringAsked`). */
 export function producerPart(note: string): string {
   const at = note.search(/(^|\n\n)\(Edit's note/);
@@ -447,7 +452,7 @@ function request(script: Script, note: string): string {
   const given = note.trim();
   // The limit is the producer's: what Edit adds after it (its notes on the footage and on a style it brought,
   // scripting.ts) never counts, so a note within it is never refused for them (Codex on #10).
-  if ([...producerPart(given)].length > 2_000) throw new Error("Keep the note under 2,000 characters.");
+  checkNote(given);
   return given === "" ? "Start the scripts workflow." : `Start the scripts workflow. ${given}`;
 }
 

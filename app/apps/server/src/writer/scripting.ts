@@ -166,6 +166,12 @@ async function bringAsked(script: Script, note: string, job: Job): Promise<{ rep
 
 export async function buildOnce(app: App, data: string, id: string, note: string, kind: Kind | undefined, job: Job): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
+  // A note over its limit is refused before a style it asks for is brought, so nothing is kept for a build that can't run (CodeRabbit on #10).
+  try {
+    build.checkNote(note);
+  } catch (error) {
+    failed(dir, job, error);
+  }
   const brought = await bringAsked(store.read(dir), note, job);
   let script = await styleNamed(dir, store.read(dir), note);
   if (script.commentary) return buildCommentary(data, dir, script, note, job);
