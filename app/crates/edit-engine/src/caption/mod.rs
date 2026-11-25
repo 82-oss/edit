@@ -47,8 +47,10 @@ pub struct Tuning {
 impl Default for Tuning {
     fn default() -> Self {
         Self {
-            key_moving: 0,
-            key_still: 0,
+            // Nov 25, four bodycam stretches, the notepad and three known-answer ones: 4 and 45 kept the scores within 0.4
+            // of a fresh fill every frame, with 15 of 120 frames filled on the still camera.
+            key_moving: 4,
+            key_still: 45,
             agree: 3.0,
         }
     }
