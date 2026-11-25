@@ -687,7 +687,8 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
     }
     // RunPod refused a GPU for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten
     // minutes); one cleaned meanwhile on another computer (the shelf, above) is laid at once.
-    if (piece.state === "failed" && piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
+    // (Whatever its state: one waiting a moment on a watermark piece over it keeps its hold.)
+    if (piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
     // Only expand per-frame masks when we actually need to queue work.
     const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
     if (boxes === null) {

@@ -691,7 +691,7 @@ async function wake(app: App, id: string): Promise<void> {
 /** Bumped by `reset`: wake-ups waiting from before give up. */
 let wakeGeneration = 0;
 
-/** Each project's removal to plan again once the pieces RunPod refused may be sent again (`start`). */
+/** Each project's removal to plan again once pieces RunPod refused may be sent again, by project and the minute it's due (`start`). */
 const retries = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** The app removal was started with (`start`): what an export's note reads the timeline from. */
@@ -702,14 +702,18 @@ export function start(app: App): void {
   removalApp.app = app;
   // A piece RunPod refused is held back REFUSED_RETRY_MS: its project's removal is planned again then (respecting a
   // Stop), so a topped-up account gets it done without an edit or an export to set it going.
+  // One wake-up per project and minute it's due: each refusal's hold ends on its own (they come in bursts, the relay
+  // failing a whole pool at once, so a handful at most), and a burst is planned again once.
   removerCloud.heldBack.push((id) => {
-    if (retries.has(id)) return;
+    const due = Date.now() + removerCloud.REFUSED_RETRY_MS + 1000;
+    const key = `${id}@${Math.ceil(due / 60_000)}`;
+    if (retries.has(key)) return;
     const timer = setTimeout(() => {
-      retries.delete(id);
+      retries.delete(key);
       void ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after RunPod's refusal: ${diag.messageOf(error)}`));
-    }, removerCloud.REFUSED_RETRY_MS + 1000);
+    }, Math.ceil(due / 60_000) * 60_000 - Date.now());
     timer.unref?.();
-    retries.set(id, timer);
+    retries.set(key, timer);
   });
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
