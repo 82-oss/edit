@@ -898,3 +898,38 @@ test("a working copy spends no more than its original (but for the floor a very 
   const command = localFirst.stretchCommand("in.mp4", PROBE, 0, "out.mp4", thin);
   expect(command[command.indexOf("-b:v") + 1]).toBe(`${Math.round(thin / 1000)}k`);
 });
+
+test("the same upload asked for again after its original landed, while its proxy still goes, is carried by the one going: no second row, nothing waited on", async () => {
+  const fixture = home("local-first-up-twice");
+  const realUpload = cloud.uploadFile;
+  let letProxy!: () => void;
+  const proxyGate = new Promise<void>((resolve) => (letProxy = resolve));
+  let proxyStarted = false;
+  const uploads = spyOn(cloud, "uploadFile").mockImplementation(async (...args: Parameters<typeof cloud.uploadFile>) => {
+    if (args[1].startsWith("edit/proxies/")) {
+      proxyStarted = true;
+      await proxyGate;
+    }
+    return realUpload(...args);
+  });
+  const key = "edit/originals/sha256/twice/clip.mp4";
+  try {
+    const file = join(fixture.dir, "clip.mp4");
+    fs.copyFileSync(close, file);
+    const proxy = join(fixture.dir, "proxy.mp4");
+    fs.copyFileSync(close, proxy);
+    const upload = { file, source: "sha256:twice", size: fs.statSync(file).size, duration: SECONDS, originalKey: key, uploadOriginal: true, proxy: "edit/proxies/sha256/twice.mp4", local: proxy, name: "clip.mp4" };
+    cloudMedia.uploadLater(fixture.home, { ...upload });
+    await until(() => proxyStarted);
+    expect(cloud.notUp(key)).toBe(false);
+    cloudMedia.uploadLater(fixture.home, { ...upload });
+    expect(cloud.notUp(key)).toBe(false);
+    expect(jobs.list(fixture.home, "upload").filter((job) => jobs.live(job))).toHaveLength(1);
+    letProxy();
+    expect(await cloudMedia.uploaded(file)).toBe(true);
+  } finally {
+    letProxy();
+    uploads.mockRestore();
+    fixture.cleanup();
+  }
+}, 60_000);

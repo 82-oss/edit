@@ -857,7 +857,7 @@ export interface Upload {
 }
 
 /** Uploads imports left running, by the file imported: whether they all went up. */
-const uploading = new Map<string, { key: string; home: string; upload: Upload; done: Promise<boolean> }>();
+const uploading = new Map<string, { key: string; home: string; upload: Upload; done: Promise<boolean>; landed: boolean }>();
 /** One at a time, beside whatever else uses the network. */
 const uploadSlot = new Semaphore(1);
 
@@ -944,8 +944,8 @@ export function removeWhenUploaded(file: string): void {
     return;
   }
   running.upload.removeAfter = true;
-  // Noted with the job, so a restart's retry removes it too.
-  jobs.begin(running.home, "upload", "-", { ...running.upload }, running.upload.source);
+  // Noted with the job, so a restart's retry removes it too (and, its original up already, doesn't send that again).
+  jobs.begin(running.home, "upload", "-", { ...running.upload, ...(running.landed ? { uploadOriginal: false } : {}) }, running.upload.source);
 }
 
 /**
@@ -963,13 +963,14 @@ export function uploadLater(home: string, upload: Upload): void {
   const key = jobs.begin(home, "upload", "-", { ...upload }, localFirst.isWorkingKey(upload.proxy) ? `${upload.source}#working-up` : upload.source);
   // Not in R2 until it lands, at this try or a later one (a put-off upload stays on its way).
   if (upload.uploadOriginal) cloud.goingUp(upload.originalKey);
-  const entry = { key, home, upload, done: Promise.resolve(true) };
+  // `landed`: its original is in R2 (the job's own flags stay as asked: a second ask for the same upload matches them).
+  const entry = { key, home, upload, done: Promise.resolve(true), landed: false };
   entry.done = uploadSlot
     .with(() =>
       diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () =>
         runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key), () => {
           // Up: a retry of the row (the proxy's, after a restart) neither sends it nor counts it as not up again.
-          upload.uploadOriginal = false;
+          entry.landed = true;
           jobs.patch(home, key, { uploadOriginal: false });
         }),
       ),
@@ -984,12 +985,12 @@ export function uploadLater(home: string, upload: Upload): void {
       (error: unknown) => {
         // Its file gone (the only thing that can't change): crossed off. Anything else (offline, signed out, the relay
         // down) is put off and tried again by itself on failure.ts's schedule (jobs.ts putOff), or at the next start.
-        const gone = (upload.uploadOriginal && !isFile(upload.file)) || (upload.local !== null && !isFile(upload.local));
+        const gone = (upload.uploadOriginal && !entry.landed && !isFile(upload.file)) || (upload.local !== null && !isFile(upload.local));
         diag.error("cloud", `uploading ${upload.file}: ${scrub(failure(error))}${gone ? " (its file is gone: not tried again)" : ""}`);
         if (gone) {
           jobs.end(home, key);
           tellLanded(upload.file, new Error("its copy here is gone"));
-          if (upload.uploadOriginal) cloud.upEnded(upload.originalKey, false);
+          if (upload.uploadOriginal && !entry.landed) cloud.upEnded(upload.originalKey, false);
         } else jobs.putOff(home, key, `its upload failed: ${scrub(failure(error))}`);
         return false;
       },
