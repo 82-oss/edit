@@ -880,3 +880,21 @@ test("a Script mode copy on another disk (no link into the cache) goes on today'
     fixture.cleanup();
   }
 }, 60_000);
+
+// Nov 25, the M1 Air's trial of PR #12: a 90 MB YouTube original made a 168 MB working copy (its picture at 1.8 Mbit/s
+// over a source spending under 1), and at 2 Mbit/s up it took twice the original's 6 minutes to send.
+test("a working copy never spends more than its original: a thin source's copy is made at the source's own rate", () => {
+  const minutes = (n: number) => n * 60;
+  // The trial's: 90 MB over 16 minutes is about 0.75 Mbit/s, so the copy's picture is about 0.62 (its sound taken off).
+  const thin = localFirst.workingRate(90e6, minutes(16));
+  expect(thin).toBeLessThan(700_000);
+  expect(thin).toBeGreaterThan(550_000);
+  // A 383 MB original over the same length spends 3.2 Mbit/s: the copy keeps its 1.8.
+  expect(localFirst.workingRate(383e6, minutes(16))).toBe(localFirst.WORKING.bitrate);
+  // A length that can't be read, or a source thinner than any copy should be: never under the least.
+  expect(localFirst.workingRate(1e6, 0)).toBe(localFirst.WORKING.bitrate);
+  expect(localFirst.workingRate(1e6, minutes(60))).toBe(localFirst.WORKING.least_bitrate);
+  // And it's what the encode is told.
+  const command = localFirst.stretchCommand("in.mp4", PROBE, 0, "out.mp4", thin);
+  expect(command[command.indexOf("-b:v") + 1]).toBe(`${Math.round(thin / 1000)}k`);
+});
