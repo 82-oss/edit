@@ -182,6 +182,50 @@ test("an effect handed over to another computer: its fetched code is the render'
   }
 });
 
+test("an effect's code goes to the cloud once it settles, before any render, and another computer carries on from the version in use (Nov 25: the 1957 murder edit's maps never rendered on the MacBook Air, and their code was on it alone)", async () => {
+  const { app, cleanup, id } = hq("v2-settled");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "map");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "map");
+    // Rendered once on the first computer.
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    const first = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "map", dir, { source: first, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "map", path: "/elsewhere/map.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "map", effect_key: first });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Its agent changes it: once the code has settled it's kept, whether or not its render ever finishes here.
+    fs.writeFileSync(join(dir, "scene.html"), page("two, settled"));
+    effects.renderSoon(app, id);
+    for (let wait = 0; wait < 200 && (await v2cloud.versions(item)).length < 2; wait++) await Bun.sleep(50);
+    const kept = await v2cloud.versions(item);
+    expect(kept.length).toBe(2);
+    expect((await v2cloud.version(item))!.version).toMatchObject({ reason: "settled", source: effects.list(app.store, id)[0]!.key });
+    // Settled here and kept: the code here is the version in use, never put back to the render's.
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+
+    // Another computer without the folder: the version in use comes down, not the older one rendered.
+    fs.rmSync(dir, { recursive: true });
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+    // One that had the rendered version before: brought up to the version in use.
+    await v2cloud.fetchInto(item, 1, dir);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+  } finally {
+    cleanup();
+  }
+}, 30_000);
+
 test("a project another computer is editing keeps its renders here: code here that isn't the render's never swaps it for the clear still, takes the lock or writes", async () => {
   const { app, cleanup, id, home } = hq("v2-not-editing");
   const projects = new cloudProjects.Cloud(home, "this-mac");

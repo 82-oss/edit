@@ -49,8 +49,7 @@
 // its code is newer than its render, the engine draws a clear picture for it
 // (`standIn`) and the page plays alone, so nothing shows twice.
 //
-// Not yet: sound, and effects kept in the cloud (the folder is this
-// computer's; another computer plays the render, which the cloud does carry).
+// Not yet: sound.
 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -2308,15 +2307,19 @@ async function place(app: App, render: Render): Promise<void> {
 }
 
 /**
- * Each settled version of an effect's code (the one just rendered) kept in
- * V2's cloud as the effect's next version: its history, to go back through
- * (`restore`), and its code for another computer's agent to carry on with.
- * In the background; signed out, there's no cloud and nothing is kept.
+ * Each settled version of an effect's code kept in V2's cloud as the effect's
+ * next version: its history, to go back through (`restore`), and its code for
+ * another computer's agent to carry on with. Kept as it settles, before its
+ * render (Nov 25: the 1957 murder edit's two maps never finished rendering on
+ * the MacBook Air, so their code was on that Mac alone and the edit couldn't
+ * go on from another computer), and again once rendered (the same files: no
+ * new version). In the background; signed out, there's no cloud and nothing
+ * is kept.
  */
-function keepVersion(app: App, project: string, name: string, key: string): void {
+function keepVersion(app: App, project: string, name: string, key: string, reason: "settled" | "rendered" = "rendered"): void {
   if (!v2cloud.enabled()) return;
   void v2cloud
-    .save(v2cloud.effectKey(project, name), name, folder(app.store, project, name), { source: key, reason: "rendered" })
+    .save(v2cloud.effectKey(project, name), name, folder(app.store, project, name), { source: key, reason })
     .catch((error: unknown) => diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`));
 }
 
@@ -2326,13 +2329,13 @@ const bringing = new Map<string, Promise<string[]>>();
 const lookedFor = new Set<string>();
 
 /**
- * The effects of a project's timeline whose code here isn't the code their
- * render was made of, brought down from V2's cloud at that version (the one
- * whose `source` is the render's key), so its agent can see and change them,
- * and the viewer play them live: one made on another computer, or changed
- * there since this computer last had it. Code here that's none of the
- * versions kept (the agent's work not rendered yet) is left as it is; with
- * no folder here, the version in use comes when the render's isn't found.
+ * The effects of a project's timeline whose code here is older than V2's
+ * cloud has, brought down at the version in use (the code its agent last
+ * settled on, rendered or not), so its agent can see and change them, and
+ * the viewer play them live: one made on another computer, or changed there
+ * since this computer last had it. Code here that's the render's (by its
+ * files) or the version in use is left as it is, and so is code that's none
+ * of the versions kept (the agent's work, not settled yet).
  */
 export function bringDown(app: App, project: string): Promise<string[]> {
   const going = bringing.get(project);
@@ -2363,59 +2366,69 @@ export function bringDown(app: App, project: string): Promise<string[]> {
 async function bringDownNow(app: App, project: string): Promise<string[]> {
   const live = app.store.get(project);
   if (live === null || live.project.hq !== true || !v2cloud.enabled()) return [];
-  const brought: string[] = [];
   const frame = frameOf(live.project);
-  for (const media of live.project.media) {
-    const name = media.effect;
-    if (name === undefined || name === null || !NAME.test(name)) continue;
-    const dir = folder(app.store, project, name);
-    const item = v2cloud.effectKey(project, name);
-    const rendered = typeof media.effect_key === "string" ? media.effect_key : null;
-    try {
-      if (!fs.existsSync(dir)) {
-        const asked = `${project}/${name}/${rendered}/none`;
-        if (lookedFor.has(asked)) continue;
-        const versions = rendered === null ? [] : await v2cloud.versions(item);
-        const its = versions.find((one) => one.source === rendered && one.files !== null);
-        if ((await v2cloud.fetchInto(item, its?.n ?? null, dir)) !== null) {
-          brought.push(name);
-          // The render's own version came down: its files are the code the render was made of, whatever key that
-          // computer gave it (before Nov 16 a key had the files' times, which no fetch keeps). Said at once, before the
-          // clear still is judged (`standIn`): kenobi, Nov 17, swapped five such renders of Cops Found 3 Bodies for
-          // clear stills on its first open, for the whole team.
-          if (its !== undefined && rendered !== null) sameFilesHere(app.store, project, name, rendered, frame);
-        } else lookedFor.add(asked);
-        continue;
+  // Each effect asked of the cloud side by side: an edit of 19 effects asked one after another kept its renders waiting.
+  const came = await Promise.all(
+    live.project.media.map(async (media): Promise<string | null> => {
+      const name = media.effect;
+      if (name === undefined || name === null || !NAME.test(name)) return null;
+      try {
+        return (await bringOne(app, project, name, typeof media.effect_key === "string" ? media.effect_key : null, frame)) ? name : null;
+      } catch (error) {
+        diag.warn("effects", `${project}: ${name} couldn't come down from V2's cloud: ${diag.messageOf(error)}`);
+        return null;
       }
-      if (rendered === null || !fs.existsSync(join(dir, ENTRY))) continue;
-      const files = filesIn(dir);
-      const used = fontsUsed(app.store, project, dir);
-      const code = codeIn(dir);
-      const here: Effect = { name, changed: 0, page: "", key: codeKey(code, frame, used), old: oldKey(files, frame, used) };
-      if (sameCode(project, name, rendered, here)) continue;
-      const asked = `${project}/${name}/${rendered}/${here.key}`;
-      if (lookedFor.has(asked)) continue;
-      const versions = await v2cloud.versions(item);
+    }),
+  );
+  return came.filter((name): name is string => name !== null);
+}
+
+/** One effect's code brought down from V2's cloud when what's here is older (`bringDown`): whether it came. */
+async function bringOne(app: App, project: string, name: string, rendered: string | null, frame: { width: number; height: number; fps: number }): Promise<boolean> {
+  const dir = folder(app.store, project, name);
+  const item = v2cloud.effectKey(project, name);
+  if (!fs.existsSync(dir)) {
+    const asked = `${project}/${name}/${rendered}/none`;
+    if (lookedFor.has(asked)) return false;
+    // The version in use: the code its agent last settled on, rendered or not (a render still to come, or one that
+    // never finished on the computer it was made on: Nov 25, the 1957 murder edit's maps), so the work goes on from it.
+    const came = await v2cloud.fetchInto(item, null, dir);
+    if (came === null) {
       lookedFor.add(asked);
-      const its = versions.find((one) => one.source === rendered && one.files !== null);
-      if (its === undefined) continue;
-      const same = (files: v2cloud.File[]) => sameFiles(files, code);
-      // The same files under another computer's key: the render is of this code.
-      if (same(its.files!)) {
-        alike.set(`${project}/${name}/${rendered}`, here.key);
-        continue;
-      }
-      // An older version of it here: the render's comes in its place. Code that's no version kept is work not rendered yet.
-      if (!versions.some((one) => one.files !== null && same(one.files))) continue;
-      if ((await v2cloud.fetchInto(item, its.n, dir)) !== null) {
-        brought.push(name);
-        sameFilesHere(app.store, project, name, rendered, frame);
-      }
-    } catch (error) {
-      diag.warn("effects", `${project}: ${name} couldn't come down from V2's cloud: ${diag.messageOf(error)}`);
+      return false;
     }
+    // The render's own version came down: its files are the code the render was made of, whatever key that computer
+    // gave it (before Nov 16 a key had the files' times, which no fetch keeps). Said at once, before the clear still is
+    // judged (`standIn`): kenobi, Nov 17, swapped five such renders of Cops Found 3 Bodies for clear stills on its first
+    // open, for the whole team.
+    if (rendered !== null && came.source === rendered) sameFilesHere(app.store, project, name, rendered, frame);
+    return true;
   }
-  return brought;
+  if (!fs.existsSync(join(dir, ENTRY))) return false;
+  const files = filesIn(dir);
+  const used = fontsUsed(app.store, project, dir);
+  const code = codeIn(dir);
+  const here: Effect = { name, changed: 0, page: "", key: codeKey(code, frame, used), old: oldKey(files, frame, used) };
+  // Asked once a session for each render and code here: the render's own code here too, as another computer may have
+  // settled on newer code since that render.
+  const asked = `${project}/${name}/${rendered}/${here.key}`;
+  if (lookedFor.has(asked)) return false;
+  const versions = await v2cloud.versions(item);
+  lookedFor.add(asked);
+  const same = (kept: v2cloud.File[]) => sameFiles(kept, code);
+  const its = versions.find((one) => one.source === rendered && one.files !== null);
+  // The same files under another computer's key: the render is of this code.
+  if (rendered !== null && its !== undefined && !sameCode(project, name, rendered, here) && same(its.files!)) alike.set(`${project}/${name}/${rendered}`, here.key);
+  // The version in use here already (the render's, or settled since and its render to come): left as it is.
+  const inUse = versions.length === 0 ? null : await v2cloud.version(item);
+  if (inUse === null || inUse.version.files === null || same(inUse.version.files)) return false;
+  // An older version of it here (the render's among them): the one in use comes in its place. Code that's no version
+  // kept is the agent's work, not settled yet: left as it is.
+  if (!versions.some((one) => one.files !== null && same(one.files))) return false;
+  const came = await v2cloud.fetchInto(item, inUse.version.n, dir);
+  if (came === null) return false;
+  if (rendered !== null && came.source === rendered) sameFilesHere(app.store, project, name, rendered, frame);
+  return true;
 }
 
 /**
@@ -2866,7 +2879,10 @@ function prepareAndRender(app: App, project: string): void {
       // Drawn by itself only where the project is being edited: its render is written into the project (an export asked
       // for here waits for it all the same, `waitForRenders`).
       if (!editingHere(app, project)) return;
-      for (const effect of startable(app.store, project, needed(app.store, project).filter((one) => !one.fresh && one.current !== null))) {
+      const due = needed(app.store, project).filter((one) => !one.fresh && one.current !== null);
+      // Its code in the cloud before it's drawn: a render can take long, or never finish here.
+      for (const effect of due) keepVersion(app, project, effect.name, effect.current!.key, "settled");
+      for (const effect of startable(app.store, project, due)) {
         renderNow(app, project, effect.name).catch(() => {});
       }
     })
