@@ -71,13 +71,22 @@ impl Lama {
             .and_then(|mut builder| builder.commit_from_file(path).map_err(ort_err));
         let (session, provider) = match tried {
             Ok(session) => (session, fast.1),
-            Err(_) => (
-                Session::builder(&env)
-                    .map_err(ort_err)?
-                    .commit_from_file(path)
-                    .map_err(ort_err)?,
-                "cpu",
-            ),
+            Err(why) => {
+                crate::log::warn(
+                    "removal",
+                    format!(
+                        "LaMa can't run on {} ({why}); on the processor instead",
+                        fast.1
+                    ),
+                );
+                (
+                    Session::builder(&env)
+                        .map_err(ort_err)?
+                        .commit_from_file(path)
+                        .map_err(ort_err)?,
+                    "cpu",
+                )
+            }
         };
         Ok(Self {
             _env: env,
