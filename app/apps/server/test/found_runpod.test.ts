@@ -768,7 +768,7 @@ test("a file whose original is still going up from here waits for it, with no Ru
   }
 });
 
-test("an original whose file went before it was up is no longer waited on, and nobody is told it's up", () => {
+test("an original whose file went before it was up is no longer waited on, nobody is told it's up, and RunPod isn't sent it", () => {
   const key = "edit/originals/youtube/goneGone001/clip.mp4";
   const told: string[] = [];
   const listener = (up: string) => void told.push(up);
@@ -778,9 +778,14 @@ test("an original whose file went before it was up is no longer waited on, and n
     cloud.waitFor(key, "p1", "clip.mp4");
     expect(cloud.notUp(key)).toBe(true);
     cloud.upEnded(key, false);
-    expect(cloud.notUp(key)).toBe(false);
+    expect(cloud.notUp(key)).toBe(true);
+    expect(removerCloud.keyOf(makeMedia("mg", "clip.mp4", key))).toBeUndefined();
     expect(told).toEqual([]);
     expect(cloud.waitedFor("p1")).toEqual([]);
+    // Sent up again later (a new import of it): waited for again, and refused only until it lands.
+    cloud.goingUp(key);
+    cloud.upEnded(key, true);
+    expect(cloud.notUp(key)).toBe(false);
   } finally {
     cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
   }

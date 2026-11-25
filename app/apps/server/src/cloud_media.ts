@@ -871,6 +871,12 @@ export function uploadsNow(): { file: string; originalKey: string; uploadOrigina
   return [...uploading.values()].map(({ upload }) => ({ file: upload.file, originalKey: upload.originalKey, uploadOriginal: upload.uploadOriginal, proxy: upload.proxy }));
 }
 
+/** How much of original `key` is up (0 to 1) by the upload sending it now; null when none is. */
+export function upShare(key: string): number | null {
+  const going = [...uploading.values()].find((one) => one.upload.uploadOriginal && one.upload.originalKey === key);
+  return going === undefined || !(going.upload.size > 0) ? null : Math.min(sentOf(going.upload.file) / going.upload.size, 1);
+}
+
 /** Whether an upload of `file` is still going (cache_cleanup leaves its copy alone). */
 export function uploadingNow(file: string): boolean {
   return uploading.has(file);

@@ -88,12 +88,15 @@ export async function resume(app: App): Promise<number> {
  */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null) return;
+  if (live === null) return cloud.stopWaiting(id);
+  // What this plan asks to wait for (uploads still going up from here) is all the project waits for once it's in.
+  const plan = cloud.planBegins(id);
   await removal.refresh();
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
   if (removal.kinds(lesson).blur.length > 0) await textRemoval.ensure(app, id);
+  cloud.planDone(id, plan);
   keepWaits(app, id);
   noteRun(app, id);
 }
@@ -143,8 +146,12 @@ export function progressOf(id: string): { done: number; out: number } {
 /** The export's step while pieces are out: "3 of 19 pieces" (null when none is). */
 export function exportLine(id: string): string | null {
   const { done, out } = progressOf(id);
-  const up = cloud.waitedFor(id);
-  if (up.length > 0) return `Removing their text · waiting for ${up[0]}${up.length > 1 ? ` and ${up.length - 1} more` : ""} to finish uploading`;
+  const up = cloud.waitsOf(id);
+  if (up.length > 0) {
+    // How far its upload is, so the line (and the export's row) moves while it goes.
+    const share = cloudMedia.upShare(up[0]!.key);
+    return `Removing their text · waiting for ${up[0]!.name}${up.length > 1 ? ` and ${up.length - 1} more` : ""} to finish uploading${share === null ? "" : ` (${Math.floor(share * 100)}%)`}`;
+  }
   return out === 0 ? null : `Removing their text · ${done} of ${done + out} pieces`;
 }
 
@@ -160,7 +167,10 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
-    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
+    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) {
+      const up = cloud.waitedFor(id);
+      throw new Error(up.length > 0 ? `${up[0]} is still uploading from this computer, and their text in it is taken out once it's up; export again then.` : "Their text is still being taken out of the footage; export again once the chat says it's done.");
+    }
     await Bun.sleep(1000);
   }
 }

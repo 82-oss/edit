@@ -808,19 +808,34 @@ export function uploadJournals(): { key: string; size: number; up: number; parts
  * `keyOf`) finds nothing until it lands. Kept by whatever sends originals up (cloud_media `uploadLater` and the job
  * table at a start, Script mode's copies: writer/streamed.ts); each `whenUp` is told once one lands, with who waits.
  */
-const notUpYet = new Map<string, Map<string, string>>();
+const notUpYet = new Map<string, Map<string, { name: string; plan: number }>>();
+/** Originals whose only way up from here ended without them (their file gone, or its upload failed for this run). */
+const neverUp = new Set<string>();
+/** Each project's plan, counted (`planBegins`): a wait is kept only while plans since still ask for it. */
+const plans = new Map<string, number>();
 export const whenUp: ((key: string, waiting: string[]) => void)[] = [];
-/** Whether `key`'s original is still on its way up from here. */
-export const notUp = (key: string): boolean => notUpYet.has(key);
+/** Whether `key`'s original isn't in R2 from here: still on its way up, or its way up ended without it. */
+export const notUp = (key: string): boolean => notUpYet.has(key) || neverUp.has(key);
 /** `key`'s original is on its way up (or will be, at its next try). */
 export function goingUp(key: string): void {
+  neverUp.delete(key);
   if (!notUpYet.has(key)) notUpYet.set(key, new Map());
 }
 /** Project `project` waits for `key`'s original (`name`) to land, when it's still on its way; whether it is. */
 export function waitFor(key: string, project: string, name: string): boolean {
   const waiting = notUpYet.get(key);
-  waiting?.set(project, name);
+  waiting?.set(project, { name, plan: plans.get(project) ?? 0 });
   return waiting !== undefined;
+}
+/** A plan of `project` begins: what it asks to wait for (`waitFor`) is all it waits for once it's done (`planDone`). */
+export function planBegins(project: string): number {
+  const plan = (plans.get(project) ?? 0) + 1;
+  plans.set(project, plan);
+  return plan;
+}
+/** The plan begun as `plan` is done: waits no plan since asked for are let go (footage off the timeline, read elsewhere, untaught). */
+export function planDone(project: string, plan: number): void {
+  for (const waiting of notUpYet.values()) if ((waiting.get(project)?.plan ?? plan) < plan) waiting.delete(project);
 }
 /** `project` waits for nothing to land (a Stop): an export of it no longer waits on uploads. */
 export function stopWaiting(project: string): void {
@@ -830,16 +845,26 @@ export function stopWaiting(project: string): void {
 export function keepWaiting(project: string, still: (key: string) => boolean): void {
   for (const [key, waiting] of notUpYet) if (!still(key)) waiting.delete(project);
 }
-/** What `project` waits for to land: each original's name. */
-export function waitedFor(project: string): string[] {
-  return [...notUpYet.values()].flatMap((waiting) => (waiting.has(project) ? [waiting.get(project)!] : []));
+/** What `project` waits for to land: each original's key and name. */
+export function waitsOf(project: string): { key: string; name: string }[] {
+  return [...notUpYet].flatMap(([key, waiting]) => (waiting.has(project) ? [{ key, name: waiting.get(project)!.name }] : []));
 }
-/** `key`'s original landed (`up`), or will never go from here (its file gone): no longer on its way. */
+/** What `project` waits for to land: each original's name. */
+export const waitedFor = (project: string): string[] => waitsOf(project).map((one) => one.name);
+/**
+ * `key`'s original landed (`up`), or its way up from here ended without it (its file gone, its upload failed for this
+ * run): no longer waited for. Ended without it, it stays refused to RunPod (`notUp`) until it's sent again, and what
+ * waited for it is let go, said once a project.
+ */
 export function upEnded(key: string, up: boolean): void {
   const waiting = notUpYet.get(key);
   if (waiting === undefined) return;
   notUpYet.delete(key);
   if (up) for (const tell of whenUp) tell(key, [...waiting.keys()]);
+  else {
+    neverUp.add(key);
+    for (const project of waiting.keys()) diag.warn("removal", `${project}: ${key} won't be in the cloud from here, so their text in it isn't taken out on rented machines`);
+  }
 }
 
 /** Lets go of a resumable upload of `key` begun here (the object got there another way): its parts in R2 and its journal. */

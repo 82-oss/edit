@@ -1026,10 +1026,12 @@ test("a project waiting for an original going up from here: its export waits, na
     while (!tracked(app, project.id) && Date.now() < until) await Bun.sleep(100);
     await blur.settled();
     expect(blurs(project.id)).toEqual([["m", 0, 8, "done"]]);
-    // Going up again: an export waits for it ("still rendering" to the quick look), until a Stop lets it go.
+    // Going up again, with removal on rented machines (a Mac's: no finder here): the export's own plan asks the finder,
+    // which waits for the upload, and the export waits with it ("still rendering" to the quick look).
     cloud.goingUp(key);
-    cloud.waitFor(key, project.id, "tape");
+    removerCloud.setOnForTests(true);
     expect(await removalSchedule.waitForPieces(app, project.id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
+    expect(cloud.waitedFor(project.id)).toEqual(["tape"]);
     // A file the finder has just read: out until the plan it starts is in, so an export doesn't slip between them.
     for (const listener of found.whenFound) listener(app, project.id);
     expect(removalSchedule.progressOf(project.id).out).toBeGreaterThan(1);

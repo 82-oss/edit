@@ -820,13 +820,16 @@ test("a Drive file whose Script mode download fails while the import waits for i
   }
 }, 60_000);
 
-test("an upload whose file is gone when it's started again after a restart is no longer waited for", () => {
+test("an upload whose file is gone when it's started again after a restart is no longer waited for, and stays refused to RunPod", () => {
   const fixture = home("local-first-resume-gone");
   const key = "edit/originals/sha256/resumegone/clip.mp4";
   try {
     cloud.goingUp(key);
+    cloud.waitFor(key, "p1", "gone.mp4");
     expect(() => cloudMedia.resumeUpload(fixture.home, { file: join(fixture.dir, "gone.mp4"), source: "sha256:resumegone", size: 1, duration: 1, originalKey: key, uploadOriginal: true, proxy: null, local: null })).toThrow("is gone");
-    expect(cloud.notUp(key)).toBe(false);
+    expect(cloud.waitedFor("p1")).toEqual([]);
+    // R2 never got it: RunPod isn't sent its key.
+    expect(cloud.notUp(key)).toBe(true);
   } finally {
     cloud.upEnded(key, false);
     fixture.cleanup();
