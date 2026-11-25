@@ -398,10 +398,14 @@ async function forget(args: Record<string, unknown>, place: Place): Promise<stri
   if (skill === styles.DEFAULT || styles.isStyle(skill)) throw new Error(`${skill} is a script style: use_style chooses which one a script is written in, and its lines change with remember's change.`);
   const found = lessonsOf(place).find((one) => one.name === skill);
   if (found?.key === undefined) throw new Error(`no lesson ${skill} in ${nameOf(place.channel)}'s ${WORD[place.lane]} style: the ones there are in your instructions`);
+  // One of that name further out (its group's, under this channel's own) takes its place: said, never "gone" (CodeRabbit on #11).
+  const places = channels.placesOf(place.channel, place.lane);
+  const under = (await v2cloud.list("skill")).filter((one) => one.name === skill && one.key !== found.key && places.includes(v2cloud.ownPlaceOf(one.key) ?? ""));
   await v2cloud.archive(found.key, true);
   v2cloud.forgetSkills();
   diag.info("lanes", `${place.channel} ${place.lane}: put away ${found.key} (${args.reason.trim()})`);
   const group = ownLesson(found, place) ? "" : ", its group's, so every channel in the group";
+  if (under.length > 0) return `Put away this channel's own ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style, but its group's ${skill} still applies here from the next turn. To drop that too, forget ${skill} again: it goes for every channel in the group.`;
   return `Put away ${skill} from ${nameOf(place.channel)}'s ${WORD[place.lane]} style${group}: its agents don't have it from their next turn (its versions are kept).`;
 }
 

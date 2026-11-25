@@ -771,7 +771,34 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     await v2cloud.refreshSkills();
     expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
     await expect(lanes.call("forget", { skill: "slow", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).rejects.toThrow("no lesson slow");
+    // This channel's own over its group's of that name: the group's still applies, and is said (CodeRabbit on #11).
+    expect(await lanes.keepLesson({ channel: "ch-samcompila", lane: "ideas" }, "numbers", "Two numbers in each title.", "said", "channel")).toContain("for this channel only");
+    await v2cloud.refreshSkills();
+    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("but its group's numbers still applies here");
+    await v2cloud.refreshSkills();
     expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("its group's, so every channel in the group");
+    // A read already out when a lesson is put away doesn't bring it back as fresh (CodeRabbit on #11).
+    expect(await lanes.call("remember", { skill: "brief", text: "Brief titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toContain("Kept as brief");
+    const convex = mock.cloud.convex;
+    const served = convex.call.bind(convex);
+    let armed = true;
+    convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+      const answer = served(name, args, base);
+      if (armed && name.endsWith("listLibrary") && args.kind === "skill") {
+        armed = false;
+        convex.library.get("skill:@jcs--ideas/brief")!.archived = true;
+        v2cloud.forgetSkills();
+      }
+      return answer;
+    };
+    try {
+      v2cloud.forgetSkills();
+      await v2cloud.refreshSkills();
+    } finally {
+      convex.call = served;
+    }
+    expect(armed).toBe(false);
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "brief")).toBe(false);
   } finally {
     channels.useChannelsForTests([]);
     cleanup();
