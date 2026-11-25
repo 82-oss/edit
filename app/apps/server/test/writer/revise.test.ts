@@ -89,6 +89,16 @@ test("an edit note goes on the words it's about: a cut-in's narration or what a 
   expect(editNote("Edit:  zoom in slowly ")).toBe("edit: zoom in slowly");
 });
 
+test("a note on a cut-in rewritten in the same answer goes on its new words (Nov 25: the charges note on a rewritten outro was refused against the old one)", () => {
+  const edits = [{ op: "write", id: "i2", narration: "He was charged with kidnapping and murder." }, { op: "note", id: "i2", on: "kidnapping and murder", text: "edit: charges on screen" }];
+  const [direct] = apply(script(), edits, [], true);
+  expect(direct[1]!.notes?.at(-1)?.anchor).toMatchObject({ start: 20, end: 41, quote: "kidnapping and murder" });
+  // Proposed (not yet accepted): the note waits on the words the proposal brings.
+  const [proposed, , proposals] = apply(script(), edits, [], false);
+  expect(proposals).toHaveLength(1);
+  expect(proposed[1]!.notes?.at(-1)?.anchor?.quote).toBe("kidnapping and murder");
+});
+
 test("writes an empty cut-in and proposes a change to a saved one", () => {
   const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "He swore he was home." }, { op: "write", id: "i4", narration: "He was not." }], [], false);
   expect(clips[1]!.narration).toBe("He said he was home.");

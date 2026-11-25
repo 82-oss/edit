@@ -338,7 +338,9 @@ class Work {
 
   /** Where a note's words are in its item (blocks.noteAnchor), or why they can't be found. */
   anchor(clip: Clip, on: string): { start: number; end: number; quote: string } {
-    const found = noteAnchor({ ...this.script, corrections: this.corrections }, clip, on);
+    // A cut-in rewritten earlier in this answer is noted on its new words (Nov 25, JJ's notes on the 1957 murder script: the charges note on the rewritten outro was refused against the old narration).
+    const written = this.writes.get(clip.id);
+    const found = noteAnchor({ ...this.script, corrections: this.corrections }, written === undefined ? clip : { ...clip, narration: written }, on);
     if (found === null) throw new Error(isCutIn(clip) ? `"${on}" isn't in that cut-in's narration: copy the words the note is on exactly.` : `"${on}" isn't said in that clip: copy the words the note is on exactly from what's said there.`);
     return found;
   }
@@ -661,7 +663,7 @@ export async function revise(script: Script, request: string, focus: Focus, chat
         const answer = [...(typeof plan.answer === "string" ? plan.answer.trim() : "")].slice(0, 4_000).join("");
         return { clips: done[0], corrections: done[1], proposals: done[2], answer: answer === "" ? "Done." : answer, costUsd: cost, startOver: false, lesson: lessonOf(plan), feedback: feedbackOf(plan) };
       } catch (error) {
-        refusal = `The app refused your edits. ${error instanceof Error ? error.message : String(error)} Nothing was saved. Send the complete corrected answer, every edit again in order.`;
+        refusal = `The app refused your edits. ${error instanceof Error ? error.message : String(error)} Nothing was saved. Send the complete corrected answer, every edit again in order. Its reply is the producer's only one, so write it as your first: what the edits do to the script, never that they were sent again, refused or checked.`;
       }
     } else refusal = "Your answer carried no edits. Send the edits and reply as the structured answer.";
     if (repairs === 2 || turn.session === null) {
