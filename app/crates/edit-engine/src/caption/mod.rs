@@ -21,7 +21,10 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 
 use crate::still::pixels::{self, Img, Mask, Rgb};
-use crate::still::{band_of, check, Frames, Job, Stop, Strip};
+use crate::still::{band_of, check, Frames, Job, Strip};
+
+/// Asked between frames whether to stop, from more than one stage at once.
+pub type SyncStop<'a> = &'a (dyn Fn() -> bool + Sync);
 use crate::watermark::flow::dis;
 use crate::watermark::plane::{harmonic_fill, Plane};
 use shadow::REACH;
@@ -63,7 +66,31 @@ struct Clock {
     spent: Vec<(&'static str, f64)>,
 }
 
+/// A frame on its way from the front stage to the middle: no caption on it, or brightened with its hole.
+enum Prepared {
+    Clear,
+    Captioned {
+        res: Rgb,
+        hole: Mask,
+        near: Mask,
+        gray: Plane,
+    },
+}
+
 impl Clock {
+    /// Another stage's time added in (the stages overlap: the sum is work, not the stretch's wall time).
+    fn add(&mut self, other: &Self) {
+        for (name, took) in &other.spent {
+            if *name == "start" {
+                continue;
+            }
+            match self.spent.iter_mut().find(|(one, _)| one == name) {
+                Some((_, sum)) => *sum += took,
+                None => self.spent.push((name, *took)),
+            }
+        }
+    }
+
     fn tick(&mut self, name: &'static str) {
         let now = std::time::Instant::now();
         let took = self.at.map_or(0.0, |at| (now - at).as_secs_f64());
@@ -383,7 +410,7 @@ fn fill(model: &mut lama::Lama, picture: &mut Rgb, hole: &Mask, scale: f32) -> R
 
 /// Cleans the stretch `job` asks for with the LaMa at `model`: the strip at `job.out` and {"box", "inferred", "style",
 /// "provider"}. Runs on the calling thread; `stopped` is asked between frames.
-pub fn clean(job: &Job, model: &Path, stopped: Stop<'_>) -> Result<Value, String> {
+pub fn clean(job: &Job, model: &Path, stopped: SyncStop<'_>) -> Result<Value, String> {
     clean_with(job, model, Tuning::default(), stopped)
 }
 
@@ -392,7 +419,7 @@ pub fn clean_with(
     job: &Job,
     model: &Path,
     tuning: Tuning,
-    stopped: Stop<'_>,
+    stopped: SyncStop<'_>,
 ) -> Result<Value, String> {
     let (w, h, fps) = (job.width as usize, job.height as usize, job.fps);
     if w < 16 || h < 16 || fps.is_nan() || fps <= 0.0 {
@@ -467,103 +494,182 @@ pub fn clean_with(
     let provider = lama.provider;
     clock.tick("fit and model");
 
-    let mut source = Frames::band(job, total, w, y0, y1)?;
-    let mut strip = Strip::open(Path::new(&job.out), w, rows, fps)?;
-    let mut prev: Option<(Plane, Rgb, Mask)> = None;
-    let (mut written, mut inferred, mut carried_frames, mut age) = (0usize, 0usize, 0usize, 0usize);
-    let result = (|| -> Result<(), String> {
-        while written < total {
-            check(stopped)?;
-            let Some(frame) = source.next(stopped)? else {
-                break;
-            };
-            clock.tick("decode");
-            let boxes = in_band(&masks[written], y0);
-            let mut s: Mask = Img::filled(w, rows, false);
-            if !boxes.is_empty() {
-                shadow::strokes_in(&frame, &boxes, letters_scale, &mut s);
-            }
-            clock.tick("letters");
-            if !s.any() {
-                strip.write(None)?;
-                prev = None;
-                written += 1;
-                continue;
-            }
-            let Some((ax0, ay0, ax1, ay1)) = area_of(&masks[written], y0, w, rows, margin) else {
-                strip.write(None)?;
-                prev = None;
-                written += 1;
-                continue;
-            };
-            let (undone, hole_c, near_c) = shadow::undo(
-                &frame.crop(ax0, ay0, ax1, ay1),
-                &s.crop(ax0, ay0, ax1, ay1),
-                &style,
-                scale,
-            );
-            let mut res = frame.clone();
-            res.paste(ax0, ay0, &undone);
-            let mut hole: Mask = Img::filled(w, rows, false);
-            hole.paste(ax0, ay0, &hole_c);
-            let mut near: Mask = Img::filled(w, rows, false);
-            near.paste(ax0, ay0, &near_c);
-            clock.tick("brighten");
-            let gray_now = luma_plane(&frame);
-            if hole.any() {
-                let carry = prev
-                    .as_ref()
-                    .and_then(|before| carried(before, &gray_now, &hole, scale));
-                clock.tick("motion");
-                let age_ok = carry.as_ref().is_some_and(|one| {
-                    age < if one.still {
-                        tuning.key_still
-                    } else {
-                        tuning.key_moving
+    // Three stages a frame apart, so the slowest sets the pace instead of their sum: the front reads each frame, finds
+    // its letters and brightens it (no frame depends on another there); the middle carries or fills and levels, in
+    // order (a carry needs the last frame's result); the back makes the strip's alpha and writes it.
+    let source = Frames::band(job, total, w, y0, y1)?;
+    let strip = Strip::open(Path::new(&job.out), w, rows, fps)?;
+    let (to_middle, from_front) = std::sync::mpsc::sync_channel::<Prepared>(3);
+    let (to_back, from_middle) = std::sync::mpsc::sync_channel::<Option<(Rgb, Mask)>>(3);
+    let (mut inferred, mut carried_frames, mut age) = (0usize, 0usize, 0usize);
+    let (front, middle, back) = std::thread::scope(|scope| {
+        let front = scope.spawn(|| {
+            let mut source = source;
+            let mut clock = Clock::default();
+            clock.tick("start");
+            let mut read = 0usize;
+            while read < total {
+                check(stopped)?;
+                let Some(frame) = source.next(stopped)? else {
+                    break;
+                };
+                clock.tick("decode");
+                let boxes = in_band(&masks[read], y0);
+                let mut s: Mask = Img::filled(w, rows, false);
+                if !boxes.is_empty() {
+                    shadow::strokes_in(&frame, &boxes, letters_scale, &mut s);
+                }
+                clock.tick("letters");
+                let area = area_of(&masks[read], y0, w, rows, margin).filter(|_| s.any());
+                let prepared = match area {
+                    None => Prepared::Clear,
+                    Some((ax0, ay0, ax1, ay1)) => {
+                        let (undone, hole_c, near_c) = shadow::undo(
+                            &frame.crop(ax0, ay0, ax1, ay1),
+                            &s.crop(ax0, ay0, ax1, ay1),
+                            &style,
+                            scale,
+                        );
+                        let mut res = frame.clone();
+                        res.paste(ax0, ay0, &undone);
+                        let mut hole: Mask = Img::filled(w, rows, false);
+                        hole.paste(ax0, ay0, &hole_c);
+                        let mut near: Mask = Img::filled(w, rows, false);
+                        near.paste(ax0, ay0, &near_c);
+                        let gray = luma_plane(&frame);
+                        clock.tick("brighten");
+                        Prepared::Captioned {
+                            res,
+                            hole,
+                            near,
+                            gray,
+                        }
                     }
-                });
-                let carried_in = age_ok
-                    && carry
-                        .as_ref()
-                        .is_some_and(|one| agrees(one, &res, &hole, scale, tuning.agree))
-                    && carry
-                        .as_ref()
-                        .is_some_and(|one| carry_into(one, &mut res, &hole));
-                if carried_in {
-                    age += 1;
-                    carried_frames += 1;
-                } else {
-                    fill(lama, &mut res, &hole, scale)?;
-                    clock.tick("lama");
-                    inferred += 1;
-                    age = 0;
-                    if let Some(one) = &carry {
-                        steady(one, &mut res, &hole);
+                };
+                if to_middle.send(prepared).is_err() {
+                    break;
+                }
+                read += 1;
+            }
+            drop(to_middle);
+            Ok::<_, String>((read, clock))
+        });
+        let back = scope.spawn(move || {
+            let mut strip = strip;
+            let mut clock = Clock::default();
+            clock.tick("start");
+            for one in from_middle {
+                match one {
+                    None => strip.write(None)?,
+                    Some((res, changed)) => {
+                        let alpha = pixels::alpha_of(&changed, FEATHER);
+                        strip.write(Some((&res, &alpha)))?;
                     }
                 }
-                shadow::level(&mut res, &hole, &near);
-                clock.tick("level");
+                clock.tick("write");
             }
-            let changed: Mask = near.zip(&hole, |a, b| a || b);
-            let alpha = pixels::alpha_of(&changed, FEATHER);
-            strip.write(Some((&res, &alpha)))?;
-            clock.tick("write");
-            prev = Some((gray_now, res, hole));
-            written += 1;
+            Ok::<_, String>((strip, clock))
+        });
+        let middle = (|| -> Result<Clock, String> {
+            let mut clock = Clock::default();
+            clock.tick("start");
+            let mut prev: Option<(Plane, Rgb, Mask)> = None;
+            for one in from_front {
+                check(stopped)?;
+                let Prepared::Captioned {
+                    mut res,
+                    hole,
+                    near,
+                    gray,
+                } = one
+                else {
+                    prev = None;
+                    if to_back.send(None).is_err() {
+                        break;
+                    }
+                    continue;
+                };
+                clock.tick("waiting");
+                if hole.any() {
+                    let carry = prev
+                        .as_ref()
+                        .and_then(|before| carried(before, &gray, &hole, scale));
+                    clock.tick("motion");
+                    let age_ok = carry.as_ref().is_some_and(|one| {
+                        age < if one.still {
+                            tuning.key_still
+                        } else {
+                            tuning.key_moving
+                        }
+                    });
+                    let carried_in = age_ok
+                        && carry
+                            .as_ref()
+                            .is_some_and(|one| agrees(one, &res, &hole, scale, tuning.agree))
+                        && carry
+                            .as_ref()
+                            .is_some_and(|one| carry_into(one, &mut res, &hole));
+                    if carried_in {
+                        age += 1;
+                        carried_frames += 1;
+                    } else {
+                        fill(lama, &mut res, &hole, scale)?;
+                        clock.tick("lama");
+                        inferred += 1;
+                        age = 0;
+                        if let Some(one) = &carry {
+                            steady(one, &mut res, &hole);
+                        }
+                    }
+                    shadow::level(&mut res, &hole, &near);
+                    clock.tick("level");
+                }
+                let changed: Mask = near.zip(&hole, |a, b| a || b);
+                if to_back.send(Some((res.clone(), changed))).is_err() {
+                    break;
+                }
+                prev = Some((gray, res, hole));
+            }
+            Ok(clock)
+        })();
+        drop(to_back);
+        let back = back
+            .join()
+            .map_err(|_| "the strip's writer stopped".to_owned())
+            .and_then(|one| one);
+        let front = front
+            .join()
+            .map_err(|_| "the frame reader stopped".to_owned())
+            .and_then(|one| one);
+        (front, middle, back)
+    });
+    let strip = match back {
+        Ok((strip, write_clock)) => {
+            clock.add(&write_clock);
+            strip
         }
-        Ok(())
-    })();
-    drop(source);
-    if let Err(error) = result {
+        Err(error) => return Err(error),
+    };
+    let fail = |strip: Strip, error: String| -> Result<Value, String> {
         strip.abandon();
-        return Err(error);
-    }
+        Err(error)
+    };
+    let written = match (front, middle) {
+        (Ok((read, front_clock)), Ok(middle_clock)) => {
+            clock.add(&front_clock);
+            clock.add(&middle_clock);
+            read
+        }
+        (Err(error), _) | (_, Err(error)) => return fail(strip, error),
+    };
     if written < total {
-        strip.abandon();
-        return Err(format!(
-            "the footage ended {} frames before the stretch did",
-            total - written
-        ));
+        return fail(
+            strip,
+            format!(
+                "the footage ended {} frames before the stretch did",
+                total - written
+            ),
+        );
     }
     strip.finish()?;
     Ok(json!({
