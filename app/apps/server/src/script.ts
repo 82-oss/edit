@@ -3483,13 +3483,14 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
     try {
       if (way !== null) return await localFootage(app, id, index, file, letGo, way);
     } catch (error) {
-      if (!(error instanceof NoRoomToKeep)) throw error;
-      diag.info("script", `${file}: no room on ${THIS_MACHINE} to keep it whole as well as its working copy, so it goes as before (up, cut, and let go here)`);
-      // Today's path finds the download where it was left; whatever it does with it, nothing of it stays after.
+      if (!(error instanceof AsBefore)) throw error;
+      diag.info("script", error.dir !== null ? `${file}: no room on ${THIS_MACHINE} to keep it whole as well as its working copy, so it goes as before (up, cut, and let go here)` : `${file}: its whole original isn't coming to ${THIS_MACHINE}, so it goes as before`);
+      // Today's path finds a download where it was left; whatever it does with it, nothing of it stays after.
+      const left = error.dir;
       try {
         return await footageAsBefore(app, id, index, file, letGo);
       } finally {
-        fs.rmSync(error.dir, { recursive: true, force: true });
+        if (left !== null) fs.rmSync(left, { recursive: true, force: true });
       }
     }
   }
@@ -3675,37 +3676,25 @@ async function originalHere(
   }
   const record = asked === undefined ? await recordSoon(source) : asked;
   const ready = cloudMediaModule.readyOriginal(record);
-  if (record !== null && ready !== null) {
-    // In the cloud already (another project's import): brought from there, never from YouTube or Drive again.
-    const at = place(ready);
-    const name = record.name;
+  if (record !== null && ready !== null && isFileHere(place(ready))) {
+    // In the cloud already (another project's import) and here too: never brought down again.
     const size = Math.max(Math.trunc(record.size), 0);
-    if (!isFileHere(at)) await diag.timeOnAsync("script", "script: original from the cloud", ready, () => cloud.download(ready, at, (bytes) => progress(bytes, size, name)));
-    progress(size, size, name);
-    return { source, key: ready, name, path: at, size: fs.statSync(at).size, upload: false };
+    progress(size, size, record.name);
+    return { source, key: ready, name: record.name, path: place(ready), size: fs.statSync(place(ready)).size, upload: false };
   }
-  if (source.startsWith("sha256:")) {
-    // A shared master is only ever in the cloud.
-    const original = await seams.cloudMedia.registeredOriginal(source);
-    const at = place(original.key);
-    if (!isFileHere(at)) await cloud.download(original.key, at, (bytes) => progress(bytes, original.size, original.name));
-    return { source, key: original.key, name: original.name, path: at, size: fs.statSync(at).size, upload: false };
-  }
+  // Only a YouTube video nobody has sent to the cloud comes down whole here (yt-dlp brings it whole on today's path
+  // too): anything else (a Drive file whose Script mode copy fell through, a shared master, an original only in the
+  // cloud) goes on today's path, never brought down whole to be sent back up (`localFirstWay`).
   const video = youtube.idOf(file);
-  const dir = join(scratch, video !== null ? `youtube-${video}` : `drive-${file}`);
-  const got =
-    video !== null
-      ? await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress))
-      : await diag.timeOnAsync("script", "script: drive download", file, async () => {
-          const path = await download(dir, file, progress);
-          return { path, name: fileName(path) ?? `${file}.mp4`, size: fs.statSync(path).size };
-        });
+  if (video === null || (record !== null && ready !== null)) throw new AsBefore(null);
+  const dir = join(scratch, `youtube-${video}`);
+  const got = await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress));
   // Kept whole here beside its working copy only with room for both (the download itself takes what today's path's
   // does): short, it's left in its folder for today's path, which finds it there and downloads nothing again.
-  if (video !== null && !storage.roomFor(cache, localFirst.workingRoom(await durationOf(got.path).catch(() => 0)))) throw new NoRoomToKeep(dir);
+  if (!storage.roomFor(cache, localFirst.workingRoom(await durationOf(got.path).catch(() => 0)))) throw new AsBefore(dir);
   const name = safeName(got.name);
   const segment = cloudMediaModule.segment(name);
-  const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/${video !== null ? `youtube/${video}` : `drive/${file}`}/${segment}`;
+  const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/youtube/${video}/${segment}`;
   const at = place(key);
   fs.mkdirSync(parent(at)!, { recursive: true });
   // The same video imported twice at once shares one download (youtube.ts): the first to get here moved it.
@@ -3715,10 +3704,13 @@ async function originalHere(
   return { source, key, name, path: at, size: got.size, upload: true };
 }
 
-/** A YouTube download with no room here to keep it whole beside its working copy: it goes on today's path from `dir`. */
-class NoRoomToKeep extends Error {
-  constructor(readonly dir: string) {
-    super("no room to keep it whole here");
+/**
+ * A file that goes on today's path after all: a YouTube download with no room here to keep it whole beside its working
+ * copy (left in `dir`, where today's path finds it), or one whose whole original isn't coming here (`dir` null).
+ */
+class AsBefore extends Error {
+  constructor(readonly dir: string | null) {
+    super("it goes on today's path");
   }
 }
 

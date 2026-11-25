@@ -671,19 +671,19 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       piece.state = "waiting";
       continue;
     }
-    // Its original still going up from here while RunPod cleans: cleaned once it's up (removal_schedule.ts wakes it),
-    // where it was sent for a file R2 hadn't got and failed.
-    const original = plan.media.cloud?.original;
-    if (cloudNow() && original !== undefined && cloud.waitFor(original, id, plan.media.name)) {
-      piece.state = "waiting";
-      continue;
-    }
     const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
     if (!stands()) return;
     if (kept !== null) {
       piece.state = "done";
       if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
       if (!stands()) return;
+      continue;
+    }
+    // Not on the shelf, and its original still going up from here while RunPod cleans: cleaned once it's up (removal_schedule.ts wakes it),
+    // where it was sent for a file R2 hadn't got and failed.
+    const original = plan.media.cloud?.original;
+    if (cloudNow() && original !== undefined && cloud.waitFor(original, id, plan.media.name)) {
+      piece.state = "waiting";
       continue;
     }
     // Only expand per-frame masks when we actually need to queue work.

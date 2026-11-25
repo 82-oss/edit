@@ -774,3 +774,58 @@ test("an original counts as up once it lands, though its proxy's upload fails af
     fixture.cleanup();
   }
 }, 60_000);
+
+test("a Drive file whose Script mode download fails while the import waits for it keeps today's path, never brought down whole", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive-landing-fails", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const asked: string[] = [];
+  const original = spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (file: string) => {
+    asked.push(file);
+    return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/Bodycam 1.mp4`, name: "Bodycam 1.mp4", size: 100 };
+  });
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = `edit/proxies/drive/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  const find = copiesHere.find;
+  const failed = Promise.reject(new Error("Script mode's download failed"));
+  failed.catch(() => {});
+  let landing = true;
+  copiesHere.find = (source) => (source === "drive:1LandingFails1" && landing ? ((landing = false), { landing: { path: join(fixture.dir, "nothing.mp4"), size: 100, name: "Bodycam 1.mp4", done: failed } }) : null);
+  try {
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1LandingFails1", url: "https://drive.google.com/file/d/1LandingFails1/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    expect(asked).toEqual(["1LandingFails1"]);
+    const media = fixture.store.get(id)!.project.media[0]!;
+    expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    expect(fs.existsSync(cloudMedia.localPath(fixture.store.cacheDir(), media.cloud!.original))).toBe(false);
+  } finally {
+    copiesHere.find = find;
+    original.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("an upload whose file is gone when it's started again after a restart is no longer waited for", () => {
+  const fixture = home("local-first-resume-gone");
+  const key = "edit/originals/sha256/resumegone/clip.mp4";
+  try {
+    cloud.goingUp(key);
+    expect(() => cloudMedia.resumeUpload(fixture.home, { file: join(fixture.dir, "gone.mp4"), source: "sha256:resumegone", size: 1, duration: 1, originalKey: key, uploadOriginal: true, proxy: null, local: null })).toThrow("is gone");
+    expect(cloud.notUp(key)).toBe(false);
+  } finally {
+    cloud.upEnded(key, false);
+    fixture.cleanup();
+  }
+});

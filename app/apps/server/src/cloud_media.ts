@@ -1071,6 +1071,8 @@ export function resumeUpload(home: string, args: Record<string, unknown>): void 
   const gone = upload.uploadOriginal && !isFile(upload.file) ? upload.file : upload.local !== null && !isFile(upload.local) ? upload.local : null;
   if (gone !== null) {
     tellLanded(upload.file, new Error("its copy here is gone"));
+    // Never going up from here now: nothing waits for it (noted as going up at the start).
+    if (upload.uploadOriginal) cloud.upEnded(upload.originalKey, false);
     throw new jobs.Gone(`${gone} is gone`);
   }
   uploadLater(home, upload);
