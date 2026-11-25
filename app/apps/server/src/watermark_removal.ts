@@ -298,7 +298,7 @@ export interface Piece {
   tries?: number;
   /** Given up on after its second try: never queued again here. */
   gaveUp?: boolean;
-  /** RunPod's refusal of a machine for it (an empty account), and when: held back REFUSED_RETRY_MS before it's sent again (remover_cloud.ts). */
+  /** RunPod's refusal of a machine for it (an empty account), and when: held back a while (remover_cloud.ts `timing.refusedRetryMs`) before it's sent again. */
   refused?: string;
   refusedAt?: number;
 }
@@ -475,9 +475,9 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
     }
     // Stopped while a cached cell above was brought in: the rest stay unqueued (a Stop can't take out what isn't queued yet).
     if ((stops.get(id) ?? 0) !== stopsBefore) return;
-    // RunPod refused a machine for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten
+    // RunPod refused a machine for it: sent again once its hold (remover_cloud.ts `timing.refusedRetryMs`) has passed (each try is refused only after ten
     // minutes); one done meanwhile on another computer (the shelf, above) is laid at once.
-    if (known?.state === "failed" && known.refusedAt !== undefined && Date.now() - known.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
+    if (known?.state === "failed" && known.refusedAt !== undefined && Date.now() - known.refusedAt < removerCloud.timing.refusedRetryMs) continue;
     note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued", tries: known?.tries ?? 0 });
     queue.push({ project: id, media: cell.media, source: cell.source, from: cell.from, to: cell.to, model: cell.model });
   }

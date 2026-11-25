@@ -82,7 +82,7 @@ export interface InpaintPiece {
   /** waiting: its track (text_blur's) isn't read yet; it's blurred meanwhile. */
   state: "waiting" | "queued" | "running" | "done" | "failed";
   why?: string;
-  /** RunPod's refusal of a GPU for it (an empty account), and when: held back REFUSED_RETRY_MS before it's sent again (remover_cloud.ts); gone once a try gets past it. */
+  /** RunPod's refusal of a GPU for it (an empty account), and when: held back a while (remover_cloud.ts `timing.refusedRetryMs`) before it's sent again; gone once a try gets past it. */
   refused?: string;
   refusedAt?: number;
 }
@@ -685,10 +685,10 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       if (!stands()) return;
       continue;
     }
-    // RunPod refused a GPU for it: sent again once REFUSED_RETRY_MS has passed (each try is refused only after ten
+    // RunPod refused a GPU for it: sent again once its hold (remover_cloud.ts `timing.refusedRetryMs`) has passed (each try is refused only after ten
     // minutes); one cleaned meanwhile on another computer (the shelf, above) is laid at once.
     // (Whatever its state: one waiting a moment on a watermark piece over it keeps its hold.)
-    if (piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.REFUSED_RETRY_MS) continue;
+    if (piece.refusedAt !== undefined && Date.now() - piece.refusedAt < removerCloud.timing.refusedRetryMs) continue;
     // Only expand per-frame masks when we actually need to queue work.
     const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
     if (boxes === null) {

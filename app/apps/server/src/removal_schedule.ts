@@ -145,7 +145,7 @@ export function exportLine(id: string): string | null {
 
 /**
  * Said beside an export that goes without pieces RunPod refused a machine for (null: none): failed, they're not waited
- * for, and they're sent again REFUSED_RETRY_MS after the refusal (remover_cloud.ts), from the export row and the
+ * for, and they're sent again when their hold ends (remover_cloud.ts `timing.refusedRetryMs`), from the export row and the
  * agent's export result.
  */
 export function exportNote(id: string): string | null {
@@ -700,18 +700,21 @@ const removalApp: { app: App | null } = { app: null };
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
   removalApp.app = app;
-  // A piece RunPod refused is held back REFUSED_RETRY_MS: its project's removal is planned again then (respecting a
+  // A piece RunPod refused is held back a while (remover_cloud.ts `timing.refusedRetryMs`): its project's removal is planned again then (respecting a
   // Stop), so a topped-up account gets it done without an edit or an export to set it going.
   // One wake-up per project and minute it's due: each refusal's hold ends on its own (they come in bursts, the relay
-  // failing a whole pool at once, so a handful at most), and a burst is planned again once.
+  // failing a whole pool at once, so a handful at most), and a burst is planned again once, after the hold of its last.
   removerCloud.heldBack.push((id) => {
-    const due = Date.now() + removerCloud.REFUSED_RETRY_MS + 1000;
-    const key = `${id}@${Math.ceil(due / 60_000)}`;
+    const hold = removerCloud.timing.refusedRetryMs;
+    // A thirtieth of the hold (a minute of the half hour): refusals that close together share one wake-up, just after the last one's hold ends.
+    const step = Math.max(1, Math.round(hold / 30));
+    const slot = Math.ceil((Date.now() + hold + step) / step);
+    const key = `${id}@${slot}`;
     if (retries.has(key)) return;
     const timer = setTimeout(() => {
       retries.delete(key);
       void ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after RunPod's refusal: ${diag.messageOf(error)}`));
-    }, Math.ceil(due / 60_000) * 60_000 - Date.now());
+    }, slot * step - Date.now());
     timer.unref?.();
     retries.set(key, timer);
   });

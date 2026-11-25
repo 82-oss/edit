@@ -564,13 +564,13 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
     expect(removalSchedule.exportNote(id)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`);
     await removalSchedule.waitForPieces(app, id, 200);
     // Not sent again at once (each try is refused only after ten minutes at the relay).
-    clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS - 1000);
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs - 1000);
     await wm.ensure(app, id);
     await wm.settled();
     expect(calls.length).toBe(1);
     // Half an hour on, with the account topped up: sent again, done, and nothing more to say.
     refusing = false;
-    clock.mockReturnValue(now + removerCloud.REFUSED_RETRY_MS + 1000);
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs + 1000);
     await wm.ensure(app, id);
     await wm.settled();
     expect(calls.length).toBe(3);

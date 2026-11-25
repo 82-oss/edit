@@ -47,5 +47,5 @@ test("a refusal to rent is told apart from a machine's own failure, by the relay
   // A machine that failed the work is no refusal: tried again as before.
   expect(removerCloud.refusal(await failure("failed"))).toBe(false);
   expect(await failure("waiting")).toBeNull();
-  expect(removerCloud.REFUSED_RETRY_MS).toBe(30 * 60_000);
+  expect(removerCloud.timing.refusedRetryMs).toBe(30 * 60_000);
 });

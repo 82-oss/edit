@@ -28,6 +28,7 @@ import * as removal from "../src/removal_lesson.ts";
 import { EDIT_EVENT } from "../src/edit_event.ts";
 import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
+import * as removerCloud from "../src/remover_cloud.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import * as wm from "../src/watermark_removal.ts";
@@ -937,6 +938,67 @@ test("a plan begun before a Stop of their text lays nothing after it", async () 
     cleanup();
   }
 }, 120_000);
+
+test("a cell RunPod refused is planned again by itself when its hold ends, each refusal on its own: no edit or export sets it going", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-refused-retry");
+  teach({ watermarks: true });
+  const calls: string[] = [];
+  const stand = engine(calls);
+  const words = "RunPod wouldn't rent a CPU machine for 10 minutes (402: balance too low)";
+  // Each cell refused on its first try (as the relay fails a job it couldn't rent a machine for: its words, flagged),
+  // done on the next: the account topped up meanwhile.
+  const refused = new Set<number>();
+  wm.useEngine({
+    ...stand,
+    remove: async (piece, ...rest) => {
+      if (refused.has(piece.from)) return stand.remove(piece, ...rest);
+      refused.add(piece.from);
+      calls.push(`refused ${piece.from}-${piece.to}`);
+      throw new removerCloud.RelaySaid(words, true);
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const hold = removerCloud.timing.refusedRetryMs;
+  removerCloud.timing.refusedRetryMs = 1500;
+  removalSchedule.timing.restMs = 50;
+  // Nor removal's resume after a start (it plans every project again): only the wake-ups send them again here.
+  const resume = removalSchedule.timing.resumeMs;
+  removalSchedule.timing.resumeMs = 600_000;
+  removalSchedule.start(app);
+  const cellOf = (id: string, from: number) => wm.piecesOf(id).find((piece) => piece.from === from);
+  const until = async (done: () => boolean, ms = 15_000) => {
+    const end = Date.now() + ms;
+    while (!done() && Date.now() < end) await Bun.sleep(25);
+    expect(done()).toBe(true);
+  };
+  try {
+    // A minute of footage, 20 s of it on the timeline: its first cell, refused.
+    const file = await labelledFootage(dir, 60);
+    const id = await labelledProject(app, file, 20);
+    await store.update(id, "test", (project) => {
+      project.media[0]!.duration = 60;
+    });
+    await until(() => cellOf(id, 0)?.refused === words);
+    // Later, the clip runs on to 45 s: its second cell, refused too, after the first.
+    await Bun.sleep(600);
+    await store.update(id, "test", (project) => {
+      (project.clips[0] as VideoClip).duration = 45 * 30;
+    });
+    await until(() => cellOf(id, 30)?.refused === words);
+    const second = Date.now();
+    // Nothing here calls ensure: removal's own wake-ups send each again when its hold ends. The first cell's ends
+    // first, and the second waits for its own (a strip laid saves the project, whose plan still holds it then).
+    await until(() => cellOf(id, 0)?.state === "done");
+    expect(cellOf(id, 30)?.state).toBe("failed");
+    await until(() => cellOf(id, 30)?.state === "done", 4000);
+    expect(Date.now() - second).toBeGreaterThanOrEqual(1500);
+    expect(calls.filter((one) => one.startsWith("remove") || one.startsWith("refused"))).toEqual(["refused 0-30", "refused 30-60", "remove 0-30", "remove 30-60"]);
+  } finally {
+    removerCloud.timing.refusedRetryMs = hold;
+    removalSchedule.timing.resumeMs = resume;
+    cleanup();
+  }
+}, 60_000);
 
 test("removal starts by itself as soon as edits rest; a longer clip is blurred to its new end", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");

@@ -15,7 +15,8 @@ import { CHUNK, END_GRACE_S, type Sample, type TrackPlan } from "./text_track.ts
 
 /** The relay's `remover` flag, asked at most once a minute; the last answer meanwhile. */
 const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null, forced: null as boolean | null };
-export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000 };
+/** `refusedRetryMs`: how long a piece RunPod refused a machine for waits before it's sent again (each try is refused only after ten minutes at the relay). */
+export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000, refusedRetryMs: 30 * 60_000 };
 
 /** Whether the relay cleans on RunPod now (asked again once its answer is a minute old). */
 export async function on(): Promise<boolean> {
@@ -71,20 +72,17 @@ export class RelaySaid extends Error {
   }
 }
 
-/** How long a piece RunPod refused a machine for waits before it's sent again (each try waits ten minutes at the relay to be refused). */
-export const REFUSED_RETRY_MS = 30 * 60_000;
-
-/** Told of each project a piece of which RunPod refused (removal_schedule.ts: its removal planned again once REFUSED_RETRY_MS has passed). */
+/** Told of each project a piece of which RunPod refused (removal_schedule.ts: its removal planned again once `timing.refusedRetryMs` has passed). */
 export const heldBack: ((project: string) => void)[] = [];
 
-/** Project `project` has a piece held back for REFUSED_RETRY_MS: those listening plan it again then. */
+/** Project `project` has a piece held back for `timing.refusedRetryMs`: those listening plan it again then. */
 export function held(project: string): void {
   for (const listener of heldBack) listener(project);
 }
 
 /**
  * Whether a job failed because RunPod wouldn't rent a machine for it (the relay's `refused` flag, or its words from
- * before the flag): no wait or try soon helps, so the piece is held back for REFUSED_RETRY_MS rather than sent again at
+ * before the flag): no wait or try soon helps, so the piece is held back for `timing.refusedRetryMs` rather than sent again at
  * once, and isn't waited for meanwhile (Nov 25, Boyfriends: the account ran dry, removal sent the refused pieces again
  * every time, and exports on the PC and the Mac each sat behind them for up to three hours).
  */
