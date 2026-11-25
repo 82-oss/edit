@@ -122,10 +122,11 @@ test("each pulled note is settled by what the agent said: done with what changed
     expect((resolved.find((one) => one.noteId === "b")!.changedRanges as { blockId: string }[]).map((range) => range.blockId)).toEqual(["n2"]);
     expect(resolved.find((one) => one.noteId === "c")).toMatchObject({ changedRanges: [], fixSummary: "He was home: the transcript says so at 0:07." });
     // d: nothing said of it: told so, and let go to be fixed again.
-    const replies = calls.filter((call) => call.path === "reviews:reply").map((call) => [call.args.noteId, call.args.text]);
+    const replies = calls.filter((call) => call.path === "reviews:reply").map((call) => [call.args.noteId, call.args.text, call.args.author]);
     expect(replies).toEqual([
-      ["c", "He was home: the transcript says so at 0:07."],
-      ["d", "Edit didn't change the script for this note."],
+      // From the agent, never the person signed in (Nov 25).
+      ["c", "He was home: the transcript says so at 0:07.", "Edit's agent"],
+      ["d", "Edit didn't change the script for this note.", "Edit's agent"],
     ]);
     expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["d"]]);
     expect(done.lines.at(-1)).toBe("Left Jones's note open: Edit didn't change the script for this note.");
@@ -191,7 +192,7 @@ test("a channel's script turn has the channel's lesson tools", async () => {
     const [token, , session] = turnTools.open(data, ID);
     expect(session.place).toEqual({ channel: "ch-test", lane: "script" });
     const listed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "read_skill", "other_channels", "use_style"]);
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "forget", "read_skill", "other_channels", "use_style"]);
     turnTools.close(token);
   } finally {
     cleanup();

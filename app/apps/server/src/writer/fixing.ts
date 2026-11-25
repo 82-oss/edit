@@ -159,7 +159,7 @@ async function fixNotes(data: string, id: string, noteIds: string[], job: jobs.J
     jobs.checkStopped(job);
     // Let go, so they can be fixed again once whatever broke is mended.
     await told(id, `letting go of ${rest.length} notes`, reviews.release(rest.map((one) => one.id)));
-    for (const note of rest) await told(id, `replying to ${note.author}'s note`, reviews.reply(data, note.id, `Edit couldn't fix this one: ${diag.messageOf(error)}`));
+    for (const note of rest) await told(id, `replying to ${note.author}'s note`, reviews.agentReply(data, note.id, `Edit couldn't fix this one: ${diag.messageOf(error)}`));
     lines.push(`Couldn't fix ${rest.length} ${rest.length === 1 ? "note" : "notes"}: ${diag.messageOf(error)}`);
     keepSoFar();
     return [report(), cost];
@@ -283,14 +283,14 @@ export async function settle(data: string, id: string, before: Script, after: Sc
       fixed++;
       lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}: ${said}`);
     } else if (one?.outcome === "answered" && said !== "") {
-      await told(id, `answering ${note.author}'s note`, reviews.reply(data, note.id, said));
+      await told(id, `answering ${note.author}'s note`, reviews.agentReply(data, note.id, said));
       await told(id, `marking ${note.author}'s note answered`, reviews.resolve(note.id, next, [], said, suggestion ? "rejected" : undefined));
       reviews.markFixed(data, note.id, next, [], said);
       fixed++;
       lines.push(`Answered ${note.author}'s note: ${said}`);
     } else {
       const why = one?.outcome === "open" && said !== "" ? said : "Edit didn't change the script for this note.";
-      await told(id, `replying to ${note.author}'s note`, reviews.reply(data, note.id, why));
+      await told(id, `replying to ${note.author}'s note`, reviews.agentReply(data, note.id, why));
       await told(id, `letting go of ${note.author}'s note`, reviews.release([note.id]));
       lines.push(`Left ${note.author}'s note open: ${why}`);
     }

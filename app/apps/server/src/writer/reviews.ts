@@ -317,6 +317,12 @@ export async function replyAs(data: string, noteId: string, given: string, autho
 
 export const reply = (data: string, noteId: string, text: string): Promise<void> => replyAs(data, noteId, text, creator()?.name || "Edit");
 
+/** Who the agent's own replies are from, as the edit's are (Nov 25, Sphe: a fixing run's replies showed as his, "these replies shouldn't be marked as me it should be the Edit agent"). */
+export const AGENT = "Edit's agent";
+
+/** A reply the agent writes while fixing (an answer, why a note is left), signed as the agent, never as the person signed in. */
+export const agentReply = (data: string, noteId: string, text: string): Promise<void> => replyAs(data, noteId, text, AGENT);
+
 /** Deletes a note left from Edit (never a reviewer's), with its replies. */
 export async function deleteNote(data: string, noteId: string): Promise<void> {
   await call("mutation", "reviews:deleteNote", { noteId });
