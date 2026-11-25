@@ -740,8 +740,8 @@ test("a file whose original is still going up from here waits for it, with no Ru
   const app = makeApp(path.join(tmpDir, "going-up"));
   const key = "edit/originals/youtube/goingUp0001/clip.mp4";
   const media = makeMedia("mg", "clip.mp4", key);
-  const told: string[] = [];
-  const listener = (up: string) => void told.push(up);
+  const told: [string, string[]][] = [];
+  const listener = (up: string, waiting: string[]) => void told.push([up, waiting]);
   cloud.whenUp.push(listener);
   cloud.goingUp(key);
   try {
@@ -750,9 +750,12 @@ test("a file whose original is still going up from here waits for it, with no Ru
     await found.settled();
     expect(jobsPosted).toHaveLength(0);
     expect(found.piecesOf("p1")).toEqual([]);
-    // Up: whoever waits is told, and the next look reads it on RunPod.
+    // Its project waits for it (an export of it too), by name.
+    expect(cloud.waitedFor("p1")).toEqual(["clip.mp4"]);
+    // Up: the project that waited is told, and the next look reads it on RunPod.
     cloud.upEnded(key, true);
-    expect(told).toEqual([key]);
+    expect(told).toEqual([[key, ["p1"]]]);
+    expect(cloud.waitedFor("p1")).toEqual([]);
     expect(removerCloud.keyOf(media)).toBe(key);
     found.ensure(app, "p1", [{ media, source: "youtube:goingUp0001", shown: [[0, 30]], parent: null }]);
     await found.settled();
@@ -772,10 +775,12 @@ test("an original whose file went before it was up is no longer waited on, and n
   cloud.whenUp.push(listener);
   try {
     cloud.goingUp(key);
+    cloud.waitFor(key, "p1", "clip.mp4");
     expect(cloud.notUp(key)).toBe(true);
     cloud.upEnded(key, false);
     expect(cloud.notUp(key)).toBe(false);
     expect(told).toEqual([]);
+    expect(cloud.waitedFor("p1")).toEqual([]);
   } finally {
     cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
   }

@@ -981,9 +981,9 @@ test("removal starts by itself as soon as edits rest; a longer clip is blurred t
   }
 }, 120_000);
 
-// Nov 25, the reviews of turning local-first on: what waits for an original to be on R2 (RunPod's read, track and clean)
-// had nothing to wake it once the upload landed, short of an edit.
-test("an original that goes up from here brings the projects showing it up to date, with no edit to wake them", async () => {
+// Nov 25, the reviews of turning local-first on (PR #12): what waits for an original to be on R2 (RunPod's finder read
+// and clean) had nothing to wake it once the upload landed, short of an edit, and an export didn't wait for it.
+test("a project waiting for an original going up from here: its export waits, naming it, and the upload landing wakes its removal", async () => {
   const { app, dir, cleanup } = fixtureHome("removal-woken-by-upload");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
   teach({ text: true });
@@ -1011,14 +1011,27 @@ test("an original that goes up from here brings the projects showing it up to da
     await app.store.replace(project.id, null, project, "test");
     await burned.warm(app.media, media);
     takeProposed(app, project.id);
-    expect(blurs(project.id)).toEqual([]);
+    // The finder (or the model) waits for it to land, as a Mac's does with it still going up.
     cloud.goingUp(key);
+    expect(cloud.waitFor(key, project.id, "tape")).toBe(true);
+    expect(removalSchedule.progressOf(project.id).out).toBe(1);
+    expect(removalSchedule.exportLine(project.id)).toBe("Removing their text · waiting for tape to finish uploading");
+    expect(blurs(project.id)).toEqual([]);
+    // Up: the project that waited is brought up to date by itself, and nothing waits on it any more.
     cloud.upEnded(key, true);
+    expect(cloud.waitedFor(project.id)).toEqual([]);
     const until = Date.now() + 30_000;
     while (!tracked(app, project.id) && Date.now() < until) await Bun.sleep(100);
     await blur.settled();
     expect(blurs(project.id)).toEqual([["m", 0, 8, "done"]]);
+    // Going up again: an export waits for it ("still rendering" to the quick look), until a Stop lets it go.
+    cloud.goingUp(key);
+    cloud.waitFor(key, project.id, "tape");
+    expect(await removalSchedule.waitForPieces(app, project.id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
+    removalSchedule.stop(app, project.id, ["text"]);
+    expect(cloud.waitedFor(project.id)).toEqual([]);
   } finally {
+    cloud.upEnded(key, false);
     removalSchedule.timing.restMs = 2000;
     removalSchedule.timing.resumeMs = 15_000;
     removalSchedule.reset();

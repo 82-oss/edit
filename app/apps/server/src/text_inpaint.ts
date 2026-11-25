@@ -674,7 +674,7 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
     // Its original still going up from here while RunPod cleans: cleaned once it's up (removal_schedule.ts wakes it),
     // where it was sent for a file R2 hadn't got and failed.
     const original = plan.media.cloud?.original;
-    if (cloudNow() && original !== undefined && cloud.notUp(original)) {
+    if (cloudNow() && original !== undefined && cloud.waitFor(original, id, plan.media.name)) {
       piece.state = "waiting";
       continue;
     }

@@ -965,7 +965,6 @@ export function uploadLater(home: string, upload: Upload): void {
         jobs.end(home, key);
         if (upload.removeAfter === true) fs.rmSync(upload.file, { force: true });
         tellLanded(upload.file, null);
-        if (upload.uploadOriginal) cloud.upEnded(upload.originalKey, true);
         return true;
       },
       (error: unknown) => {
@@ -1024,6 +1023,8 @@ async function runUpload(upload: Upload, progressed: () => void, moving: () => v
       if (record === null) await putRecord({ source: upload.source, name: upload.name, originalKey: upload.originalKey, originalReady: true, size: upload.size, duration: upload.duration });
       else if (record.originalKey === upload.originalKey) await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
     }
+    // In R2 now, whatever becomes of the proxy's upload after it: what waited for it there goes.
+    cloud.upEnded(upload.originalKey, true);
   }
   if (upload.proxy !== null && upload.local !== null) {
     await cloud.uploadFile(upload.local, upload.proxy, moving);
@@ -1036,6 +1037,18 @@ async function runUpload(upload: Upload, progressed: () => void, moving: () => v
     // native player and the agent's renders read (local_previews.ts), and the
     // cache's budget lets it go like any other (cache_cleanup.ts). Removed,
     // it was fetched back down the moment the project played.
+  }
+}
+
+/**
+ * Every original the job table has going up from here, noted as not in R2 yet (cloud.ts `goingUp`), as the server
+ * starts: a row put off until later isn't started again (`resumeUpload`) until its time, and meanwhile RunPod would be
+ * sent its key (remover_cloud.ts `keyOf`). One read of the table, before removal starts.
+ */
+export function noteOriginalsGoingUp(home: string): void {
+  for (const job of jobs.list(home, "upload")) {
+    const args = job.args as Partial<Upload>;
+    if (jobs.live(job) && args.uploadOriginal === true && typeof args.originalKey === "string") cloud.goingUp(args.originalKey);
   }
 }
 

@@ -1153,6 +1153,9 @@ export function ensure(app: App, id: string, wants: Want[]): void {
     // On a machine without a local finder (e.g. a Mac), wait quietly if this file or its un-scanned parent isn't on R2 yet.
     const parentWaitingUpload = want.parent !== null && foundOf(app, want.parent.source) === null && removerCloud.keyOf(want.parent.media) === undefined;
     if (standIn === null && !localAvailable() && (removerCloud.keyOf(want.media) === undefined || parentWaitingUpload)) {
+      // Going up from here: read once it's up (the upload's landing wakes the project, removal_schedule.ts), and an
+      // export waits for it meanwhile, its name in its step.
+      for (const one of [want.media, ...(parentWaitingUpload ? [want.parent!.media] : [])]) if (one.cloud?.original !== undefined) cloud.waitFor(one.cloud.original, id, one.name);
       // Another machine may have read it already: its boxes need no upload from here (Nov 24, the review of PR #5).
       lookShared(app, id, want);
       continue;

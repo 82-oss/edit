@@ -46,7 +46,6 @@ import * as seams from "./seams.ts";
 import * as textBlur from "./text_blur.ts";
 import * as textInpaint from "./text_inpaint.ts";
 import * as textRemoval from "./text_removal.ts";
-import { breather } from "./thread.ts";
 import * as tools from "./tools.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
@@ -134,7 +133,8 @@ export function progressOf(id: string): { done: number; out: number } {
   const blurs = textBlur.piecesOf(id);
   const cleans = textInpaint.piecesOf(id);
   // A file the finder is still reading counts as out too: its stretches aren't known yet (found.ts).
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id);
+  // A file still going up from here that the finder or the model waits for counts as out too (cloud.ts `waitFor`).
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length;
   const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
@@ -142,6 +142,8 @@ export function progressOf(id: string): { done: number; out: number } {
 /** The export's step while pieces are out: "3 of 19 pieces" (null when none is). */
 export function exportLine(id: string): string | null {
   const { done, out } = progressOf(id);
+  const up = cloud.waitedFor(id);
+  if (up.length > 0) return `Removing their text · waiting for ${up[0]}${up.length > 1 ? ` and ${up.length - 1} more` : ""} to finish uploading`;
   return out === 0 ? null : `Removing their text · ${done} of ${done + out} pieces`;
 }
 
@@ -563,6 +565,8 @@ export function stop(app: App, id: string, kinds: readonly removal.Kind[] = remo
     textBlur.stop(id);
     textInpaint.stop(id);
     found.stop(id);
+    // Nothing of its text waits for an upload now (planned again, a part left asks again).
+    cloud.stopWaiting(id);
   }
   if (all) active.delete(id);
   diag.info("removal", `${id}: ${all ? "stopped" : `${kinds.join(" and ")} stopped`} by the person`);
@@ -677,11 +681,16 @@ let wakeGeneration = 0;
 export function start(app: App): void {
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
-  // An original that went up from here: the projects showing it brought up to date, so what waited for it to be on R2
-  // (RunPod's finder read, track and clean: remover_cloud.ts `keyOf`) goes now, with no edit needed to wake it.
+  // An original that went up from here: the projects that waited for it (cloud.ts `waitFor`: RunPod's finder read and
+  // clean) brought up to date now, with no edit needed to wake them.
   const before = upListener === null ? -1 : cloud.whenUp.indexOf(upListener);
   if (before >= 0) cloud.whenUp.splice(before, 1);
-  upListener = (key) => void wakeShowing(app, key).catch((error: unknown) => diag.warn("removal", `after ${key} went up: ${diag.messageOf(error)}`));
+  upListener = (key, waiting) => {
+    for (const id of waiting) {
+      diag.info("removal", `${id}: ${key} is up, so what waited for it goes`);
+      ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after ${key} went up: ${diag.messageOf(error)}`));
+    }
+  };
   cloud.whenUp.push(upListener);
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
@@ -698,21 +707,7 @@ export function start(app: App): void {
   });
 }
 
-let upListener: ((key: string) => void) | null = null;
-
-/** Brings each recent project showing original `key` up to date (`resume`'s projects, those with the key among their media). */
-async function wakeShowing(app: App, key: string): Promise<void> {
-  const since = Date.now() - RESUME_WITHIN_MS;
-  const breathe = breather();
-  for (const summary of app.store.list()) {
-    await breathe();
-    if (summary.problem !== undefined || summary.modified_ms < since || summary.clips === 0) continue;
-    const project = app.store.get(summary.id)?.project;
-    if (project === undefined || !project.channel || !project.media.some((one) => one.cloud?.original === key)) continue;
-    diag.info("removal", `${summary.id}: ${key} is up, so what waited for it goes`);
-    await ensure(app, summary.id).catch((error: unknown) => diag.warn("removal", `${summary.id}: ${diag.messageOf(error)}`));
-  }
-}
+let upListener: ((key: string, waiting: string[]) => void) | null = null;
 
 /** For tests. */
 export function reset(): void {

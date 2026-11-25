@@ -457,6 +457,12 @@ function goUp(dir: string, one: Held, local: Promise<string>): void {
     file = await local;
     return upFromHere(one, file);
   })();
+  // Not in R2 until it lands (relay's copy or this Mac's upload): RunPod isn't sent its key meanwhile (cloud.ts `notUp`).
+  cloud.goingUp(one.key);
+  up.then(
+    (landed) => cloud.upEnded(one.key, landed.key === one.key),
+    () => cloud.upEnded(one.key, false),
+  );
   cloudMedia.goingUpBehind(one.source, up, watch);
   const began = Date.now();
   const run = up

@@ -802,21 +802,40 @@ export function uploadJournals(): { key: string; size: number; up: number; parts
 }
 
 /**
- * Originals whose import's upload hasn't landed yet (going now, waiting its turn, or put off), by key. A local-first
- * import names its original's key in the project from its answer, before a byte is up (local_first.ts), so whatever
- * reads R2 for it (RunPod: remover_cloud.ts `keyOf`) finds nothing until it lands. cloud_media `uploadLater` keeps this;
- * each `whenUp` is told the key once it lands.
+ * Originals not in R2 yet whose upload from here is on its way (going now, waiting its turn, or put off), by key, with
+ * the projects waiting for each to land and what each calls it. A local-first import names its original's key in the
+ * project from its answer, before a byte is up (local_first.ts), so whatever reads R2 for it (RunPod: remover_cloud.ts
+ * `keyOf`) finds nothing until it lands. Kept by whatever sends originals up (cloud_media `uploadLater` and the job
+ * table at a start, Script mode's copies: writer/streamed.ts); each `whenUp` is told once one lands, with who waits.
  */
-const notUpYet = new Set<string>();
-export const whenUp: ((key: string) => void)[] = [];
+const notUpYet = new Map<string, Map<string, string>>();
+export const whenUp: ((key: string, waiting: string[]) => void)[] = [];
 /** Whether `key`'s original is still on its way up from here. */
 export const notUp = (key: string): boolean => notUpYet.has(key);
 /** `key`'s original is on its way up (or will be, at its next try). */
-export const goingUp = (key: string): void => void notUpYet.add(key);
+export function goingUp(key: string): void {
+  if (!notUpYet.has(key)) notUpYet.set(key, new Map());
+}
+/** Project `project` waits for `key`'s original (`name`) to land, when it's still on its way; whether it is. */
+export function waitFor(key: string, project: string, name: string): boolean {
+  const waiting = notUpYet.get(key);
+  waiting?.set(project, name);
+  return waiting !== undefined;
+}
+/** `project` waits for nothing to land (a Stop): an export of it no longer waits on uploads. */
+export function stopWaiting(project: string): void {
+  for (const waiting of notUpYet.values()) waiting.delete(project);
+}
+/** What `project` waits for to land: each original's name. */
+export function waitedFor(project: string): string[] {
+  return [...notUpYet.values()].flatMap((waiting) => (waiting.has(project) ? [waiting.get(project)!] : []));
+}
 /** `key`'s original landed (`up`), or will never go from here (its file gone): no longer on its way. */
 export function upEnded(key: string, up: boolean): void {
-  if (!notUpYet.delete(key) || !up) return;
-  for (const tell of whenUp) tell(key);
+  const waiting = notUpYet.get(key);
+  if (waiting === undefined) return;
+  notUpYet.delete(key);
+  if (up) for (const tell of whenUp) tell(key, [...waiting.keys()]);
 }
 
 /** Lets go of a resumable upload of `key` begun here (the object got there another way): its parts in R2 and its journal. */
