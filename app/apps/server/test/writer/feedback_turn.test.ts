@@ -124,8 +124,7 @@ test("each pulled note is settled by what the agent said: done with what changed
     // d: nothing said of it: told so, and let go to be fixed again.
     const replies = calls.filter((call) => call.path === "reviews:reply").map((call) => [call.args.noteId, call.args.text, call.args.author]);
     expect(replies).toEqual([
-      // From the agent, never the person signed in (Nov 25).
-      ["c", "He was home: the transcript says so at 0:07.", "Edit's agent"],
+      // From the agent, never the person signed in; an answered note's answer is its result alone, never a reply too (Nov 25).
       ["d", "Edit didn't change the script for this note.", "Edit's agent"],
     ]);
     expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["d"]]);

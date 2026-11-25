@@ -253,7 +253,7 @@ export function feedbackOf(plan: Record<string, unknown>): Feedback[] {
  * After a turn that pulled review notes: each one's outcome on the review.
  * Changed (and the script did change): done in the next version, with the
  * ranges that changed in the block it's on (else those in no other fixed
- * note's block). Answered: the answer as a reply, done. Otherwise left open
+ * note's block). Answered: done, the answer its result (never a reply too). Otherwise left open
  * with why, and let go so it can be fixed again. A suggestion ends accepted or
  * rejected.
  */
@@ -283,7 +283,7 @@ export async function settle(data: string, id: string, before: Script, after: Sc
       fixed++;
       lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}: ${said}`);
     } else if (one?.outcome === "answered" && said !== "") {
-      await told(id, `answering ${note.author}'s note`, reviews.agentReply(data, note.id, said));
+      // Its answer is the note's result, shown once there; a reply as well said it twice (Nov 25, Sphe).
       await told(id, `marking ${note.author}'s note answered`, reviews.resolve(note.id, next, [], said, suggestion ? "rejected" : undefined));
       reviews.markFixed(data, note.id, next, [], said);
       fixed++;
