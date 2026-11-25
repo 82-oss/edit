@@ -376,7 +376,7 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts): for a change, the words it puts in.
   const settled = typeof args.settled === "string" && args.settled.trim() !== "";
   const clashes = settled || changed.added === "" || styles.isStyle(skill) ? [] : await teachingConflicts.conflicts(skill, changed.added, lessonsOf(place).filter((one) => !styles.isStyle(one.name)));
-  if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes);
+  if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes, "forget");
   const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
   const saved = await v2cloud.saveSkill(skill, changed.text, reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.

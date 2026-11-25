@@ -100,8 +100,9 @@ export function quotes(text: string, line: string): boolean {
 
 /** A lesson not kept for what it contradicts: its message is what the agent is told (`refusal`). */
 export class Clash extends Error {
-  constructor(readonly conflicts: readonly Conflict[]) {
-    super(refusal(conflicts));
+  /** `putAway`: the asking agent's tool for putting a lesson away (a lane's agent has forget, the edit's archive_in_library). */
+  constructor(readonly conflicts: readonly Conflict[], putAway = "archive_in_library") {
+    super(refusal(conflicts, putAway));
   }
 }
 
@@ -111,11 +112,11 @@ export function plainly(found: readonly Conflict[]): string {
 }
 
 /** What the agent is told when the lesson isn't kept for its conflicts: what clashes, and what to do. */
-export function refusal(found: readonly Conflict[]): string {
+export function refusal(found: readonly Conflict[], putAway = "archive_in_library"): string {
   return (
     `Not kept yet: it contradicts what's taught already:\n${found.map((one) => `- ${one.skill}: "${one.line}"${one.why ? ` (${one.why})` : ""}`).join("\n")}\n` +
     "Tell the person, quoting both in a line each, and ask which holds, in one short question. " +
-    "Keep it only once they answer: remember it again with settled (their words), then change the other to match (remember it with change on just that line, or archive_in_library if it all goes), so the two never stand together. " +
+    `Keep it only once they answer: remember it again with settled (their words), then change the other to match (remember it with change on just that line, or ${putAway} if it all goes), so the two never stand together. ` +
     "If they say the old one holds, don't keep the new one."
   );
 }
