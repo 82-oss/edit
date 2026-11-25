@@ -37,13 +37,18 @@ import { ANOTHER_MACHINE } from "../machine.ts";
  * before anyone can fix it, and a reply that didn't land leaves the reviewer
  * without the why.
  */
-async function told(id: string, what: string, done: Promise<unknown>): Promise<void> {
+async function told(id: string, what: string, done: Promise<unknown>): Promise<boolean> {
   try {
     await done;
+    return true;
   } catch (error) {
     diag.warn("writer", `${id}: ${what} on the review failed: ${diag.messageOf(error)}`);
+    return false;
   }
 }
+
+/** What's said of a note fixed here whose review couldn't be told: let go, it's open there and here, to be marked again (CodeRabbit on #11). */
+const UNTOLD = "but the review couldn't be marked just now, so it stays open there";
 
 type Intent = "wording" | "fact" | "cut" | "pacing" | "question" | "fyi" | "editor" | "other";
 
@@ -128,13 +133,19 @@ async function fixNotes(data: string, id: string, noteIds: string[], job: jobs.J
     const next = (before.review?.version ?? 0) + 1;
     const ranges = rangesOf(before, after);
     const suggestion = reviews.isSuggestion(note);
+    let untold = 0;
     for (const member of members) {
-      await told(id, `marking ${note.author}'s note done`, reviews.resolve(member.id, next, ranges, done, suggestion ? "accepted" : undefined));
-      reviews.markFixed(data, member.id, next, ranges, done);
+      // Done here only once the review has it: else let go, open on both sides.
+      if (await told(id, `marking ${note.author}'s note done`, reviews.resolve(member.id, next, ranges, done, suggestion ? "accepted" : undefined))) {
+        reviews.markFixed(data, member.id, next, ranges, done);
+        fixed++;
+      } else {
+        untold++;
+        await told(id, `letting go of ${note.author}'s note`, reviews.release([member.id]));
+      }
     }
-    fixed += members.length;
     exact.push(done);
-    lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}: ${done}`);
+    lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}${untold > 0 ? `, ${UNTOLD}` : ""}: ${done}`);
     keepSoFar();
   }
   const rest = notes.filter((one) => !handled.has(one.id));
@@ -278,16 +289,20 @@ export async function settle(data: string, id: string, before: Script, after: Sc
     const suggestion = reviews.isSuggestion(note);
     if (one?.outcome === "changed" && changedScript) {
       const ranges = rangesFor(note);
-      await told(id, `marking ${note.author}'s note done`, reviews.resolve(note.id, next, ranges, said, suggestion ? "accepted" : undefined));
-      reviews.markFixed(data, note.id, next, ranges, said);
-      fixed++;
-      lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}: ${said}`);
+      const marked = await told(id, `marking ${note.author}'s note done`, reviews.resolve(note.id, next, ranges, said, suggestion ? "accepted" : undefined));
+      if (marked) {
+        reviews.markFixed(data, note.id, next, ranges, said);
+        fixed++;
+      } else await told(id, `letting go of ${note.author}'s note`, reviews.release([note.id]));
+      lines.push(`${suggestion ? "Took" : "Fixed"} ${note.author}'s ${suggestion ? "suggestion" : "note"}${marked ? "" : `, ${UNTOLD}`}: ${said}`);
     } else if (one?.outcome === "answered" && said !== "") {
       // Its answer is the note's result, shown once there; a reply as well said it twice (Nov 25, Sphe).
-      await told(id, `marking ${note.author}'s note answered`, reviews.resolve(note.id, next, [], said, suggestion ? "rejected" : undefined));
-      reviews.markFixed(data, note.id, next, [], said);
-      fixed++;
-      lines.push(`Answered ${note.author}'s note: ${said}`);
+      const marked = await told(id, `marking ${note.author}'s note answered`, reviews.resolve(note.id, next, [], said, suggestion ? "rejected" : undefined));
+      if (marked) {
+        reviews.markFixed(data, note.id, next, [], said);
+        fixed++;
+      } else await told(id, `letting go of ${note.author}'s note`, reviews.release([note.id]));
+      lines.push(`Answered ${note.author}'s note${marked ? "" : `, ${UNTOLD}`}: ${said}`);
     } else {
       const why = one?.outcome === "open" && said !== "" ? said : "Edit didn't change the script for this note.";
       await told(id, `replying to ${note.author}'s note`, reviews.agentReply(data, note.id, why));

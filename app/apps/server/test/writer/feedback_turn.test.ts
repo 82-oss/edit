@@ -11,6 +11,7 @@ import type { Script } from "@edit/types/writer";
 
 import { brief, doneBrief, feedbackOf, settle } from "../../src/writer/fixing.ts";
 import { changeLesson, changedMost, keepRule } from "../../src/teaching.ts";
+import * as reviews from "../../src/writer/reviews.ts";
 import type { Note } from "../../src/writer/reviews.ts";
 import * as channels from "../../src/channels.ts";
 import * as styles from "../../src/script_styles.ts";
@@ -54,11 +55,12 @@ const note = (id: string, fields: Partial<Note> = {}): Note => ({ id, reviewId: 
 
 type Call = { path: string; args: Record<string, unknown> };
 
-function relay(): Call[] {
+function relay(failing: (call: Call) => boolean = () => false): Call[] {
   const calls: Call[] = [];
   mock.on("POST", "/v1/cloud/writer/convex", (request) => {
     const { path, args } = request.json<{ path: string; args: Record<string, unknown> }>();
     calls.push({ path, args });
+    if (failing({ path, args })) return Response.json({ status: "error", errorMessage: "the review is busy" });
     if (path === "reviews:changes") return Response.json({ status: "success", value: { notes: [], cursor: 0, more: false } });
     return Response.json({ status: "success", value: null });
   });
@@ -129,6 +131,37 @@ test("each pulled note is settled by what the agent said: done with what changed
     ]);
     expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["d"]]);
     expect(done.lines.at(-1)).toBe("Left Jones's note open: Edit didn't change the script for this note.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a note is done here only once the review has it: one the review couldn't mark is let go, open on both sides, and said so (CodeRabbit on #11)", async () => {
+  const { home, cleanup } = fixtureHome("feedback-untold");
+  try {
+    const calls = relay((call) => call.path === "reviews:resolve" && call.args.noteId !== "b");
+    const data = store.dataDir(home);
+    fs.mkdirSync(join(data, "reviews"), { recursive: true });
+    const open = (id: string) => note(id, { anchor: null });
+    fs.writeFileSync(join(data, "reviews", "notes.json"), JSON.stringify({ cursor: 1, notes: { a: open("a"), b: open("b"), c: open("c") }, links: {}, tried: {}, attempts: {}, approved: {} }));
+    const before = script();
+    const after = structuredClone(before);
+    after.clips[1]!.narration = "He swears he was home, alone, all night.";
+    const done = await settle(data, ID, before, after, [open("a"), open("b"), open("c")], [
+      { id: "a", outcome: "changed", said: "Said he was alone." },
+      { id: "b", outcome: "changed", said: "Said it word for word." },
+      { id: "c", outcome: "answered", said: "He was home." },
+    ]);
+    expect(done.fixed).toBe(1);
+    expect(done.lines).toEqual([
+      "Fixed Jones's note, but the review couldn't be marked just now, so it stays open there: Said he was alone.",
+      "Fixed Jones's note: Said it word for word.",
+      "Answered Jones's note, but the review couldn't be marked just now, so it stays open there: He was home.",
+    ]);
+    expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["a"], ["c"]]);
+    expect(reviews.note(data, "a")?.status).toBe("open");
+    expect(reviews.note(data, "b")?.status).toBe("done");
+    expect(reviews.note(data, "c")?.status).toBe("open");
   } finally {
     cleanup();
   }
