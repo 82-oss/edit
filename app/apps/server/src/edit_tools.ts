@@ -1533,7 +1533,7 @@ async function exportTool({ app, args, projectId }: ToolCall): Promise<Content[]
   const eta = progress.lookAgain(projectId, ["export"]);
   if (eta !== "") said += `${said.endsWith(".") ? "" : "."}${eta}`;
   // What it goes without of what it would have waited for (RunPod refusing removal's machines): the person hears it from the agent.
-  const without = seams.broll.readyNote?.(projectId) ?? null;
+  const without = seams.broll.readyNote?.(live(app, projectId).project) ?? null;
   if (without !== null) said += `${said.endsWith(".") ? "" : "."} ${without}`;
   return text(said);
 }

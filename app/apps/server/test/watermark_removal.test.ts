@@ -561,8 +561,15 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
     // Not waited for: an export goes on without them, and says so (Nov 25, Boyfriends: up to three hours on two machines).
     expect(removalSchedule.progressOf(id).out).toBe(0);
     expect([...new Set(heldBack)]).toEqual([id]);
-    expect(removalSchedule.exportNote(id)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`);
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`);
     await removalSchedule.waitForPieces(app, id, 200);
+    // Only what the timeline shows is counted: cut back to 20 s, the second cell isn't gone without.
+    const whole = structuredClone(store.get(id)!.project);
+    const cut = structuredClone(whole);
+    (cut.clips.find((clip) => clip.id === "f0") as VideoClip).duration = 20 * 30;
+    await app.store.replace(id, null, cut, "test");
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toStartWith("Going without 1 piece of their text");
+    await app.store.replace(id, null, whole, "test");
     // Not sent again at once (each try is refused only after ten minutes at the relay).
     clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs - 1000);
     await wm.ensure(app, id);
@@ -575,7 +582,7 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
     await wm.settled();
     expect(calls.length).toBe(3);
     expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state])).toEqual([[0, "done"], [30, "done"]]);
-    expect(removalSchedule.exportNote(id)).toBeNull();
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toBeNull();
     expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
   } finally {
     removerCloud.heldBack.splice(removerCloud.heldBack.indexOf(listening), 1);

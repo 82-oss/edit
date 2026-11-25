@@ -1219,12 +1219,12 @@ export function remakeEffect(projectId: string, name: string, key: string, unrea
 export const readyWaits: ((app: App, projectId: string, limitMs: number, signal?: AbortSignal) => Promise<void>)[] = [];
 
 /** What an export goes without of what it would have waited for, said beside it (removal_schedule.ts: pieces RunPod won't rent machines for). */
-export const readyNotes: ((projectId: string) => string | null)[] = [];
+export const readyNotes: ((project: Project) => string | null)[] = [];
 
-/** The first of `readyNotes`' lines for `projectId` (null: it has everything it waits for). */
-export function readyNote(projectId: string): string | null {
+/** The first of `readyNotes`' lines for `project` (null: it has everything it waits for). */
+export function readyNote(project: Project): string | null {
   for (const note of readyNotes) {
-    const said = note(projectId);
+    const said = note(project);
     if (said !== null) return said;
   }
   return null;

@@ -148,12 +148,15 @@ export function exportLine(id: string): string | null {
  * for, and they're sent again when their hold ends (remover_cloud.ts `timing.refusedRetryMs`), from the export row and the
  * agent's export result.
  */
-export function exportNote(id: string): string | null {
+export function exportNote(project: Project): string | null {
+  const id = project.id;
   // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again); a refused
   // stretch waiting a moment on a watermark piece over it is held all the same (text_inpaint.ts).
-  const project = removalApp.app?.store.get(id)?.project ?? null;
-  const shown = project === null ? null : new Set(project.clips.flatMap((clip) => (clip.type === "video" ? [clip.media] : [])));
-  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => (one.state === "failed" || one.state === "waiting") && one.refused !== undefined && (shown === null || shown.has(one.media)));
+  // Each footage clip's source seconds on the timeline: a refused piece counts where it overlaps one.
+  const fps = fpsOf(project);
+  const shown = project.clips.flatMap((clip) => (clip.type === "video" ? [{ media: clip.media, from: clip.source_in, to: clip.source_in + (clip.duration / fps) * (clip.speed || 1) }] : []));
+  const onTimeline = (one: { media: string; from: number; to: number }) => shown.some((span) => span.media === one.media && span.from < one.to && span.to > one.from);
+  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => (one.state === "failed" || one.state === "waiting") && one.refused !== undefined && onTimeline(one));
   if (held.length === 0) return null;
   const count = held.length;
   // The relay's own sentence ("RunPod wouldn't rent a GPU for 10 minutes"), not RunPod's answer after it: that stays in the log.
@@ -177,7 +180,8 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
     if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
     await Bun.sleep(1000);
   }
-  const without = exportNote(id);
+  const project = app.store.get(id)?.project;
+  const without = project === undefined ? null : exportNote(project);
   if (without !== null) diag.warn("removal", `${id}: ${without}`);
 }
 
@@ -695,12 +699,8 @@ let wakeGeneration = 0;
 /** Each project's removal to plan again once pieces RunPod refused may be sent again, by project and the minute it's due (`start`). */
 const retries = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** The app removal was started with (`start`): what an export's note reads the timeline from. */
-const removalApp: { app: App | null } = { app: null };
-
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
-  removalApp.app = app;
   // A piece RunPod refused is held back a while (remover_cloud.ts `timing.refusedRetryMs`): its project's removal is planned again then (respecting a
   // Stop), so a topped-up account gets it done without an edit or an export to set it going.
   // One wake-up per project and minute it's due: each refusal's hold ends on its own (they come in bursts, the relay
