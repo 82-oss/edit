@@ -58,53 +58,62 @@ def fourier_forward(self, x):
     return (((re * wgt) @ cw.transpose(0, 1) - (im * wgt) @ sw.transpose(0, 1)) * T["scale"]).to(dt)
 
 
+def load(tmp: Path):
+    """(the rebuilt LaMa, the original TorchScript), both on the processor, from LaMa's weights and code fetched to `tmp`."""
+    weights = tmp / "big-lama.pt"
+    print("weights:", WEIGHTS)
+    urllib.request.urlretrieve(WEIGHTS, weights)
+    got = hashlib.md5(weights.read_bytes()).hexdigest()
+    if got != WEIGHTS_MD5:
+        sys.exit(f"the weights' md5 is {got}, not {WEIGHTS_MD5}")
+    code = tmp / "lama"
+    subprocess.run(["git", "clone", "-q", CODE, str(code)], check=True)
+    subprocess.run(["git", "-C", str(code), "checkout", "-q", CODE_COMMIT], check=True)
+    # What its modules import for training only.
+    for name in ("kornia", "kornia.geometry", "kornia.geometry.transform"):
+        sys.modules[name] = types.ModuleType(name)
+    sys.modules["kornia.geometry.transform"].rotate = None
+    lightning = types.ModuleType("pytorch_lightning")
+    lightning.seed_everything = lambda *a, **k: None
+    sys.modules["pytorch_lightning"] = lightning
+    sys.path.insert(0, str(code))
+    from saicinpainting.training.modules import ffc  # noqa: E402
+
+    torch.set_grad_enabled(False)
+    original = torch.jit.load(str(weights), map_location="cpu").eval()
+    state = {k[len("model."):]: v for k, v in original.state_dict().items() if k.startswith("model.generator.")}
+    ffc.FourierUnit.forward = fourier_forward
+
+    class Lama(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.generator = ffc.FFCResNetGenerator(
+                4, 3, ngf=64, n_downsampling=3, n_blocks=18, add_out_act="sigmoid",
+                init_conv_kwargs=dict(ratio_gin=0, ratio_gout=0, enable_lfu=False),
+                downsample_conv_kwargs=dict(ratio_gin=0, ratio_gout=0, enable_lfu=False),
+                resnet_conv_kwargs=dict(ratio_gin=0.75, ratio_gout=0.75, enable_lfu=False))
+
+        def forward(self, image, mask, ch, sh, cw, sw):
+            w8 = cw.shape[0]
+            T.update(ch=ch, sh=sh, cw=cw, sw=sw)
+            k = torch.arange(cw.shape[1])
+            # Each frequency's weight in the inverse: 1 at 0 and (for an even width) at the middle, else 2; as plain
+            # arithmetic (Core ML's converter has no `|`).
+            zero = (k == 0).to(cw.dtype)
+            middle = (k == w8 // 2).to(cw.dtype) * (1 - w8 % 2)
+            T["weight"] = 2.0 - zero - middle
+            T["scale"] = torch.rsqrt((ch.shape[0] * w8) * torch.ones(1, dtype=cw.dtype))
+            x = torch.cat([image * (1 - mask), mask], dim=1)
+            return mask * self.generator(x) + (1 - mask) * image
+
+    model = Lama().eval()
+    model.load_state_dict(state)
+    return model, original
+
+
 def main(out: Path):
     with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        weights = tmp / "big-lama.pt"
-        print("weights:", WEIGHTS)
-        urllib.request.urlretrieve(WEIGHTS, weights)
-        got = hashlib.md5(weights.read_bytes()).hexdigest()
-        if got != WEIGHTS_MD5:
-            sys.exit(f"the weights' md5 is {got}, not {WEIGHTS_MD5}")
-        code = tmp / "lama"
-        subprocess.run(["git", "clone", "-q", CODE, str(code)], check=True)
-        subprocess.run(["git", "-C", str(code), "checkout", "-q", CODE_COMMIT], check=True)
-        # What its modules import for training only.
-        for name in ("kornia", "kornia.geometry", "kornia.geometry.transform"):
-            sys.modules[name] = types.ModuleType(name)
-        sys.modules["kornia.geometry.transform"].rotate = None
-        lightning = types.ModuleType("pytorch_lightning")
-        lightning.seed_everything = lambda *a, **k: None
-        sys.modules["pytorch_lightning"] = lightning
-        sys.path.insert(0, str(code))
-        from saicinpainting.training.modules import ffc  # noqa: E402
-
-        torch.set_grad_enabled(False)
-        original = torch.jit.load(str(weights), map_location="cpu").eval()
-        state = {k[len("model."):]: v for k, v in original.state_dict().items() if k.startswith("model.generator.")}
-        ffc.FourierUnit.forward = fourier_forward
-
-        class Lama(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.generator = ffc.FFCResNetGenerator(
-                    4, 3, ngf=64, n_downsampling=3, n_blocks=18, add_out_act="sigmoid",
-                    init_conv_kwargs=dict(ratio_gin=0, ratio_gout=0, enable_lfu=False),
-                    downsample_conv_kwargs=dict(ratio_gin=0, ratio_gout=0, enable_lfu=False),
-                    resnet_conv_kwargs=dict(ratio_gin=0.75, ratio_gout=0.75, enable_lfu=False))
-
-            def forward(self, image, mask, ch, sh, cw, sw):
-                w8 = cw.shape[0]
-                T.update(ch=ch, sh=sh, cw=cw, sw=sw)
-                k = torch.arange(cw.shape[1])
-                T["weight"] = torch.where((k == 0) | ((w8 % 2 == 0) & (k == w8 // 2)), 1.0, 2.0).to(cw.dtype)
-                T["scale"] = torch.rsqrt((ch.shape[0] * w8) * torch.ones(1, dtype=cw.dtype))
-                x = torch.cat([image * (1 - mask), mask], dim=1)
-                return mask * self.generator(x) + (1 - mask) * image
-
-        model = Lama().eval()
-        model.load_state_dict(state)
+        model, original = load(Path(tmp))
         h, w = 200, 712
         image = torch.rand(1, 3, h, w)
         mask = torch.zeros(1, 1, h, w)
