@@ -14,6 +14,10 @@ test("Edit's notes after a producer's note are left out of its length", () => {
 });
 
 test("a note over its limit is refused on its own words, Edit's notes after it never counted", () => {
-  expect(() => checkNote(`${"x".repeat(1_900)}\n\n(Edit's note: ${"y".repeat(500)})`)).not.toThrow();
+  expect(() => checkNote(`${"x".repeat(1_900)}\n\n(Edit's note: ${"y".repeat(500)})`, true)).not.toThrow();
   expect(() => checkNote("x".repeat(2_001))).toThrow("Keep the note under 2,000 characters.");
+  // A producer's own note is counted whole: their words that read like Edit's never slip past it.
+  const lookalike = `(Edit's note: ${"x".repeat(2_100)})`;
+  expect(() => checkNote(lookalike)).toThrow("Keep the note under 2,000 characters.");
+  expect(() => checkNote(lookalike, true)).not.toThrow();
 });

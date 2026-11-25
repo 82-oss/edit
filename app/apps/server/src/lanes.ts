@@ -469,8 +469,14 @@ export async function otherChannelsOutcome(mine: string, lane: v2cloud.Lane, arg
   teacherOnly(`Bringing another channel's ${word} style in`);
   const { place, words } = channels.keptIn(mine, lane, args.for);
   const mineNow = new Map((await styleOf(mine, lane)).map((one) => [`${one.kind}:${one.name}`, one]));
-  // One of this channel's that reads as theirs (brought before) is the one asked for, never held back.
-  const sameAs = async (own: v2cloud.Item, theirs: v2cloud.Item) => own.kind === "skill" && (await v2cloud.version(own.key))?.version.text === (await v2cloud.version(theirs.key))?.version.text;
+  // One of this channel's that is theirs as it is there (copied from their current version and unchanged here since,
+  // or a lesson in the same words) is the one asked for, never held back: a graphic or sound brought before included (CodeRabbit on #10).
+  const sameAs = async (own: v2cloud.Item, theirs: v2cloud.Item) => {
+    const mineNow = (await v2cloud.version(own.key))?.version;
+    if (mineNow === undefined) return false;
+    if (mineNow.from?.key === theirs.key && mineNow.from.n === theirs.current) return true;
+    return own.kind === "skill" && mineNow.text === (await v2cloud.version(theirs.key))?.version.text;
+  };
   const alreadyHere: string[] = [];
   const brought: string[] = [];
   const kept: string[] = [];

@@ -435,9 +435,14 @@ function finish(draft: Draft, given: string): string {
   throw new Error(`${said} Fix the length with replace_items or remove_items, then call finish again (a second finish keeps it as it is).`);
 }
 
-/** A producer's build note within its limit, else the error they're shown; checked before anything else of a build happens. */
-export function checkNote(note: string): void {
-  if ([...producerPart(note.trim())].length > 2_000) throw new Error("Keep the note under 2,000 characters.");
+/**
+ * A note within its limit, else the error the producer is shown. `composed`: Edit's notes are after it (`request`),
+ * so only the producer's part counts; a producer's own note is counted whole, before anything of a build happens, so
+ * words of theirs that read like Edit's never slip past it (CodeRabbit on #10).
+ */
+export function checkNote(note: string, composed = false): void {
+  const theirs = composed ? producerPart(note.trim()) : note.trim();
+  if ([...theirs].length > 2_000) throw new Error("Keep the note under 2,000 characters.");
 }
 
 /** A build note's own words, before the notes Edit adds to it ("(Edit's note…", scripting.ts `withMissing`, `bringAsked`). */
@@ -452,7 +457,7 @@ function request(script: Script, note: string): string {
   const given = note.trim();
   // The limit is the producer's: what Edit adds after it (its notes on the footage and on a style it brought,
   // scripting.ts) never counts, so a note within it is never refused for them (Codex on #10).
-  checkNote(given);
+  checkNote(given, true);
   return given === "" ? "Start the scripts workflow." : `Start the scripts workflow. ${given}`;
 }
 

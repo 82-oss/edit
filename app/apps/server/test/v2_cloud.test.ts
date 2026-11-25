@@ -635,6 +635,16 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     // Brought whole again: what came from it before is the one asked for; only this channel's own intro is held (Codex on #10).
     const again = await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "all" });
     expect(again).toMatchObject({ brought: [], here: ["pacing"], held: ["intro"] });
+    // A sound brought before is theirs as it is there, until either side changes it (CodeRabbit on #10).
+    mock.cloud.convex.library.set("sound:@jcs--edit/whoosh", { key: "sound:@jcs--edit/whoosh", kind: "sound", name: "whoosh", current: 1, latest: 1, note: "A whoosh.", niches: ["jcs--edit"], at: Date.now(), by: { name: "Sphe" } });
+    mock.cloud.convex.libraryVersions.set("sound:@jcs--edit/whoosh", [{ key: "sound:@jcs--edit/whoosh", n: 1, files: [], at: Date.now(), by: { name: "Sphe" } }]);
+    await v2cloud.refreshSkills();
+    expect((await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "whoosh" })).brought).toEqual(["sound whoosh"]);
+    expect(await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "whoosh" })).toMatchObject({ brought: [], here: ["whoosh"], held: [] });
+    const mineWhoosh = mock.cloud.convex.libraryVersions.get("sound:@drinsanity--edit/whoosh")!;
+    mineWhoosh.push({ ...mineWhoosh[0]!, n: 2, from: null });
+    mock.cloud.convex.library.set("sound:@drinsanity--edit/whoosh", { ...mock.cloud.convex.library.get("sound:@drinsanity--edit/whoosh")!, current: 2, latest: 2 });
+    expect(await lanes.otherChannelsOutcome("drinsanity", "edit", { channel: "JCS", bring: "whoosh" })).toMatchObject({ here: [], held: ["whoosh"] });
     expect(again.said).toContain("pacing came from it before, as it is there.");
     expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');
     // One that contradicts this channel's is left, said, until the person says which holds (Nov 18).
