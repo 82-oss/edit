@@ -1023,8 +1023,16 @@ function scriptsDir(app: App): string {
   return dir;
 }
 
+/** The finders this Edit started that are still reading: leaving stops them (Nov 26, mandalorian: a restart left one reading a whole file on the card for nobody). */
+const finders = new Set<ReturnType<typeof Bun.spawn>>();
+process.on("exit", () => {
+  for (const child of finders) child.kill();
+});
+
 async function python(app: App, args: string[]): Promise<unknown> {
   const child = Bun.spawn([join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
+  finders.add(child);
+  void child.exited.then(() => finders.delete(child));
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error((err.trim().split("\n").at(-1) ?? out.trim().split("\n").at(-1) ?? `the finder stopped (${code})`).slice(0, 300));
   const last = out.trim().split("\n").at(-1) ?? "";
