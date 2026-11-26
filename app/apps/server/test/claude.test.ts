@@ -597,6 +597,26 @@ test("a restart carries on the turns its quit cut short, in the same conversatio
   }
 });
 
+test("a running turn whose row left the table is listed again, so a restart still carries it on", async () => {
+  const { home, project, agents } = claudeProject("claude-relisted");
+  const turns = () => jobs.list(home.home, "turn").filter(jobs.live);
+  try {
+    await agents.send(project, "Start the editing workflow", null, null);
+    await settle();
+    expect(turns().map((job) => job.project)).toEqual([project]);
+    jobs.end(home.home, jobs.keyOf("turn", project));
+    expect(turns()).toEqual([]);
+    // The agent's next look at its running turns (every minute).
+    (agents as unknown as { noteRunning(): void }).noteRunning();
+    expect(turns().map((job) => job.project)).toEqual([project]);
+    agents.shutdown();
+    await settle();
+    expect(turns().map((job) => job.project)).toEqual([project]);
+  } finally {
+    home.cleanup();
+  }
+});
+
 test("a session claude code no longer has is started again as a new conversation in the same turn", async () => {
   const { home, project, agents, asked, queries } = claudeProject("claude-gone");
   try {

@@ -1658,7 +1658,10 @@ export class Agents implements seams.AgentPanel {
       for (const [chat, one] of this.chats) {
         if (!one.running || one.halted) continue;
         const key = this.turnKey(chat);
-        if (this.noted.has(key)) jobs.touch(home, key);
+        // Its row gone from the table while it runs is listed again, not touched in vain: two of four Cuffed & Caught
+        // turns carried on after a restart (Nov 26) lost theirs within the next 108 min, and the next restart didn't
+        // carry them on (only a message did).
+        if (this.noted.has(key) && jobs.get(home, key) !== undefined) jobs.touch(home, key);
         else {
           const project = projectOf(chat);
           jobs.begin(home, "turn", project, { chat }, chat === project ? "" : chat, "working");
