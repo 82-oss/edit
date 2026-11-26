@@ -317,6 +317,12 @@ export async function replyAs(data: string, noteId: string, given: string, autho
 
 export const reply = (data: string, noteId: string, text: string): Promise<void> => replyAs(data, noteId, text, creator()?.name || "Edit");
 
+/** Who the agent's own replies are from, as the edit's are (Nov 25, Sphe: a fixing run's replies showed as his, "these replies shouldn't be marked as me it should be the Edit agent"). */
+export const AGENT = "Edit's agent";
+
+/** A reply the agent writes while fixing (an answer, why a note is left), signed as the agent, never as the person signed in. */
+export const agentReply = (data: string, noteId: string, text: string): Promise<void> => replyAs(data, noteId, text, AGENT);
+
 /** Deletes a note left from Edit (never a reviewer's), with its replies. */
 export async function deleteNote(data: string, noteId: string): Promise<void> {
   await call("mutation", "reviews:deleteNote", { noteId });
@@ -868,16 +874,20 @@ interface Known {
   attempts: Record<string, number>;
   /** Script id → its approved version, as Repack's reviews:open says. */
   approved: Record<string, Approval>;
+  /** Notes fixed here whose review couldn't be marked yet: marked again at each poll until it has them, done here meanwhile so they're never fixed twice (CodeRabbit on #11). */
+  owed: Record<string, Owed>;
 }
+
+type Owed = { version: number; ranges: Range[]; summary: string; outcome?: "accepted" | "rejected"; at: number };
 
 const knownPath = (data: string) => join(data, "reviews", "notes.json");
 
 function load(data: string): Known {
   try {
     const kept = JSON.parse(fs.readFileSync(knownPath(data), "utf8")) as Partial<Known>;
-    return { cursor: kept.cursor ?? 0, notes: kept.notes ?? {}, links: kept.links ?? {}, tried: kept.tried ?? {}, attempts: kept.attempts ?? {}, approved: kept.approved ?? {} };
+    return { cursor: kept.cursor ?? 0, notes: kept.notes ?? {}, links: kept.links ?? {}, tried: kept.tried ?? {}, attempts: kept.attempts ?? {}, approved: kept.approved ?? {}, owed: kept.owed ?? {} };
   } catch {
-    return { cursor: 0, notes: {}, links: {}, tried: {}, attempts: {}, approved: {} };
+    return { cursor: 0, notes: {}, links: {}, tried: {}, attempts: {}, approved: {}, owed: {} };
   }
 }
 
@@ -930,6 +940,30 @@ export function markFixed(data: string, noteId: string, version: number, ranges:
   });
 }
 
+/** A note fixed here whose review couldn't be marked: done here, and its mark owed to the review until a poll lands it. */
+export function owe(data: string, noteId: string, version: number, ranges: Range[], summary: string, outcome?: "accepted" | "rejected"): void {
+  // One write for both, so a stop between can't leave it done here with nothing owed (CodeRabbit on #11).
+  change(data, (known) => {
+    const note = known.notes[noteId];
+    if (note) Object.assign(note, { status: "done", doneInVersion: version, changedRanges: ranges, fixSummary: summary, updatedAt: Date.now() });
+    known.owed[noteId] = { version, ranges, summary, ...(outcome ? { outcome } : {}), at: Date.now() };
+  });
+}
+
+/** The owed marks, tried again: each one that lands is no longer owed; one whose note is gone is let go. */
+async function payOwed(data: string): Promise<void> {
+  for (const [noteId, owed] of Object.entries(load(data).owed)) {
+    try {
+      await resolve(noteId, owed.version, owed.ranges, owed.summary, owed.outcome);
+      change(data, (known) => void delete known.owed[noteId]);
+      diag.info("writer", `review note ${noteId}: marked on the review now`);
+    } catch (error) {
+      if (load(data).notes[noteId] === undefined) change(data, (known) => void delete known.owed[noteId]);
+      else diag.warn("writer", `review note ${noteId}: still couldn't be marked on the review: ${diag.messageOf(error)}`);
+    }
+  }
+}
+
 export function markTried(data: string, noteIds: string[]): void {
   change(data, (known) => {
     for (const id of noteIds) {
@@ -974,7 +1008,17 @@ export function start(data: string): void {
 }
 
 /** One round of changes; says whether anything changed. */
-export async function poll(data: string): Promise<boolean> {
+/** The poll running, each waiting for the one before: two at once could lay an older status over a newer one (CodeRabbit on #11). */
+let polling: Promise<unknown> = Promise.resolve();
+
+export function poll(data: string): Promise<boolean> {
+  const run = polling.then(() => pollOnce(data));
+  polling = run.catch(() => undefined);
+  return run;
+}
+
+async function pollOnce(data: string): Promise<boolean> {
+  await payOwed(data);
   // Approvals, made here or on Repack's page: only reviews:open carries them.
   const listed = await call("query", "reviews:open", {}).then((value) => (Array.isArray(value) ? (value as Record<string, unknown>[]) : null), () => null);
   const rows = listed ?? [];
@@ -1019,6 +1063,8 @@ export async function poll(data: string): Promise<boolean> {
       const one = { ...given, scriptId: given.scriptId ?? known.links[given.reviewId] ?? null };
       delete one.deleted;
       const kept = known.notes[one.id];
+      // Fixed here and its mark owed: it stays done here, never taken to fix again, until the review has it.
+      if (known.owed[one.id] !== undefined && kept !== undefined && one.status !== "done") continue;
       const same = kept !== undefined && kept.updatedAt === one.updatedAt && kept.status === one.status;
       // Sent back as not fixed (or opened again): a new note to fix.
       const reopened = kept !== undefined && ((!isOpen(kept) && isOpen(one)) || kept.notFixedAt !== one.notFixedAt);

@@ -451,7 +451,7 @@ test("a script's, an idea's or a thumbnail's agent is told its channel's lane al
   expect(lanes.section("drinsanity", "script", "lesson")).toContain('goes with scope "channel"');
   expect(lanes.section("drinsanity", "script", "none")).not.toMatch(/remember|send lesson/);
   expect(lanes.section(undefined, "ideas")).toBe("");
-  expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "read_skill", "other_channels"]);
+  expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "forget", "read_skill", "other_channels"]);
   expect(lanes.toolsFor("ideas").map((one) => one.name)).toContain("channel_videos");
 });
 
@@ -787,6 +787,90 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     expect(mock.cloud.convex.library.has("skill:@ch-samcompila--script/cases")).toBe(true);
     // Ungrouped: its own, said as before.
     expect(await lanes.call("remember", { skill: "slow", text: "Slow titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toBe("Kept as slow (version 1) in JCS (@jcs)'s ideas style: its agents have it from their next turn.");
+    // Put away again by a lane's agent (Nov 25: "this video only", and the script's agent had no way to drop the lesson it had just kept).
+    await v2cloud.refreshSkills();
+    expect(await lanes.call("forget", { skill: "slow", reason: "Sphe: this video only" }, { channel: "jcs", lane: "ideas" })).toBe("Put away slow from JCS (@jcs)'s ideas style: its agents don't have it from their next turn (its versions are kept).");
+    expect(mock.cloud.convex.library.get("skill:@jcs--ideas/slow")?.archived).toBe(true);
+    // Out of what the agents are told at once, before any read.
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
+    await v2cloud.refreshSkills();
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "slow")).toBe(false);
+    await expect(lanes.call("forget", { skill: "slow", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).rejects.toThrow("no lesson slow");
+    // This channel's own over its group's of that name: the group's still applies, and is said (CodeRabbit on #11).
+    expect(await lanes.keepLesson({ channel: "ch-samcompila", lane: "ideas" }, "numbers", "Two numbers in each title.", "said", "channel")).toContain("for this channel only");
+    await v2cloud.refreshSkills();
+    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("but its group's numbers still applies here");
+    await v2cloud.refreshSkills();
+    // The group's goes only when that's meant, never by asking again.
+    await expect(lanes.call("forget", { skill: "numbers", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).rejects.toThrow("with group: true only if");
+    expect(await lanes.call("forget", { skill: "numbers", reason: "Sphe", group: true }, { channel: "ch-samcompila", lane: "ideas" })).toContain("its group's, so every channel in the group");
+    // A read already out when a lesson is put away doesn't bring it back as fresh (CodeRabbit on #11).
+    expect(await lanes.call("remember", { skill: "brief", text: "Brief titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toContain("Kept as brief");
+    const convex = mock.cloud.convex;
+    const served = convex.call.bind(convex);
+    let armed = true;
+    convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+      const answer = served(name, args, base);
+      if (armed && name.endsWith("listLibrary") && args.kind === "skill") {
+        armed = false;
+        convex.library.get("skill:@jcs--ideas/brief")!.archived = true;
+        v2cloud.forgetSkills();
+      }
+      return answer;
+    };
+    try {
+      v2cloud.forgetSkills();
+      await v2cloud.refreshSkills();
+    } finally {
+      convex.call = served;
+    }
+    expect(armed).toBe(false);
+    expect(lanes.lessonsOf({ channel: "jcs", lane: "ideas" }).some((one) => one.name === "brief")).toBe(false);
+    // Every retry made stale, or one failing: the stale reads are never shown, and the next read shows what's there.
+    const jcs = { channel: "jcs", lane: "ideas" as const };
+    expect(await lanes.call("remember", { skill: "fresh", text: "Fresh titles.", reason: "Sphe" }, jcs)).toContain("Kept as fresh");
+    const shown = () => lanes.lessonsOf(jcs).some((one) => one.name === "fresh");
+    for (const failing of [false, true]) {
+      let reads = 0;
+      convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+        if (name.endsWith("listLibrary") && args.kind === "skill") {
+          reads++;
+          if (failing && reads === 2) return { status: "error", errorMessage: "the cloud is busy" };
+          const answer = served(name, args, base);
+          v2cloud.forgetSkills();
+          return answer;
+        }
+        return served(name, args, base);
+      };
+      try {
+        await v2cloud.refreshSkills();
+      } finally {
+        convex.call = served;
+      }
+      expect(reads).toBe(failing ? 2 : 3);
+      expect(shown()).toBe(false);
+    }
+    v2cloud.forgetSkills();
+    await v2cloud.refreshSkills();
+    expect(shown()).toBe(true);
+    // A first read made stale every time leaves what's taught unknown, until one that isn't.
+    v2cloud.useSkillsForTests([], [], false);
+    v2cloud.forgetSkills();
+    convex.call = (name: string, args: Record<string, unknown>, base: string) => {
+      const answer = served(name, args, base);
+      if (name.endsWith("listLibrary") && args.kind === "skill") v2cloud.forgetSkills();
+      return answer;
+    };
+    try {
+      await v2cloud.refreshSkills();
+    } finally {
+      convex.call = served;
+    }
+    expect(v2cloud.teachingKnown()).toBe(false);
+    expect(shown()).toBe(false);
+    await v2cloud.refreshSkills();
+    expect(v2cloud.teachingKnown()).toBe(true);
+    expect(shown()).toBe(true);
   } finally {
     channels.useChannelsForTests([]);
     cleanup();

@@ -525,8 +525,8 @@ export type DocComment = {
   replies?: { author?: { displayName?: string }; content?: string; deleted?: boolean }[];
 };
 
-/** A rewrite of saved narration Claude proposed, for the producer to accept or decline. */
-export type Proposal = { id: string; cutIn: string; before: string; after: string; at: number };
+/** A rewrite of saved narration Claude proposed, for the producer to accept or decline. `notes`: notes for the editor on words only the rewrite has, put on its cut-in once accepted and dropped if declined. */
+export type Proposal = { id: string; cutIn: string; before: string; after: string; at: number; notes?: Note[] };
 
 /** A tool Claude ran in a turn, as Repack's chat shows it (domain/script-turn.ts): which, how it went, and what came of it. */
 export type ToolCall = {

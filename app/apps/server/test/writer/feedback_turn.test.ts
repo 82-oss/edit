@@ -11,6 +11,7 @@ import type { Script } from "@edit/types/writer";
 
 import { brief, doneBrief, feedbackOf, settle } from "../../src/writer/fixing.ts";
 import { changeLesson, changedMost, keepRule } from "../../src/teaching.ts";
+import * as reviews from "../../src/writer/reviews.ts";
 import type { Note } from "../../src/writer/reviews.ts";
 import * as channels from "../../src/channels.ts";
 import * as styles from "../../src/script_styles.ts";
@@ -54,11 +55,12 @@ const note = (id: string, fields: Partial<Note> = {}): Note => ({ id, reviewId: 
 
 type Call = { path: string; args: Record<string, unknown> };
 
-function relay(): Call[] {
+function relay(failing: (call: Call) => boolean = () => false): Call[] {
   const calls: Call[] = [];
   mock.on("POST", "/v1/cloud/writer/convex", (request) => {
     const { path, args } = request.json<{ path: string; args: Record<string, unknown> }>();
     calls.push({ path, args });
+    if (failing({ path, args })) return Response.json({ status: "error", errorMessage: "the review is busy" });
     if (path === "reviews:changes") return Response.json({ status: "success", value: { notes: [], cursor: 0, more: false } });
     return Response.json({ status: "success", value: null });
   });
@@ -122,13 +124,51 @@ test("each pulled note is settled by what the agent said: done with what changed
     expect((resolved.find((one) => one.noteId === "b")!.changedRanges as { blockId: string }[]).map((range) => range.blockId)).toEqual(["n2"]);
     expect(resolved.find((one) => one.noteId === "c")).toMatchObject({ changedRanges: [], fixSummary: "He was home: the transcript says so at 0:07." });
     // d: nothing said of it: told so, and let go to be fixed again.
-    const replies = calls.filter((call) => call.path === "reviews:reply").map((call) => [call.args.noteId, call.args.text]);
+    const replies = calls.filter((call) => call.path === "reviews:reply").map((call) => [call.args.noteId, call.args.text, call.args.author]);
     expect(replies).toEqual([
-      ["c", "He was home: the transcript says so at 0:07."],
-      ["d", "Edit didn't change the script for this note."],
+      // From the agent, never the person signed in; an answered note's answer is its result alone, never a reply too (Nov 25).
+      ["d", "Edit didn't change the script for this note.", "Edit's agent"],
     ]);
     expect(calls.filter((call) => call.path === "reviews:release").map((call) => call.args.noteIds)).toEqual([["d"]]);
     expect(done.lines.at(-1)).toBe("Left Jones's note open: Edit didn't change the script for this note.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a note the review couldn't mark is done here, never let go to be fixed twice, and its mark is made at the next poll (CodeRabbit on #11)", async () => {
+  const { home, cleanup } = fixtureHome("feedback-untold");
+  try {
+    let down = true;
+    const calls = relay((call) => down && call.path === "reviews:resolve" && call.args.noteId !== "b");
+    const data = store.dataDir(home);
+    fs.mkdirSync(join(data, "reviews"), { recursive: true });
+    const open = (id: string) => note(id, { anchor: null });
+    fs.writeFileSync(join(data, "reviews", "notes.json"), JSON.stringify({ cursor: 1, notes: { a: open("a"), b: open("b"), c: open("c") }, links: {}, tried: {}, attempts: {}, approved: {} }));
+    const before = script();
+    const after = structuredClone(before);
+    after.clips[1]!.narration = "He swears he was home, alone, all night.";
+    const done = await settle(data, ID, before, after, [open("a"), open("b"), open("c")], [
+      { id: "a", outcome: "changed", said: "Said he was alone." },
+      { id: "b", outcome: "changed", said: "Said it word for word." },
+      { id: "c", outcome: "answered", said: "He was home." },
+    ]);
+    expect(done.fixed).toBe(3);
+    expect(done.lines).toEqual([
+      "Fixed Jones's note, and the review is marked as soon as it can be: Said he was alone.",
+      "Fixed Jones's note: Said it word for word.",
+      "Answered Jones's note, and the review is marked as soon as it can be: He was home.",
+    ]);
+    expect(calls.filter((call) => call.path === "reviews:release")).toEqual([]);
+    expect(["a", "b", "c"].map((id) => reviews.note(data, id)?.status)).toEqual(["done", "done", "done"]);
+    // The review back: the next poll makes the owed marks, once.
+    down = false;
+    const first = calls.length;
+    await reviews.poll(data);
+    expect(calls.slice(first).filter((call) => call.path === "reviews:resolve").map((call) => [call.args.noteId, call.args.fixSummary])).toEqual([["a", "Said he was alone."], ["c", "He was home."]]);
+    const second = calls.length;
+    await reviews.poll(data);
+    expect(calls.slice(second).filter((call) => call.path === "reviews:resolve")).toEqual([]);
   } finally {
     cleanup();
   }
@@ -191,7 +231,7 @@ test("a channel's script turn has the channel's lesson tools", async () => {
     const [token, , session] = turnTools.open(data, ID);
     expect(session.place).toEqual({ channel: "ch-test", lane: "script" });
     const listed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "read_skill", "other_channels", "use_style"]);
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "other_projects", "remember", "forget", "read_skill", "other_channels", "use_style"]);
     turnTools.close(token);
   } finally {
     cleanup();
@@ -248,4 +288,19 @@ test("a lesson is changed in place, a line at a time, however long it is (Sphe, 
   // A guide past a part's length may grow a little when changed; a short one keeps its kind's most.
   expect(changedMost(2_400, 7_000)).toBe(7_400);
   expect(changedMost(2_400, 300)).toBe(2_400);
+});
+
+test("two polls at once run one after the other, so an older one never lays its status over a newer (CodeRabbit on #11)", async () => {
+  const { home, cleanup } = fixtureHome("feedback-polls");
+  try {
+    const calls = relay();
+    const data = store.dataDir(home);
+    fs.mkdirSync(join(data, "reviews"), { recursive: true });
+    fs.writeFileSync(join(data, "reviews", "notes.json"), JSON.stringify({ cursor: 1, notes: {}, links: {}, tried: {}, attempts: {}, approved: {} }));
+    await Promise.all([reviews.poll(data), reviews.poll(data)]);
+    const order = calls.map((call) => call.path).filter((path) => path === "reviews:open" || path === "reviews:changes");
+    expect(order).toEqual(["reviews:open", "reviews:changes", "reviews:open", "reviews:changes"]);
+  } finally {
+    cleanup();
+  }
 });

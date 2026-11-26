@@ -89,6 +89,68 @@ test("an edit note goes on the words it's about: a cut-in's narration or what a 
   expect(editNote("Edit:  zoom in slowly ")).toBe("edit: zoom in slowly");
 });
 
+test("a note on a cut-in rewritten in the same answer goes on its new words (Nov 25: the charges note on a rewritten outro was refused against the old one)", () => {
+  const edits = [{ op: "write", id: "i2", narration: "He was charged with kidnapping and murder." }, { op: "note", id: "i2", on: "kidnapping and murder", text: "edit: charges on screen" }];
+  const [direct] = apply(script(), edits, [], true);
+  expect(direct[1]!.notes?.at(-1)?.anchor).toMatchObject({ start: 20, end: 41, quote: "kidnapping and murder" });
+  // Proposed (not yet accepted): the note waits with the proposal, never on the narration it may not get (Codex on #11).
+  const [proposed, , proposals] = apply(script(), edits, [], false);
+  expect(proposals).toHaveLength(1);
+  expect(proposed[1]!.notes ?? []).toEqual([]);
+  expect(proposals[0]!.notes?.map((note) => note.anchor?.quote)).toEqual(["kidnapping and murder"]);
+  // A note on words both have stays on the cut-in; a rewrite again keeps the earlier proposal's notes its words still have.
+  const both = [{ op: "write", id: "i2", narration: "He said he was home, and was charged with kidnapping and murder." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }];
+  const [kept, , once] = apply(script(), both, [], false);
+  expect(kept[1]!.notes?.map((note) => note.text)).toEqual(["edit: the porch"]);
+  expect(once[0]!.notes).toBeUndefined();
+  // Rewritten again, its words moved: the waiting note carries over on them where they are now.
+  const again = { ...script(), clips: script().clips, proposals };
+  const [, , twice] = apply(again, [{ op: "write", id: "i2", narration: "In 2011, he was charged with kidnapping and murder." }], [], false);
+  expect(twice).toHaveLength(1);
+  expect(twice[0]!.notes?.map((note) => [note.text, note.anchor?.start])).toEqual([["edit: charges on screen", 29]]);
+  // Shown to the next turn after the cut-in's own notes, and removed by that number (Codex on #11).
+  const shown = current(again, formatOf("interrogation", false, "Case"));
+  expect(shown).toContain('note 1, waiting with the proposal (on the cut-in once it\'s accepted) on "kidnapping and murder": edit: charges on screen');
+  const [, , removed] = apply(again, [{ op: "remove_note", id: "i2", note: 1 }], [], false);
+  expect(removed[0]!.notes).toBeUndefined();
+  // A note in a later turn on words only the pending proposal has waits with it too.
+  const [laterClips, , later] = apply({ ...again, proposals: [{ ...proposals[0]!, notes: undefined }] }, [{ op: "note", id: "i2", on: "charged", text: "edit: the charge sheet" }], [], false);
+  expect(laterClips[1]!.notes ?? []).toEqual([]);
+  expect(later[0]!.notes?.map((note) => note.anchor?.quote)).toEqual(["charged"]);
+});
+
+test("a direct rewrite that leaves a proposal stale keeps its waiting notes on words the cut-in now has (Codex on #11)", () => {
+  const note = { id: "x", text: "edit: charges on screen", at: 0, anchor: { start: 20, end: 41, quote: "kidnapping and murder" } };
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He was charged with kidnapping and murder.", at: 0, notes: [note] }] };
+  const [clips, , proposals] = apply(waiting, [{ op: "write", id: "i2", narration: "Then he was charged with kidnapping and murder." }], [], true);
+  expect(proposals).toEqual([]);
+  expect(clips[1]!.notes?.map((one) => [one.text, one.anchor?.start])).toEqual([["edit: charges on screen", 25]]);
+});
+
+test("a note on words only the saved narration keeps stays on the cut-in while a rewrite waits, and a waiting note is removed only from a marked cut-in (CodeRabbit on #11)", () => {
+  const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "He confessed." }, { op: "note", id: "i2", on: "home", text: "edit: the porch" }], [], false);
+  expect(proposals).toHaveLength(1);
+  expect(clips[1]!.notes?.at(-1)?.anchor?.quote).toBe("home");
+  const note = { id: "x", text: "edit: charges", at: 0, anchor: { start: 3, end: 12, quote: "confessed" } };
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He confessed.", at: 0, notes: [note] }] };
+  expect(() => apply(waiting, [{ op: "remove_note", id: "i2", note: 1 }], [], false, { pointed: ["c2"], beyond: false })).toThrow("changed i2's waiting notes");
+  const [, , removed] = apply(waiting, [{ op: "remove_note", id: "i2", note: 1 }], [], false, { pointed: ["n1"], beyond: false });
+  expect(removed[0]!.notes).toBeUndefined();
+});
+
+test("a note this answer added on a pending proposal's words is refused when a later write leaves them nowhere, never dropped (CodeRabbit on #11)", () => {
+  const waiting = { ...script(), proposals: [{ id: "p", cutIn: "n1", before: "He said he was home.", after: "He confessed.", at: 0 }] };
+  expect(() => apply(waiting, [{ op: "note", id: "i2", on: "confessed", text: "edit: zoom" }, { op: "write", id: "i2", narration: "He ran away." }], [], true)).toThrow("doesn't have as these edits leave it");
+  expect(() => apply(waiting, [{ op: "note", id: "i2", on: "confessed", text: "edit: zoom" }, { op: "write", id: "i2", narration: "He ran away." }], [], false)).toThrow("doesn't have as these edits leave it");
+});
+
+test("a note on words the cut-in keeps is anchored where they are in its saved narration, and one on words this answer's last rewrite drops is refused (CodeRabbit on #11)", () => {
+  const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "Yesterday he was home." }, { op: "note", id: "i2", on: "he was home", text: "edit: the porch" }], [], false);
+  expect(proposals).toHaveLength(1);
+  expect(clips[1]!.notes?.at(-1)?.anchor).toEqual({ start: 8, end: 19, quote: "he was home" });
+  expect(() => apply(script(), [{ op: "write", id: "i2", narration: "He was charged with murder." }, { op: "note", id: "i2", on: "murder", text: "edit: charges" }, { op: "write", id: "i2", narration: "He confessed." }], [], true)).toThrow("doesn't have as these edits leave it");
+});
+
 test("writes an empty cut-in and proposes a change to a saved one", () => {
   const [clips, , proposals] = apply(script(), [{ op: "write", id: "i2", narration: "He swore he was home." }, { op: "write", id: "i4", narration: "He was not." }], [], false);
   expect(clips[1]!.narration).toBe("He said he was home.");

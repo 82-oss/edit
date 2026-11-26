@@ -142,6 +142,8 @@ export function resolveProposals(data: string, id: string, revision: number, cho
         if (cue === undefined) throw new Error("A proposed paragraph is no longer in the script.");
         if ((cue.narration ?? "") !== proposal.before) throw new Error("A proposed paragraph changed. Review it again before accepting.");
         cue.narration = proposal.after;
+        // Its notes for the editor, on the words it brings, come with it.
+        if (proposal.notes !== undefined && proposal.notes.length > 0) cue.notes = [...(cue.notes ?? []), ...proposal.notes];
       }
       script.clips = checkClips(script.clips, script.durationMs);
     }

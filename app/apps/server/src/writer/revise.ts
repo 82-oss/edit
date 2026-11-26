@@ -7,7 +7,7 @@
 // decline, never a silent change.
 
 import * as lanes from "../lanes.ts";
-import type { Clip, Focus, Proposal, Research, Script, Word } from "@edit/types/writer";
+import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
 import { caseCount, isCutIn, noteAnchor } from "./blocks.ts";
 import * as claude from "./claude.ts";
@@ -193,7 +193,11 @@ export function current(script: Script, format: Format, words: "ends" | "all" | 
       lines.push(`${label} cut-in (${purpose}): ${narration === "" ? "(nothing written)" : `"${narration}"`}`);
       for (const [at, note] of (clip.notes ?? []).entries()) lines.push(`   note ${at + 1}, the producer's comment${note.anchor ? ` on "${note.anchor.quote}"` : ""}: ${note.text}`);
       const proposal = (script.proposals ?? []).find((one) => one.cutIn === clip.id);
-      if (proposal !== undefined) lines.push(`   pending proposal: "${proposal.after}"`);
+      if (proposal !== undefined) {
+        lines.push(`   pending proposal: "${proposal.after}"`);
+        const own = (clip.notes ?? []).length;
+        for (const [at, note] of (proposal.notes ?? []).entries()) lines.push(`   note ${own + at + 1}, waiting with the proposal (on the cut-in once it's accepted)${note.anchor ? ` on "${note.anchor.quote}"` : ""}: ${note.text}`);
+      }
       continue;
     }
     const [first, last] = inside(script.words, clip);
@@ -285,6 +289,12 @@ class Work {
   corrections: Record<string, string>;
   /** The paragraphs written this turn, by cut-in id. */
   writes = new Map<string, string>();
+  /** The notes added this turn, by id. */
+  addedNotes = new Set<string>();
+  /** Notes for the editor waiting with a pending proposal, by its cut-in: numbered after the cut-in's own in CURRENT SCRIPT, and removed the same way (Codex on #11). */
+  pending: Map<string, Note[]>;
+  /** The cut-ins whose waiting notes this answer removed: held to the marked items as any change is. */
+  pendingTouched = new Set<string>();
   readonly format: Format;
   /** The items the producer marked (and what an edit split off them), the only ones the whole-script passes reach; null when none were. */
   readonly pointed: Set<string> | null;
@@ -299,6 +309,7 @@ class Work {
     this.clips = structuredClone(script.clips);
     this.names = new Map(script.clips.map((clip, index) => [clip.id, `i${index + 1}`]));
     this.corrections = { ...(script.corrections ?? {}) };
+    this.pending = new Map((script.proposals ?? []).flatMap((proposal) => (proposal.notes?.length ? [[proposal.cutIn, structuredClone(proposal.notes)] as const] : [])));
   }
 
   at(name: string): number {
@@ -338,7 +349,13 @@ class Work {
 
   /** Where a note's words are in its item (blocks.noteAnchor), or why they can't be found. */
   anchor(clip: Clip, on: string): { start: number; end: number; quote: string } {
-    const found = noteAnchor({ ...this.script, corrections: this.corrections }, clip, on);
+    // A cut-in rewritten earlier in this answer is noted on its new words (Nov 25, JJ's notes on the 1957 murder script: the charges note on the rewritten outro was refused against the old narration).
+    // Or on what a pending proposal brings: it waits with it (apply's end sorts each note to where its words are).
+    const written = this.writes.get(clip.id);
+    const proposed = (this.script.proposals ?? []).find((one) => one.cutIn === clip.id)?.after;
+    const script = { ...this.script, corrections: this.corrections };
+    // Its words in this answer's rewrite, else in the narration as saved (a rewrite that becomes a proposal leaves it), else in a pending proposal: placeNotes sorts out where each ends up, and refuses words neither keeps (CodeRabbit on #11).
+    const found = (written === undefined ? null : noteAnchor(script, { ...clip, narration: written }, on)) ?? noteAnchor(script, clip, on) ?? (written === undefined && proposed !== undefined ? noteAnchor(script, { ...clip, narration: proposed }, on) : null);
     if (found === null) throw new Error(isCutIn(clip) ? `"${on}" isn't in that cut-in's narration: copy the words the note is on exactly.` : `"${on}" isn't said in that clip: copy the words the note is on exactly from what's said there.`);
     return found;
   }
@@ -515,14 +532,22 @@ class Work {
         const clip = this.clips[this.at(text("id") ?? "")]!;
         const body = editNote(text("text") ?? "");
         const on = (text("on") ?? "").trim();
-        clip.notes = [...(clip.notes ?? []), { id: crypto.randomUUID(), text: body, at: Date.now(), ...(on !== "" ? { anchor: this.anchor(clip, on) } : {}) }];
+        const id = crypto.randomUUID();
+        clip.notes = [...(clip.notes ?? []), { id, text: body, at: Date.now(), ...(on !== "" ? { anchor: this.anchor(clip, on) } : {}) }];
+        this.addedNotes.add(id);
         return;
       }
       case "remove_note": {
         const clip = this.clips[this.at(text("id") ?? "")]!;
         const number = typeof edit.note === "number" ? edit.note : 0;
-        if (!Number.isInteger(number) || number < 1 || number > (clip.notes ?? []).length) throw new Error(`That item has ${(clip.notes ?? []).length} notes: name one by its number in CURRENT SCRIPT.`);
-        clip.notes = (clip.notes ?? []).filter((_, at) => at !== number - 1);
+        const own = (clip.notes ?? []).length;
+        const waiting = this.pending.get(clip.id) ?? [];
+        if (!Number.isInteger(number) || number < 1 || number > own + waiting.length) throw new Error(`That item has ${own + waiting.length} notes: name one by its number in CURRENT SCRIPT.`);
+        if (number <= own) clip.notes = (clip.notes ?? []).filter((_, at) => at !== number - 1);
+        else {
+          this.pending.set(clip.id, waiting.filter((_, at) => at !== number - own - 1));
+          this.pendingTouched.add(clip.id);
+        }
         return;
       }
       default:
@@ -578,7 +603,7 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     }
   }
   if (scope !== null && !scope.beyond && marked.length > 0) {
-    const past = strays(script.clips, work.clips, work.writes.keys(), new Set(marked));
+    const past = [...strays(script.clips, work.clips, work.writes.keys(), new Set(marked)), ...[...work.pendingTouched].filter((id) => !marked.includes(id)).map((id) => `changed ${work.names.get(id) ?? "a cut-in"}'s waiting notes`)];
     if (past.length > 0) {
       const names = marked.map((id) => `i${script.clips.findIndex((clip) => clip.id === id) + 1}`).join(", ");
       throw new Error(`The producer marked ${names} for this request, and these edits also ${past.join(", ")}. Change only the marked items; if the producer's words plainly ask for those other parts too, send the same edits with beyond set to true.`);
@@ -598,9 +623,63 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
       }
     } else clip.narration = text;
   }
+  proposals = placeNotes(script, work, proposals);
   const clips = tidy.fitToParts(work.clips, script.parts ?? []);
   if (clips.length > 500) throw new Error("Those edits would leave more than 500 items in the timeline.");
   return [clips, work.corrections, settle(clips, proposals)];
+}
+
+/**
+ * Each note on a cut-in's words where those words end up (Codex and CodeRabbit on #11): on the cut-in, anchored in
+ * its narration as saved, when they're there; else waiting with its pending proposal, anchored in what it brings,
+ * put on the cut-in once accepted and gone if declined. A note this answer added on words neither has is refused;
+ * one waiting from before whose words a new rewrite drops goes with the old rewrite.
+ */
+function placeNotes(script: Script, work: Work, proposals: Proposal[]): Proposal[] {
+  // One this answer added never just goes: refused, so it's put on words that stay (CodeRabbit on #11); one from before goes with its words.
+  const unplaced = (note: Note, clip: Clip) => {
+    if (work.addedNotes.has(note.id)) throw new Error(`The note "${note.text}" is on "${note.anchor?.quote ?? ""}", which ${work.names.get(clip.id) ?? "its cut-in"}'s narration doesn't have as these edits leave it: put it on words the narration keeps.`);
+  };
+  const waiting = new Map<string, Note[]>([...work.pending].map(([id, notes]) => [id, [...notes]]));
+  for (const clip of work.clips) {
+    if (!isCutIn(clip)) continue;
+    const proposal = proposals.find((one) => one.cutIn === clip.id);
+    const on = (narration: string | undefined, note: Note) => (narration === undefined || note.anchor === undefined ? null : noteAnchor(script, { ...clip, narration }, note.anchor.quote, note.anchor.start));
+    const kept: Note[] = [];
+    for (const note of clip.notes ?? []) {
+      if (!work.addedNotes.has(note.id) || note.anchor === undefined) {
+        kept.push(note);
+        continue;
+      }
+      const here = on(clip.narration, note);
+      if (here !== null) kept.push({ ...note, anchor: here });
+      else if (on(proposal?.after, note) !== null) waiting.set(clip.id, [...(waiting.get(clip.id) ?? []), note]);
+      else throw new Error(`The note "${note.text}" is on "${note.anchor.quote}", which ${work.names.get(clip.id) ?? "its cut-in"}'s narration doesn't have as these edits leave it: put it on words the narration keeps.`);
+    }
+    if (clip.notes !== undefined) clip.notes = kept;
+  }
+  // A proposal these edits leave stale (its cut-in now reads otherwise, a direct write): its notes on words the cut-in has now come onto it, before it goes (Codex on #11).
+  for (const proposal of proposals) {
+    const clip = work.clips.find((one) => one.id === proposal.cutIn);
+    if (clip === undefined || (clip.narration ?? "").trim() === proposal.before.trim()) continue;
+    const moved = (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {
+      const at = note.anchor === undefined ? null : noteAnchor(script, clip, note.anchor.quote, note.anchor.start);
+      if (at === null) unplaced(note, clip);
+      return at === null ? [] : [{ ...note, anchor: at }];
+    });
+    if (moved.length > 0) clip.notes = [...(clip.notes ?? []), ...moved];
+    waiting.delete(proposal.cutIn);
+  }
+  return proposals.map((proposal) => {
+    const clip = work.clips.find((one) => one.id === proposal.cutIn);
+    const notes = clip === undefined ? [] : (waiting.get(proposal.cutIn) ?? []).flatMap((note) => {
+      const at = note.anchor === undefined ? null : noteAnchor(script, { ...clip, narration: proposal.after }, note.anchor.quote, note.anchor.start);
+      if (at === null) unplaced(note, clip);
+      return at === null ? [] : [{ ...note, anchor: at }];
+    });
+    const { notes: _, ...rest } = proposal;
+    return notes.length > 0 ? { ...rest, notes } : rest;
+  });
 }
 
 /** A compilation's edits keep it inside its 6 to 7 pages (proposals counted as accepted), unless it was already outside them. */
@@ -661,7 +740,7 @@ export async function revise(script: Script, request: string, focus: Focus, chat
         const answer = [...(typeof plan.answer === "string" ? plan.answer.trim() : "")].slice(0, 4_000).join("");
         return { clips: done[0], corrections: done[1], proposals: done[2], answer: answer === "" ? "Done." : answer, costUsd: cost, startOver: false, lesson: lessonOf(plan), feedback: feedbackOf(plan) };
       } catch (error) {
-        refusal = `The app refused your edits. ${error instanceof Error ? error.message : String(error)} Nothing was saved. Send the complete corrected answer, every edit again in order.`;
+        refusal = `The app refused your edits. ${error instanceof Error ? error.message : String(error)} Nothing was saved. Send the complete corrected answer, every edit again in order. Its reply is the producer's only one, so write it as your first: what the edits do to the script, never that they were sent again, refused or checked.`;
       }
     } else refusal = "Your answer carried no edits. Send the edits and reply as the structured answer.";
     if (repairs === 2 || turn.session === null) {
