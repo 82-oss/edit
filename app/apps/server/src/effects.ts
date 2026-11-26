@@ -2325,14 +2325,14 @@ export function keepVersion(app: App, project: string, name: string, key: string
   // whose code here has moved on is left to the save asked for the newer code: its files aren't the code `key` names.
   const next = (keeping.get(item) ?? Promise.resolve())
     .then(async () => {
-      // Its code as `key` names it, when the save starts and again once its files are up (what went up is all of it), and
-      // the project still edited here: a save tried again after another computer took it over kept this computer's
-      // older code over the code settled there (PR #14's Codex review).
-      const still = () => {
+      // Its code as `key` names it (here, then in the copy that's sent, before its files go up and after), and the
+      // project still edited here: a save tried again after another computer took it over kept this computer's older
+      // code over the code settled there (PR #14's Codex review).
+      const still = (folder: string) => {
         const live = app.store.get(project);
-        return live !== null && editingHere(app, project) && fs.existsSync(join(dir, ENTRY)) && keyOf(app.store, project, dir, frameOf(live.project)) === key;
+        return live !== null && editingHere(app, project) && fs.existsSync(join(folder, ENTRY)) && keyOf(app.store, project, folder, frameOf(live.project)) === key;
       };
-      if (!still()) return;
+      if (!still(dir)) return;
       await v2cloud.save(item, name, dir, { source: key, reason, still });
     })
     .catch((error: unknown) => {

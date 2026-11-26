@@ -350,8 +350,9 @@ test("a newer save of one effect waits for the one whose files are going up, and
     release();
     await Promise.all([first, second]);
     expect(order).toEqual(["one starts", "one ends", "two starts"]);
-    // The first's folder moved on while it went up: no version of it; the second's is the one in use.
-    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([two]);
+    // Each kept as it was asked for (the first from its copy, made before the code moved on), in that order: the
+    // second's is the one in use.
+    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([two, one]);
     expect((await v2cloud.version(item))!.version.source).toBe(two);
     // What went up for the first is the content its key names.
     expect(mock.cloud.text(shaOf(page("one, slow to go up")))).toBe(page("one, slow to go up"));
@@ -361,10 +362,8 @@ test("a newer save of one effect waits for the one whose files are going up, and
   }
 });
 
-test("a save whose code changed and changed back while it went up keeps no mix of the two, and keeps the code once it's still (PR #14's CodeRabbit review)", async () => {
+test("a save goes up from the copy it judged: its code changing, and changing back, while it goes up keeps that copy's files under its key, never a mix (PR #14's CodeRabbit review)", async () => {
   const { app, cleanup, id } = hq("v2-aba");
-  const before = { ...effects.keepHooks };
-  effects.keepHooks.againMs = 20;
   const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
   const shaOf = (text: string) => `edit/library/sha256/${createHash("sha256").update(text).digest("hex")}`;
   try {
@@ -374,7 +373,7 @@ test("a save whose code changed and changed back while it went up keeps no mix o
     const dir = effects.folder(app.store, id, "board");
     fs.mkdirSync(dir, { recursive: true });
     const item = v2cloud.effectKey(id, "board");
-    // Eight files ahead of its page (as many as go up at once), so the page is copied once one of them is up.
+    // Eight files ahead of its page (as many as go up at once), held going up.
     const ahead = Array.from({ length: 8 }, (_, at) => `asset ${at} of the A-B-A board`);
     ahead.forEach((text, at) => fs.writeFileSync(join(dir, `a${at}.txt`), text));
     const A = page("A, as asked");
@@ -386,28 +385,27 @@ test("a save whose code changed and changed back while it went up keeps no mix o
     let held = 0;
     let allHeld = () => {};
     const heldAll = new Promise<void>((resolve) => (allHeld = resolve));
+    const sent: string[] = [];
     mock.cloud.beforePut = async (object) => {
+      sent.push(object);
       if (ahead.some((text) => shaOf(text) === object)) {
         if (++held === ahead.length) allHeld();
         await gate;
       }
-      // B's copy going up: the folder is back to A by the time it's judged.
-      if (object === shaOf(B)) fs.writeFileSync(join(dir, "scene.html"), A);
     };
     const saving = effects.keepVersion(app, id, "board", key, "settled");
     await heldAll;
+    // The agent's page goes B while the save's files go up, and back to A only once it's kept.
     fs.writeFileSync(join(dir, "scene.html"), B);
     release();
     await saving;
-    // Tried again once it's A all through: A's files under A's key, never B's.
-    for (let wait = 0; wait < 100 && (await v2cloud.versions(item)).length === 0; wait++) await Bun.sleep(20);
+    fs.writeFileSync(join(dir, "scene.html"), A);
     const kept = (await v2cloud.version(item))!.version;
     expect(kept.source).toBe(key);
     expect(kept.files!.find((file) => file.path === "scene.html")!.sha256).toBe(createHash("sha256").update(A).digest("hex"));
-    expect((await v2cloud.versions(item)).length).toBe(1);
+    expect(sent).not.toContain(shaOf(B));
   } finally {
     mock.cloud.beforePut = null;
-    Object.assign(effects.keepHooks, before);
     cleanup();
   }
 });

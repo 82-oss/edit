@@ -170,17 +170,7 @@ async function putFiles(dir: string, only?: readonly string[]): Promise<File[]> 
   }
 }
 
-/** Whether `files` (as `putFiles` sent them) are the folder's as it is now, path for path and content for content. */
-async function sameHere(dir: string, files: File[], only?: readonly string[]): Promise<boolean> {
-  const here = only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path));
-  if (here.length !== files.length || here.some((path, at) => path !== files[at]!.path)) return false;
-  for (const [at, path] of here.entries()) {
-    if ((await sha256File(join(dir, path))) !== files[at]!.sha256) return false;
-  }
-  return true;
-}
-
-/** A save whose folder moved on while its files went up (`save`'s `still`): no version made of them. */
+/** A save whose copy of its folder wasn't what it was asked for (`save`'s `still`): no version made of it. */
 export class Moved extends Error {}
 
 /**
@@ -267,13 +257,29 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
  * (an effect's key): the same as the newest makes no new version. `only`:
  * just these of its files (a kept effect's, effect_kept.ts), the rest left.
  */
-export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: () => boolean } = {}): Promise<{ n: number; made: boolean }> {
+export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: (folder: string) => boolean } = {}): Promise<{ n: number; made: boolean }> {
   const { only, still, ...given } = options;
-  const files = await putFiles(dir, only);
-  // Asked once its files are up: a folder that changed meanwhile may have sent some of each (`Moved`), even one that's
-  // back as it was by now (A, then B as a file was copied, then A again: PR #14's CodeRabbit review), so what went up
-  // is the folder as it is here, file for file, and `still` says that's still the code asked for.
-  if (still !== undefined && (!(await sameHere(dir, files, only)) || !still())) throw new Moved(`${name} changed while it went up`);
+  if (still === undefined) return saveFiles(key, name, await putFiles(dir, only), given);
+  // Judged on a copy of the folder, the one sent: the folder itself may change while it's read, and judged where the
+  // agent writes, code that went A, B as a file was copied, then A again passed for A with B's page (PR #14's
+  // CodeRabbit review). `still` says the copy is the code asked for, before its files go up and again after.
+  const copy = await fs.promises.mkdtemp(join(os.tmpdir(), "edit-save-"));
+  try {
+    await eachAtOnce(only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path)), async (path) => {
+      await fs.promises.mkdir(dirname(join(copy, path)), { recursive: true });
+      await fs.promises.copyFile(join(dir, path), join(copy, path));
+    });
+    if (!still(copy)) throw new Moved(`${name} changed while it was copied`);
+    const files = await putFiles(copy);
+    if (!still(copy)) throw new Moved(`${name} isn't to be kept from here now`);
+    return await saveFiles(key, name, files, given);
+  } finally {
+    await fs.promises.rm(copy, { recursive: true, force: true });
+  }
+}
+
+/** `files`, already sent, kept as the item's next version (`save`). */
+async function saveFiles(key: string, name: string, files: File[], given: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string }): Promise<{ n: number; made: boolean }> {
   // The same files as the version in use (a version just brought back, saved again as it renders): not a new one.
   const now = await version(key).catch(() => null);
   const same = (a: File[], b: File[]) => a.length === b.length && a.every((one, at) => one.path === b[at]!.path && one.sha256 === b[at]!.sha256);
