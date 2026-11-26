@@ -1928,8 +1928,14 @@ function failureOf(render: string): { said: string; told: string; kind: Failure 
  */
 const untold = new Map<string, string>();
 const settling = new Map<string, ReturnType<typeof setTimeout>>();
-/** One render draws at a time, renders taking turns at a chunk's end (render_turns.ts). */
-export const turnHooks: TurnHooks = { sliceMs: 30_000, ageMs: 5 * 60_000, now: () => Date.now() };
+/**
+ * One render draws at a time, renders taking turns at a chunk's end (render_turns.ts). A turn is five minutes, so most
+ * renders finish in theirs: at 30 s (Nov 26, mandalorian, five projects rendering) each drew a chunk or two, gave way,
+ * waited some 23 min and loaded its pages again, and four compilations' 130 effects went at one or two a quarter hour.
+ * A render an export or a tool waits on still goes ahead at the next chunk's end. On a Mac with one edit rendering it
+ * changes nothing; with two, the other's next render starts at most five minutes later, or at once when it's waited on.
+ */
+export const turnHooks: TurnHooks = { sliceMs: 5 * 60_000, ageMs: 5 * 60_000, now: () => Date.now() };
 const turns = new Turns(turnHooks, () => new Outdated());
 /** Effects someone waits on now (an export, a tool), by `project/name`, and how many wait: their renders go first. */
 const waitedFor = new Map<string, number>();
