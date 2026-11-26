@@ -2325,12 +2325,17 @@ export function keepVersion(app: App, project: string, name: string, key: string
   // whose code here has moved on is left to the save asked for the newer code: its files aren't the code `key` names.
   const next = (keeping.get(item) ?? Promise.resolve())
     .then(async () => {
-      // Its code as `key` names it (here, then in the copy that's sent, before its files go up and after), and the
+      // Its code as `key` names it (here, then in the copy that's sent, once its files are up), and the
       // project still edited here: a save tried again after another computer took it over kept this computer's older
       // code over the code settled there (PR #14's Codex review).
-      const still = (folder: string) => {
+      // The copy sent is judged by the files as they went up (`sent`), never read again here: a copy's every file would
+      // be read and hashed at once, an effect's video among them, holding the server's thread (PR #14's CodeRabbit review).
+      const still = (folder: string, sent?: readonly { path: string; sha256: string }[]) => {
         const live = app.store.get(project);
-        return live !== null && editingHere(app, project) && fs.existsSync(join(folder, ENTRY)) && keyOf(app.store, project, folder, frameOf(live.project)) === key;
+        if (live === null || !editingHere(app, project) || !fs.existsSync(join(folder, ENTRY))) return false;
+        const frame = frameOf(live.project);
+        const now = sent === undefined ? keyOf(app.store, project, folder, frame) : codeKey(sent.filter((file) => isCode(file.path)).map(({ path, sha256 }) => ({ path, sha256 })), frame, fontsUsed(app.store, project, folder));
+        return now === key;
       };
       if (!still(dir)) return;
       await v2cloud.save(item, name, dir, { source: key, reason, still });

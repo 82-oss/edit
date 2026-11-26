@@ -257,21 +257,21 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
  * (an effect's key): the same as the newest makes no new version. `only`:
  * just these of its files (a kept effect's, effect_kept.ts), the rest left.
  */
-export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: (folder: string) => boolean } = {}): Promise<{ n: number; made: boolean }> {
+export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: (folder: string, files: File[]) => boolean } = {}): Promise<{ n: number; made: boolean }> {
   const { only, still, ...given } = options;
   if (still === undefined) return saveFiles(key, name, await putFiles(dir, only), given);
   // Judged on a copy of the folder, the one sent: the folder itself may change while it's read, and judged where the
   // agent writes, code that went A, B as a file was copied, then A again passed for A with B's page (PR #14's
-  // CodeRabbit review). `still` says the copy is the code asked for, before its files go up and again after.
+  // CodeRabbit review). `still` says the copy is the code asked for, by the files as they went up (hashed going up,
+  // off the server's thread: a copy is never read twice, and an effect's video read at once held the thread).
   const copy = await fs.promises.mkdtemp(join(os.tmpdir(), "edit-save-"));
   try {
     await eachAtOnce(only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path)), async (path) => {
       await fs.promises.mkdir(dirname(join(copy, path)), { recursive: true });
       await fs.promises.copyFile(join(dir, path), join(copy, path));
     });
-    if (!still(copy)) throw new Moved(`${name} changed while it was copied`);
     const files = await putFiles(copy);
-    if (!still(copy)) throw new Moved(`${name} isn't to be kept from here now`);
+    if (!still(copy, files)) throw new Moved(`${name} isn't the code asked for, or isn't to be kept from here now`);
     return await saveFiles(key, name, files, given);
   } finally {
     await fs.promises.rm(copy, { recursive: true, force: true });
