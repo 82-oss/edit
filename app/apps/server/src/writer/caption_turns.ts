@@ -80,8 +80,9 @@ const WINDOW_SCHEMA = {
     splits: { type: "array", maxItems: 60, items: { type: "object", additionalProperties: false, properties: { n: { type: "integer" }, words: { type: "string" }, person: { type: "string" } }, required: ["n", "words", "person"] } },
     newPeople: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, properties: { id: { type: "string" }, name: { type: ["string", "null"] }, role: { type: "string" } }, required: ["id", "name", "role"] } },
     spellings: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, properties: { heard: { type: "string" }, written: { type: "string" } }, required: ["heard", "written"] } },
+    named: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, properties: { id: { type: "string" }, name: { type: "string" } }, required: ["id", "name"] } },
   },
-  required: ["lines", "splits", "newPeople", "spellings"],
+  required: ["lines", "splits", "newPeople", "spellings", "named"],
 };
 
 /** Speaker assignment and spelling may change after a run; identity and timing must still match before its raw turns are restored for a retry. */
@@ -185,7 +186,7 @@ export async function runWith(script: Script, dir: string, names: string[], note
         recording: recordingList[all[from]!.group] ?? null,
         cast: castPeople,
         ...unvoiced(script, all.slice(from, to)),
-        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id, named as the cast is: spelled as caseNames spells that person, and a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), else null with their role. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
+        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id, named as the cast is: spelled as caseNames spells that person, and a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), else null with their role. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In named, a cast person whose name is null and whose name these lines give by the same rule: their id and the name. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
         lines: shownLines,
       });
       try {
@@ -213,6 +214,12 @@ export async function runWith(script: Script, dir: string, names: string[], note
     const after = ranges[index + 1];
     const from = index > 0 && before![1] > start ? start + Math.floor((before![1] - start) / 2) : start;
     const to = after !== undefined && after[0] < end ? after[0] + Math.floor((end - after[0]) / 2) : end;
+    // A person the cast left unnamed, named in these lines as theirs (CodeRabbit on #17): the first window to name them.
+    for (const one of (Array.isArray(answer.named) ? answer.named : []) as Record<string, unknown>[]) {
+      const person = people.find(([id]) => id === one.id);
+      const name = typeof one.name === "string" ? tidy(one.name) : "";
+      if (person !== undefined && person[1] === null && name !== "") person[1] = name;
+    }
     // This window's new people, as the cast's ids.
     const renamed = new Map<string, string>();
     for (const person of (Array.isArray(answer.newPeople) ? answer.newPeople : []) as Record<string, unknown>[]) {

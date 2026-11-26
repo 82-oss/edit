@@ -80,3 +80,23 @@ test("two unnamed people of one role in a window stay two; across windows they'r
   expect(joinPerson(people, null, "Officer")).toBe(first);
   expect(joinPerson(people, "keri", "Witness")).toBe("p1");
 });
+
+test("a person the cast left unnamed takes the name a window gives them", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "writer-caption-named-"));
+  const transcript = parse({ events: [
+    { tStartMs: 500, dDurationMs: 500, segs: [{ utf8: ">> Where?" }] },
+    { tStartMs: 1500, dDurationMs: 500, segs: [{ utf8: ">> Here." }] },
+  ] });
+  const script: Script = { ...base(), id: "named", title: "Interview", sourceUrl: "https://youtu.be/bbbbbbbbbbb", durationMs: 3000 };
+  script.words = transcript.words.map((one, index) => ({ id: `w${index}`, text: one.text, startMs: Math.trunc(one.start * 1000), endMs: Math.trunc(one.end * 1000), speaker: one.speaker! }));
+  const answers: Ask = async (kept, schema, prompt) => {
+    const answer = (schema.properties as Record<string, unknown>).people
+      ? { people: [{ id: "p1", name: null, role: "Officer", how: "asks questions" }, { id: "p2", name: "Keri", role: "Suspect", how: "answers" }], suspects: [] }
+      : { lines: [{ n: 0, person: "p1" }, { n: 1, person: "p2" }], splits: [], newPeople: [], spellings: [], named: [{ id: "p1", name: "Detective Kirk" }, { id: "p2", name: "Carrie" }] };
+    fs.writeFileSync(answerFile(kept, schema, prompt), JSON.stringify(answer));
+    return [answer, false];
+  };
+  await runWith(script, dir, [], "", () => {}, answers);
+  expect(Object.values(script.speakers ?? {}).sort()).toEqual(["Detective Kirk (Officer)", "Keri (Suspect)"].sort());
+  fs.rmSync(dir, { recursive: true });
+});
