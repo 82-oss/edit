@@ -558,7 +558,8 @@ export class Processor {
    * Transcribes `source` again, its transcript dropped first: for one the
    * transcriber garbled (a few stray words for a whole take).
    */
-  retranscribe(source: string, hasAudio: boolean): MediaStatus {
+  /** `whole`: Scribe hears all of it now (`transcribe`). */
+  retranscribe(source: string, hasAudio: boolean, whole = false): MediaStatus {
     if (this.entry(source).transcript === "working") return this.status(source);
     fs.rmSync(this.paths(source).transcript, { force: true });
     this.stopWaiting(source);
@@ -567,7 +568,7 @@ export class Processor {
       delete status.transcript_error;
       delete status.transcript_retry_at;
     });
-    return this.transcribe(source, hasAudio);
+    return this.transcribe(source, hasAudio, [], false, false, whole);
   }
 
   /**

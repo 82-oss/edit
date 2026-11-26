@@ -505,8 +505,8 @@ export function garbled(words: Word[], seconds: number): boolean {
   return seconds >= 8 && words.length < seconds / 4;
 }
 
-/** A recording's words, transcribing it first if needed (and once more if it comes back garbled). */
-async function transcript(app: App, media: Media): Promise<Word[]> {
+/** A recording's words, heard whole (`transcribed`), heard again when what came back can't be its reading (`garbled`). */
+export async function transcript(app: App, media: Media): Promise<Word[]> {
   const words = await transcribed(app, media, false);
   if (!garbled(words, media.duration)) return words;
   diag.warn("voice", `${media.name}: ${words.length} words heard in ${round(media.duration)} s; transcribing it again`);
@@ -515,8 +515,12 @@ async function transcript(app: App, media: Media): Promise<Word[]> {
 
 async function transcribed(app: App, media: Media, again: boolean): Promise<Word[]> {
   const path = media.path;
-  if (again) app.media.retranscribe(path, media.has_audio);
-  else app.media.transcribe(path, media.has_audio);
+  // Heard whole: a take is one cut-in's reading, and its words are what places it. In a local-first project
+  // (local_first.ts) a file is heard only where the timeline keeps it, and a take isn't kept anywhere until it's
+  // placed: it came back with no words, again and again, and every cut-in "wasn't found in the recordings" (Nov 26,
+  // four Cuffed & Caught compilations, until each agent heard every take itself with media_transcript).
+  if (again) app.media.retranscribe(path, media.has_audio, true);
+  else app.media.transcribe(path, media.has_audio, [], false, false, true);
   const started = timing.now();
   for (;;) {
     const status = app.media.status(path);

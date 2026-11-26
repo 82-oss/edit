@@ -349,3 +349,37 @@ test("a phrase lost between two voice-overs is flagged once, for the line it run
   const found = narrationCutOff(p, new Map([["vo", { words } as never]])) as { clip: string; side: string; words: string }[];
   expect(found).toEqual([expect.objectContaining({ clip: "b", side: "in", words: "He makes noises" })]);
 });
+
+// Nov 26, four Cuffed & Caught compilations (local-first projects): a take was heard only where the timeline kept it,
+// which is nowhere before it's placed, so it came back with no words and every cut-in "wasn't found in the recordings".
+test("a take is heard whole, first and when heard again, wherever its project keeps its footage", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { transcript } = await import("../src/voiceover.ts");
+  const dir = mkdtempSync(join(tmpdir(), "edit-take-"));
+  const file = join(dir, "t.json");
+  const asked: string[] = [];
+  let heardWhole = false;
+  const app = {
+    media: {
+      transcribe: (_path: string, _audio: boolean, _terms: string[], again: boolean, _free: boolean, whole: boolean) => {
+        asked.push(`transcribe again=${again} whole=${whole}`);
+        // What a local-first file gets heard only where it's kept: no words.
+        writeFileSync(file, JSON.stringify({ model: "none", language: null, words: [], heard: [] }));
+      },
+      retranscribe: (_path: string, _audio: boolean, whole: boolean) => {
+        asked.push(`retranscribe whole=${whole}`);
+        heardWhole = whole;
+        writeFileSync(file, JSON.stringify({ model: "scribe", language: "en", words: whole ? ["On", "March", "police", "arrived"].map((text, at) => said(text, at, at + 0.5)) : [], heard: [] }));
+      },
+      status: () => ({ transcript: "ready" }),
+      paths: () => ({ transcript: file }),
+    },
+  } as never;
+  const take = media({ id: "vo", name: "Case (voice-over) - Cut-in 3.mp3", path: join(dir, "t.mp3"), kind: "audio", duration: 13, has_audio: true });
+  const words = await transcript(app, take);
+  expect(asked).toEqual(["transcribe again=false whole=true", "retranscribe whole=true"]);
+  expect(heardWhole).toBe(true);
+  expect(words.map((word) => word.text)).toEqual(["On", "March", "police", "arrived"]);
+});
