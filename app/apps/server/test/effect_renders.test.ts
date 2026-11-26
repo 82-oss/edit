@@ -748,11 +748,12 @@ test.skipIf(chrome === null)("a render that fails names its effect and says what
     </script></body>`);
     const failed = await effects.renderNow(app, id, "breaks").then(() => "rendered", (error: unknown) => diag.messageOf(error));
     expect(failed).toContain("couldn't render just now");
+    // Read first: the render's line marks a failure told (`renderLine`), which would leave nothing here to see.
+    expect(await messageContext(app, id, null, true)).toBe("");
     const line = effects.renderLine(app, id, "breaks")!;
     expect(line).toMatch(/its page couldn't start: .*Error creating WebGL context\..* \(this computer's browser has no WebGL\)/u);
     expect(line).toEndWith(`${effects.NO_WEBGL_LINE}`);
     expect(line).not.toContain("no window.seek");
-    expect(await messageContext(app, id, null, true)).toBe("");
   } finally {
     await server.stop(true);
     cleanup();
