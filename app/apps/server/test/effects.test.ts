@@ -249,7 +249,8 @@ test("a render made on another computer whose code comes down on a first open is
     spyOn(relay, "cloudEnabled").mockReturnValue(true),
     spyOn(v2cloud, "versions").mockResolvedValue([version]),
     spyOn(v2cloud, "fetchInto").mockImplementation(async (_key, n, dir) => {
-      expect(n).toBe(3);
+      // The version in use (here the render's own, which is what makes it this code's).
+      expect(n).toBeNull();
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(join(dir, "scene.html"), GOOD);
       return version;

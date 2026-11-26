@@ -3,7 +3,8 @@
 // agent's skills a teacher saves, read over the release's in Edit V2;
 // through the relay to the cloud mock's library (mamagi's editLibrary).
 
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, setSystemTime, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type { Script } from "@edit/types/writer";
 import fs from "node:fs";
 import { join } from "node:path";
@@ -166,6 +167,8 @@ test("an effect handed over to another computer: its fetched code is the render'
     await v2cloud.fetchInto(item, 1, dir);
     fs.utimesSync(join(dir, "scene.html"), new Date(2021, 0, 1), new Date(2021, 0, 1));
     expect(effects.renderLine(app, id, "board")).not.toContain("Its render is of this code");
+    // Taken over here: the older copy is the last editor's, brought up to the version in use once.
+    effects.tookOver(id);
     expect(await effects.bringDown(app, id)).toEqual(["board"]);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toContain("<p>two</p>");
     // Fetched, with new times: the same version as the render, so the render plays and exports, nothing drawn again.
@@ -177,6 +180,381 @@ test("an effect handed over to another computer: its fetched code is the render'
     expect(await effects.bringDown(app, id)).toEqual([]);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>three, being written</p>");
     expect(effects.notReady(app.store, app.store.get(id)!.project)).toContain("The board effect is still rendering");
+  } finally {
+    cleanup();
+  }
+});
+
+test("an effect's code goes to the cloud once it settles, before any render, and another computer carries on from the version in use (Nov 25: the 1957 murder edit's maps never rendered on the MacBook Air, and their code was on it alone)", async () => {
+  const { app, cleanup, id } = hq("v2-settled");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "map");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "map");
+    // Rendered once on the first computer.
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    const first = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "map", dir, { source: first, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "map", path: "/elsewhere/map.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "map", effect_key: first });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Its agent changes it: once the code has settled it's kept, whether or not its render ever finishes here.
+    fs.writeFileSync(join(dir, "scene.html"), page("two, settled"));
+    effects.renderSoon(app, id);
+    for (let wait = 0; wait < 200 && (await v2cloud.versions(item)).length < 2; wait++) await Bun.sleep(50);
+    const kept = await v2cloud.versions(item);
+    expect(kept.length).toBe(2);
+    expect((await v2cloud.version(item))!.version).toMatchObject({ reason: "settled", source: effects.list(app.store, id)[0]!.key });
+    // Settled here and kept: the code here is the version in use, never put back to the render's.
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+
+    // Another computer without the folder: the version in use comes down, not the older one rendered.
+    fs.rmSync(dir, { recursive: true });
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+    // One that had the rendered version before: brought up to the version in use.
+    await v2cloud.fetchInto(item, 1, dir);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+    effects.tookOver(id);
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+
+    // Caught up, and (Edit started again since) its agent puts it back to the rendered version on purpose: that's this
+    // computer's code, left as it is.
+    effects.forgetCloudForTests();
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+  } finally {
+    cleanup();
+  }
+}, 30_000);
+
+test("a computer watching another's edit asks the cloud again after a minute, and again at once after a question that failed (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id, home } = hq("v2-watching");
+  const projects = new cloudProjects.Cloud(home, "this-mac");
+  projects.attach(app.store);
+  const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    projects.projects.set(id, new cloudProjects.Entry({ rev: 1, dirty: false }));
+    const dir = effects.folder(app.store, id, "map");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "map");
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    const first = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "map", dir, { source: first, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "map", path: "/elsewhere/map.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "map", effect_key: first });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Another computer holds the lock: this one only watches.
+    projects.projects.get(id)!.lock = { kind: "elsewhere", holder: "marc-mac" };
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    // The computer editing it settles newer code, not rendered yet: the render's key and the code here stay as they were.
+    const there = `${dir}-there`;
+    fs.mkdirSync(there);
+    fs.writeFileSync(join(there, "scene.html"), page("two, settled there"));
+    await v2cloud.save(item, "map", there, { source: "settled-there", reason: "settled" });
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    // A minute on it's asked again; its files can't be fetched (the line drops): nothing comes, and nothing's remembered.
+    const object = `edit/library/sha256/${createHash("sha256").update(page("two, settled there")).digest("hex")}`;
+    const held = mock.cloud.objects.get(object)!;
+    mock.cloud.objects.delete(object);
+    setSystemTime(new Date(Date.now() + 61_000));
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+    // Nothing of the fetch that failed left beside it.
+    expect(fs.readdirSync(join(dir, "..")).filter((one) => one.includes(".incoming-"))).toEqual([]);
+    // The line back: asked again at once, and the version in use comes down.
+    mock.cloud.objects.set(object, held);
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled there"));
+  } finally {
+    setSystemTime();
+    cleanup();
+  }
+}, 30_000);
+
+test("one effect's versions are kept in the order asked, and a save whose code moved on is left to the newer one's (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-in-order");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    const one = effects.list(app.store, id)[0]!.key;
+    const first = effects.keepVersion(app, id, "board", one, "settled");
+    // Changed again before the first went up: the first's files would be the second's code under the first's key.
+    fs.writeFileSync(join(dir, "scene.html"), page("two"));
+    const two = effects.list(app.store, id)[0]!.key;
+    const second = effects.keepVersion(app, id, "board", two, "settled");
+    await Promise.all([first, second]);
+    const versions = await v2cloud.versions(item);
+    expect(versions.map((one) => one.source)).toEqual([two]);
+    expect((await v2cloud.version(item))!.version.source).toBe(two);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a newer save of one effect waits for the one whose files are going up, and the newer stays in use (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-in-flight");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("one, slow to go up"));
+    const one = effects.list(app.store, id)[0]!.key;
+    // The first save's upload held open once it has started.
+    const order: string[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let started = () => {};
+    const going = new Promise<void>((resolve) => (started = resolve));
+    const shaOf = (text: string) => `edit/library/sha256/${createHash("sha256").update(text).digest("hex")}`;
+    mock.cloud.beforePut = async (key) => {
+      if (key === shaOf(page("one, slow to go up"))) {
+        order.push("one starts");
+        started();
+        await held;
+        order.push("one ends");
+      } else if (key === shaOf(page("two, once the first is up"))) order.push("two starts");
+    };
+    const first = effects.keepVersion(app, id, "board", one, "settled");
+    await going;
+    // Kept as it was when it started (its copy went up): the agent's next code doesn't change what's being sent.
+    fs.writeFileSync(join(dir, "scene.html"), page("two, once the first is up"));
+    const two = effects.list(app.store, id)[0]!.key;
+    const second = effects.keepVersion(app, id, "board", two, "settled");
+    await Bun.sleep(200);
+    expect(order).toEqual(["one starts"]);
+    release();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["one starts", "one ends", "two starts"]);
+    // Each kept as it was asked for (the first from its copy, made before the code moved on), in that order: the
+    // second's is the one in use.
+    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([two, one]);
+    expect((await v2cloud.version(item))!.version.source).toBe(two);
+    // What went up for the first is the content its key names.
+    expect(mock.cloud.text(shaOf(page("one, slow to go up")))).toBe(page("one, slow to go up"));
+  } finally {
+    mock.cloud.beforePut = null;
+    cleanup();
+  }
+});
+
+test("a save goes up from the copy it judged: its code changing, and changing back, while it goes up keeps that copy's files under its key, never a mix (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-aba");
+  const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+  const shaOf = (text: string) => `edit/library/sha256/${createHash("sha256").update(text).digest("hex")}`;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    // Eight files ahead of its page (as many as go up at once), held going up.
+    const ahead = Array.from({ length: 8 }, (_, at) => `asset ${at} of the A-B-A board`);
+    ahead.forEach((text, at) => fs.writeFileSync(join(dir, `a${at}.txt`), text));
+    const A = page("A, as asked");
+    const B = page("B, for a moment");
+    fs.writeFileSync(join(dir, "scene.html"), A);
+    const key = effects.list(app.store, id)[0]!.key;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = 0;
+    let allHeld = () => {};
+    const heldAll = new Promise<void>((resolve) => (allHeld = resolve));
+    const sent: string[] = [];
+    mock.cloud.beforePut = async (object) => {
+      sent.push(object);
+      if (ahead.some((text) => shaOf(text) === object)) {
+        if (++held === ahead.length) allHeld();
+        await gate;
+      }
+    };
+    const saving = effects.keepVersion(app, id, "board", key, "settled");
+    await heldAll;
+    // The agent's page goes B while the save's files go up, and back to A only once it's kept.
+    fs.writeFileSync(join(dir, "scene.html"), B);
+    release();
+    await saving;
+    fs.writeFileSync(join(dir, "scene.html"), A);
+    const kept = (await v2cloud.version(item))!.version;
+    expect(kept.source).toBe(key);
+    expect(kept.files!.find((file) => file.path === "scene.html")!.sha256).toBe(createHash("sha256").update(A).digest("hex"));
+    expect(sent).not.toContain(shaOf(B));
+  } finally {
+    mock.cloud.beforePut = null;
+    cleanup();
+  }
+});
+
+test("a settled save that failed is tried again while it's still the code here, nothing else needed (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-again");
+  const before = { ...effects.keepHooks };
+  effects.keepHooks.againMs = 20;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), "<p>kept on the second try</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const key = effects.list(app.store, id)[0]!.key;
+    // Every try of the first save's one PUT refused (the line drops for a while).
+    mock.cloud.failPuts = 4;
+    await effects.keepVersion(app, id, "board", key, "settled");
+    expect(await v2cloud.versions(item)).toEqual([]);
+    for (let wait = 0; wait < 100 && (await v2cloud.versions(item)).length === 0; wait++) await Bun.sleep(20);
+    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([key]);
+  } finally {
+    mock.cloud.failPuts = 0;
+    Object.assign(effects.keepHooks, before);
+    cleanup();
+  }
+});
+
+test("a save tried again after another computer took the project over keeps nothing (PR #14's Codex review)", async () => {
+  const { app, cleanup, id, home } = hq("v2-again-taken");
+  const projects = new cloudProjects.Cloud(home, "this-mac");
+  projects.attach(app.store);
+  const before = { ...effects.keepHooks };
+  effects.keepHooks.againMs = 20;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    projects.projects.set(id, new cloudProjects.Entry({ rev: 1, dirty: false }));
+    projects.projects.get(id)!.lock = { kind: "held" };
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), "<p>settled here, then taken over</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const key = effects.list(app.store, id)[0]!.key;
+    mock.cloud.failPuts = 4;
+    await effects.keepVersion(app, id, "board", key, "settled");
+    // Taken over before the next try.
+    projects.projects.get(id)!.lock = { kind: "elsewhere", holder: "marc-mac" };
+    await Bun.sleep(300);
+    expect(await v2cloud.versions(item)).toEqual([]);
+  } finally {
+    mock.cloud.failPuts = 0;
+    Object.assign(effects.keepHooks, before);
+    cleanup();
+  }
+});
+
+test("just taken over, an effect not caught up with the cloud's newer version keeps nothing of its older code here (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-not-caught-up");
+  const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("A, the older"));
+    const a = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "board", dir, { source: a, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "board", path: "/elsewhere/board.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "board", effect_key: a });
+    });
+    // B settled on the computer that had it.
+    const there = `${dir}-there`;
+    fs.mkdirSync(there);
+    fs.writeFileSync(join(there, "scene.html"), page("B, settled there, not caught up with"));
+    await v2cloud.save(item, "board", there, { source: "b-there", reason: "settled" });
+    // Taken over here; its catching up fails (B's page can't be fetched).
+    effects.tookOver(id);
+    const object = `edit/library/sha256/${createHash("sha256").update(page("B, settled there, not caught up with")).digest("hex")}`;
+    const held = mock.cloud.objects.get(object)!;
+    mock.cloud.objects.delete(object);
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    // A settled pass asks to keep A: nothing kept, B stays in use.
+    await effects.keepVersion(app, id, "board", a, "settled");
+    expect((await v2cloud.version(item))!.version.source).toBe("b-there");
+    // Caught up once B can be fetched.
+    mock.cloud.objects.set(object, held);
+    expect(await effects.bringDown(app, id)).toEqual(["board"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("an effect on the timeline twice is brought down once, whole (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-twice");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "map");
+    const there = `${dir}-there`;
+    fs.mkdirSync(there, { recursive: true });
+    fs.writeFileSync(join(there, "scene.html"), "<p>made elsewhere</p>");
+    fs.mkdirSync(join(there, "tiles"));
+    for (let at = 0; at < 12; at++) fs.writeFileSync(join(there, "tiles", `${at}.txt`), `tile ${at} of the twice-placed map`);
+    await v2cloud.save(v2cloud.effectKey(id, "map"), "map", there, { source: "elsewhere", reason: "settled" });
+    await app.store.update(id, "test", (project) => {
+      for (const media of ["m1", "m2"]) project.media.push({ id: media, name: "map", path: "/elsewhere/map.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "map", effect_key: "elsewhere" });
+    });
+    // Each of its files fetched once: two fetches into the one folder at once cleared each other's.
+    let fetched = 0;
+    mock.cloud.beforeGet = async (key) => {
+      if (key.startsWith("edit/library/sha256/")) fetched++;
+    };
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fetched).toBe(13);
+    expect(fs.readdirSync(join(dir, "tiles")).length).toBe(12);
+    expect(fs.readdirSync(join(dir, "..")).filter((one) => one.includes(".incoming-") || one.includes(".outgoing-"))).toEqual([]);
+  } finally {
+    mock.cloud.beforeGet = null;
+    cleanup();
+  }
+});
+
+test("a version fetched into a folder its agent changed meanwhile isn't swapped in over it (PR #14's CodeRabbit review)", async () => {
+  const { cleanup, id, app } = hq("v2-changed-meanwhile");
+  try {
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), "<p>kept</p>");
+    await v2cloud.save(item, "board", dir, { source: "kept", reason: "settled" });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>older</p>");
+    // Asked just before the swap: the agent wrote meanwhile.
+    const came = await v2cloud.fetchInto(item, null, dir, () => {
+      fs.writeFileSync(join(dir, "scene.html"), "<p>the agent's, just written</p>");
+      return false;
+    });
+    expect(came).toBeNull();
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>the agent's, just written</p>");
+    expect(fs.readdirSync(join(dir, "..")).filter((one) => one.includes(".incoming-"))).toEqual([]);
+    // Unchanged: swapped in.
+    expect((await v2cloud.fetchInto(item, null, dir, () => true))?.source).toBe("kept");
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>kept</p>");
   } finally {
     cleanup();
   }

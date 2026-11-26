@@ -258,7 +258,65 @@ export function headlessBinary(): string | null {
 
 /** The switches that make the binary draw on the graphics card: Metal on a Mac, Vulkan on Linux, where headless Chrome otherwise draws on the CPU. */
 function gpuSwitches(): string[] {
-  return process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : [];
+  if (process.platform === "darwin") return ["--use-angle=metal"];
+  if (process.platform === "linux") return gpuHooks.vulkan === false ? [] : ["--use-angle=vulkan"];
+  return [];
+}
+
+/**
+ * Linux: whether headless Chrome draws WebGL on Vulkan here, asked once (`gpuChecked`); null until then. Where it
+ * can't (no Vulkan driver for the card: WSL's NVIDIA has none), `--use-angle=vulkan` left Chrome with no WebGL at
+ * all and every map failed ("The browser supports WebGL, but initialization failed", mandalorian, Nov 25), where
+ * without it Chrome draws on the CPU (SwiftShader), slower but drawn.
+ */
+export const gpuHooks = {
+  vulkan: null as boolean | null,
+  /** Whether a WebGL page draws in headless Chrome on Vulkan; true when it can't be told (as before it was asked). */
+  async webglOnVulkan(): Promise<boolean> {
+    return (await webglDraws(["--use-angle=vulkan"])) !== false;
+  },
+};
+
+/**
+ * Whether a WebGL page draws in headless Chrome started with `switches`; null when it can't be told (no Chrome, no
+ * answer in 20 s). Read from the page's title alone: the dumped DOM also holds the page's script, which names both
+ * answers (PR #14's Codex review: matching the whole DOM answered "no" everywhere).
+ */
+export async function webglDraws(switches: readonly string[]): Promise<boolean | null> {
+  const binary = headlessBinary();
+  if (binary === null) return null;
+  const profile = fs.mkdtempSync(join(os.tmpdir(), "edit-gl-check-"));
+  const page = "<script>const c=document.createElement('canvas');document.title=(c.getContext('webgl2')||c.getContext('webgl'))?'GL:yes':'GL:no'</script>";
+  const child = Bun.spawn(
+    [binary, ...(isShell(binary) ? [] : ["--headless=new"]), ...switches, "--no-first-run", `--user-data-dir=${profile}`, "--dump-dom", `data:text/html,${encodeURIComponent(page)}`],
+    { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
+  );
+  const timer = setTimeout(() => child.kill(), 20_000);
+  try {
+    const title = /<title>GL:(yes|no)<\/title>/.exec(await new Response(child.stdout).text())?.[1];
+    return title === undefined ? null : title === "yes";
+  } finally {
+    clearTimeout(timer);
+    void child.exited.then(() => fs.rmSync(profile, { recursive: true, force: true }));
+  }
+}
+
+let gpuChecking: Promise<void> | null = null;
+
+/** Asks once (Linux) whether Chrome draws on Vulkan here, before a Chrome that draws on the card starts. */
+export function gpuChecked(): Promise<void> {
+  if (process.platform !== "linux" || gpuHooks.vulkan !== null) return Promise.resolve();
+  gpuChecking ??= gpuHooks
+    .webglOnVulkan()
+    .catch(() => true)
+    .then((vulkan) => {
+      gpuHooks.vulkan = vulkan;
+      if (!vulkan) diag.warn("chrome", "headless Chrome has no WebGL on Vulkan here: effects and maps draw on the CPU");
+    })
+    .finally(() => {
+      gpuChecking = null;
+    });
+  return gpuChecking;
 }
 
 /**
@@ -355,6 +413,7 @@ async function sweepOrphans(profile: string): Promise<void> {
 /** A Chrome with one blank page, ready for commands. */
 export async function open(opening: Opening): Promise<Page> {
   await sweepOrphans(opening.profile);
+  if (opening.gpu === true && drawing.gpu) await gpuChecked();
   const profile = fs.mkdtempSync(join(os.tmpdir(), opening.profile));
   const command = headlessCommand(
     [
