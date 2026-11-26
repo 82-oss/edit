@@ -172,7 +172,21 @@ function footageAt(project: Project, frame: number) {
 /** What an effect's folder keeps of what's beneath it: the video, and what it was made from. */
 export const BENEATH = "beneath.mp4";
 
-const beneathSlot = new Semaphore(1);
+/**
+ * One render of what's beneath at a time per project, in the order asked (a graphic is made over those below it as
+ * they end up), each project its own: one slot for the whole computer had four Cuffed & Caught compilations, each
+ * asking for 25 to 30 (Nov 26, mandalorian), wait 2 to 3 min on every call for the others' renders. A Mac working on
+ * one edit renders as before, one at a time.
+ */
+const beneathSlots = new Map<string, Semaphore>();
+export function beneathSlot(projectId: string): Semaphore {
+  let slot = beneathSlots.get(projectId);
+  if (slot === undefined) {
+    slot = new Semaphore(1);
+    beneathSlots.set(projectId, slot);
+  }
+  return slot;
+}
 
 /** How what's beneath is keyed now (3: with the order of its tracks, Nov 18; 4: a graphic below by its code, Nov 23). */
 const KEY_VERSION = 4;
@@ -351,7 +365,7 @@ function beneathTargetMb(frames: number, fps: number): number {
  * unless it's already of what's there now. Answers whether it was made.
  */
 export async function beneath(app: App, projectId: string, name: string): Promise<{ made: boolean; seconds: number }> {
-  return beneathSlot.with(async () => {
+  return beneathSlot(projectId).with(async () => {
     const live = app.store.get(projectId);
     if (live === null) throw new Error("no such project");
     const dir = effects.folder(app.store, projectId, name);

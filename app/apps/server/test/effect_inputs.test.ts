@@ -12,6 +12,7 @@ import * as vm from "node:vm";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { stableStringify } from "../src/stable.ts";
 import * as effects from "../src/effects.ts";
+import { beneathSlot } from "../src/effect_inputs.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import { findAddon, useNative, wrap, type Native } from "../src/native/index.ts";
 import * as tools from "../src/tools.ts";
@@ -269,3 +270,23 @@ test.skipIf(addon === null)("a mark keyed before the tracks' order counted is ta
     cleanup();
   }
 }, 120_000);
+
+// Nov 26, four Cuffed & Caught compilations on mandalorian: one slot for the whole computer had each edit's 25 to 30
+// renders of what's beneath wait 2 to 3 min a call on the others'. Each project renders its own one at a time.
+test("what's beneath renders one at a time in a project, and two projects don't wait on each other", async () => {
+  const order: string[] = [];
+  let open = () => {};
+  const held = new Promise<void>((resolve) => (open = resolve));
+  const first = beneathSlot("slot-a").with(async () => {
+    order.push("a1 starts");
+    await held;
+    order.push("a1 ends");
+  });
+  const second = beneathSlot("slot-a").with(async () => void order.push("a2"));
+  const other = beneathSlot("slot-b").with(async () => void order.push("b1"));
+  await other;
+  expect(order).toEqual(["a1 starts", "b1"]);
+  open();
+  await Promise.all([first, second]);
+  expect(order).toEqual(["a1 starts", "b1", "a1 ends", "a2"]);
+});
