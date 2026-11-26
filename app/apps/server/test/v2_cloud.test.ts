@@ -167,6 +167,8 @@ test("an effect handed over to another computer: its fetched code is the render'
     await v2cloud.fetchInto(item, 1, dir);
     fs.utimesSync(join(dir, "scene.html"), new Date(2021, 0, 1), new Date(2021, 0, 1));
     expect(effects.renderLine(app, id, "board")).not.toContain("Its render is of this code");
+    // Taken over here: the older copy is the last editor's, brought up to the version in use once.
+    effects.tookOver(id);
     expect(await effects.bringDown(app, id)).toEqual(["board"]);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toContain("<p>two</p>");
     // Fetched, with new times: the same version as the render, so the render plays and exports, nothing drawn again.
@@ -220,8 +222,16 @@ test("an effect's code goes to the cloud once it settles, before any render, and
     // One that had the rendered version before: brought up to the version in use.
     await v2cloud.fetchInto(item, 1, dir);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+    effects.tookOver(id);
     expect(await effects.bringDown(app, id)).toEqual(["map"]);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("two, settled"));
+
+    // Caught up, and (Edit started again since) its agent puts it back to the rendered version on purpose: that's this
+    // computer's code, left as it is.
+    effects.forgetCloudForTests();
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
   } finally {
     cleanup();
   }

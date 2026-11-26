@@ -2370,6 +2370,27 @@ const LOOK_AGAIN_MS = 60_000;
  * it settles code, so once is enough; while another computer does, a minute (PR #14's CodeRabbit review: a version
  * settled there without a render left the render's key and the code here as they were, and was never asked for).
  */
+/**
+ * Projects taken over here, and which of their effects have been brought up to the version in use since. Until then
+ * code here older than that version is the last editor's and is replaced by it; after, it's this computer's agent's,
+ * put back to an older version on purpose maybe, and stays (PR #14's Codex review: a revert to the render's code was
+ * fetched over with the newer version settled before it).
+ */
+const catchingUp = new Map<string, Set<string>>();
+
+/** Project `project` taken over here (its lock taken, or this computer began editing it): its effects catch up once. */
+export function tookOver(project: string): void {
+  forgetLookedFor(project);
+  catchingUp.set(project, new Set());
+}
+
+/** What a restart forgets of the cloud (tests). */
+export function forgetCloudForTests(): void {
+  lookedFor.clear();
+  lookedWhileEditing.clear();
+  catchingUp.clear();
+}
+
 /** What was looked for of a project's effects forgotten: it changed hands (taken here, or the editing changed). */
 function forgetLookedFor(project: string): void {
   for (const asked of [...lookedFor.keys()]) if (asked.startsWith(`${project}/`)) lookedFor.delete(asked);
@@ -2421,7 +2442,8 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
   const frame = frameOf(live.project);
   const editing = editingHere(app, project);
   if (lookedWhileEditing.get(project) !== editing) {
-    forgetLookedFor(project);
+    if (editing && lookedWhileEditing.get(project) === false) tookOver(project);
+    else forgetLookedFor(project);
     lookedWhileEditing.set(project, editing);
   }
   // Each effect asked of the cloud side by side: an edit of 19 effects asked one after another kept its renders waiting.
@@ -2478,6 +2500,7 @@ async function bringOne(app: App, project: string, name: string, rendered: strin
   // Said looked for only once the cloud has answered: a question that failed is asked again (PR #14's CodeRabbit review).
   const looked = (came: boolean) => {
     lookedFor.set(asked, Date.now());
+    catchingUp.get(project)?.add(name);
     return came;
   };
   const versions = await v2cloud.versions(item);
@@ -2492,6 +2515,9 @@ async function bringOne(app: App, project: string, name: string, rendered: strin
   // kept is the agent's work, not settled yet: left as it is, and so is code its agent changed while the cloud was
   // asked (judged again just before the swap, PR #14's CodeRabbit review: the folder was swapped whole over it).
   if (!versions.some((one) => one.files !== null && same(one.files))) return looked(false);
+  // Where it's edited, only once it's just been taken over: else the older code here is its agent's own.
+  const catching = catchingUp.get(project);
+  if (editing && (catching === undefined || catching.has(name))) return looked(false);
   const came = await v2cloud.fetchInto(item, inUse.version.n, dir, () => fs.existsSync(join(dir, ENTRY)) && codeKey(codeIn(dir), frame, fontsUsed(app.store, project, dir)) === here.key);
   if (came === null) return looked(false);
   if (rendered !== null && came.source === rendered) sameFilesHere(app.store, project, name, rendered, frame);
@@ -3190,7 +3216,7 @@ export function start(app: App): void {
   // What was looked for in V2's cloud while another computer edited it is asked again (PR #14's Codex review: code
   // settled there, never rendered, was otherwise not asked for until a restart).
   cloudProjects.hooks.held = (project) => {
-    forgetLookedFor(project);
+    tookOver(project);
     if (app.store.get(project)?.project.hq === true) renderSoon(app, project);
   };
   app.store.subscribe((event) => {
