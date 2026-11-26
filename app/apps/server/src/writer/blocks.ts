@@ -5,7 +5,7 @@
 // section headings and its paragraphs. Offsets are UTF-16 units, as the
 // review page counts them.
 
-import type { Clip, Draft, Paragraph, Part, Script } from "@edit/types/writer";
+import type { Clip, Draft, Note, Paragraph, Part, Script } from "@edit/types/writer";
 
 import { splitWhitespace } from "../rust.ts";
 import { citeLine, liveMarks, noteLines, paragraphText, WORDS_PER_MINUTE } from "./paragraphs.ts";
@@ -120,6 +120,38 @@ export function noteAnchor(script: Script, clip: Clip, on: string, near?: number
   let start = near !== undefined && said.slice(near, near + quote.length) === quote ? near : said.indexOf(quote);
   if (start < 0) start = said.toLowerCase().indexOf(quote.toLowerCase());
   return start < 0 ? null : { start, end: start + quote.length, quote: said.slice(start, start + quote.length) };
+}
+
+/**
+ * A split clip's notes, each on the piece that says its words (CodeRabbit on #17): tightening a pause, a recording's
+ * edge or a removed range splits a clip and leaves its notes on the first piece. A note whose words that piece doesn't
+ * say moves to the next piece of the same block that does, anchored there; one whose words no piece says whole (they
+ * ran across the cut) stays where it was.
+ */
+export function notesOnTheirWords(script: Script, clips: Clip[]): Clip[] {
+  const out = clips.map((clip) => ({ ...clip }));
+  for (const [at, clip] of out.entries()) {
+    if (isCutIn(clip) || !clip.notes?.length) continue;
+    const stay: Note[] = [];
+    for (const note of clip.notes) {
+      if (!note.anchor || noteAnchor(script, clip, note.anchor.quote, note.anchor.start) !== null) {
+        stay.push(note);
+        continue;
+      }
+      let moved = false;
+      for (let next = at + 1; next < out.length && !isCutIn(out[next]!) && out[next]!.startMs >= clip.endMs; next++) {
+        const piece = out[next]!;
+        const anchor = noteAnchor(script, piece, note.anchor.quote);
+        if (anchor === null) continue;
+        piece.notes = [...(piece.notes ?? []), { ...note, anchor }];
+        moved = true;
+        break;
+      }
+      if (!moved) stay.push(note);
+    }
+    if (stay.length !== clip.notes.length) clip.notes = stay;
+  }
+  return out;
 }
 
 function spoken(script: Script, indexes: number[]): string {
@@ -269,10 +301,20 @@ export function outline(script: Script, blocks: Block[]): Mark[] {
   if (first !== undefined) out.push(mark(first.id, "Opening", "section"));
   const parts = script.parts ?? [];
   if (parts.length > 1) {
+    // The opening runs to its case opening (the first cut-in that isn't the intro's): its clips are the intro's,
+    // whatever recording they come from, so a recording or case begins at its first clip after that (JJ, Nov 26: a
+    // "Recording 1" heading in the middle of the intro made it look two clips long).
+    // A house courtroom case (not a compilation, not a channel's) opens on one cut-in that is intro and case opening
+    // both (plan.ts `purposes`), so its opening ends there (Codex on #17).
+    const combined = script.kind === "courtroom" && script.compilation !== true && !(typeof script.channel === "string" && script.channel !== "");
+    const opening = combined
+      ? script.clips.findIndex(isCutIn)
+      : script.clips.findIndex((clip) => isCutIn(clip) && clip.narrationRole !== "intro" && clip.narrationRole !== "conclusion");
+    const body = opening < 0 ? script.clips : script.clips.slice(opening + 1);
     let cases = 0;
     for (const [index, part] of parts.entries()) {
       const end = part.startMs + part.durationMs;
-      const clip = script.clips.find((one) => !isCutIn(one) && one.startMs >= part.startMs && one.startMs < end);
+      const clip = body.find((one) => !isCutIn(one) && one.startMs >= part.startMs && one.startMs < end);
       if (clip === undefined) continue;
       let title: string;
       let kind: string;
@@ -419,4 +461,18 @@ function wordRanges(before: string, after: string): [number, number][] {
     if (!runs.some(([start, end]) => point >= start && point <= end)) runs.push([point, point]);
   }
   return runs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+/** A note for the video editor: one line or two, starting "edit:". */
+export function editNote(text: string): string {
+  // Each line is one the editor is shown (editLines keeps only "edit:" lines), so a second line is never dropped (CodeRabbit on #17).
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => (line.toLowerCase().startsWith("edit:") ? line.slice(5).trim() : line))
+    .filter((line) => line !== "");
+  if (lines.length === 0) throw new Error("Say what the editor should do in the note.");
+  if ([...lines.join(" ")].length > 600) throw new Error("Keep an edit note under 600 characters.");
+  return lines.map((line) => `edit: ${line}`).join("\n");
 }

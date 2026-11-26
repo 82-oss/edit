@@ -250,7 +250,7 @@ function relaxedFrom(clips: Clip[], compilation: boolean): number {
 }
 
 /** Where the pacing is relaxed, two clips of a block from one recording less than 10 s apart play as one range; never across a narrator. */
-export function joinLate(clips: Clip[], words: Word[], speakers: Record<string, string>, parts: Part[], compilation: boolean): Clip[] {
+export function joinLate(clips: Clip[], words: Word[], speakers: Record<string, string>, parts: Part[], compilation: boolean, corrections: Record<string, string> = {}): Clip[] {
   const from = relaxedFrom(clips, compilation);
   const narrated = (a: number, b: number) =>
     words.some((word) => word.startMs < b && word.endMs > a && word.speaker != null && (speakers[word.speaker] ?? "").toLowerCase().startsWith("narrator"));
@@ -268,6 +268,14 @@ export function joinLate(clips: Clip[], words: Word[], speakers: Record<string, 
       !narrated(last.endMs, clip.startMs)
     ) {
       last.endMs = clip.endMs;
+      // Its notes for the editor come along, on the same words: offsets into what the joined clip says (blocks.wordSpans).
+      if (clip.notes?.length) {
+        const first = words.findIndex((word) => word.startMs < clip.endMs && word.endMs > clip.startMs);
+        let shift = 0;
+        if (first > 0) for (const word of words.slice(0, first)) if (word.startMs < last.endMs && word.endMs > last.startMs) shift += (corrections[word.id] ?? word.text).length + 1;
+        const moved = clip.notes.map((note) => (note.anchor ? { ...note, anchor: { ...note.anchor, start: note.anchor.start + shift, end: note.anchor.end + shift } } : note));
+        last.notes = [...(last.notes ?? []), ...moved];
+      }
       continue;
     }
     joined.push({ ...clip });

@@ -110,6 +110,49 @@ test("blocks carry what the review page plays and measures", () => {
   expect(targetMs(script())?.[1]).toBe(40 * 60_000);
 });
 
+test("a joined case's recordings begin after the opening, never inside its intro", () => {
+  const base = script();
+  const joined: Script = {
+    ...base,
+    parts: [
+      { title: "Morgan", startMs: 0, durationMs: 5_000 },
+      { title: "Anissa", startMs: 5_000, durationMs: 5_000 },
+    ] as Script["parts"],
+    clips: [
+      { id: "a1", startMs: 6_000, endMs: 7_000 },
+      { id: "i1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "intro", narration: "Two girls." },
+      { id: "m1", startMs: 1_000, endMs: 2_000 },
+      { id: "b1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "bridge", narration: "The case." },
+      { id: "m2", startMs: 3_000, endMs: 4_000 },
+      { id: "b2", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "bridge", narration: "Then Anissa." },
+      { id: "a2", startMs: 8_000, endMs: 9_000 },
+    ],
+  };
+  const marks = outline(joined, blocksOf(joined)).map((mark) => [mark.blockId, mark.title]);
+  expect(marks).toEqual([["a1", "Opening"], ["m2", "Recording 1: Morgan"], ["a2", "Recording 2: Anissa"]]);
+});
+
+test("a house courtroom case's opening ends on its one intro and case-opening cut-in", () => {
+  const base = script();
+  const court: Script = {
+    ...base,
+    kind: "courtroom",
+    parts: [
+      { title: "Hearing", startMs: 0, durationMs: 5_000 },
+      { title: "Sentencing", startMs: 5_000, durationMs: 5_000 },
+    ] as Script["parts"],
+    clips: [
+      { id: "c1", startMs: 0, endMs: 1_000 },
+      { id: "i1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "intro", narration: "The case." },
+      { id: "m1", startMs: 2_000, endMs: 3_000 },
+      { id: "b1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "bridge", narration: "Then the sentencing." },
+      { id: "s1", startMs: 6_000, endMs: 7_000 },
+    ],
+  };
+  const marks = outline(court, blocksOf(court)).map((mark) => [mark.blockId, mark.title]);
+  expect(marks).toEqual([["c1", "Opening"], ["m1", "Recording 1: Hearing"], ["s1", "Recording 2: Sentencing"]]);
+});
+
 test("review text names places, not block ids", () => {
   const block: Block = { id: "pbd55a3f2", kind: "paragraph", text: "Adin unfollowed him, and the friend who had spent so much time" };
   const name = placeName(block);
