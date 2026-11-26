@@ -3215,9 +3215,15 @@ export function start(app: App): void {
   // drawn now (Nov 16, the M4: an effect brought down after its project was closed again never rendered on reopening).
   // What was looked for in V2's cloud while another computer edited it is asked again (PR #14's Codex review: code
   // settled there, never rendered, was otherwise not asked for until a restart).
+  // Its renders' code kept too once it has caught up with the cloud's (PR #14's Codex review: a project opened without
+  // its lock skipped that on start, and nothing kept it after).
   cloudProjects.hooks.held = (project) => {
     tookOver(project);
-    if (app.store.get(project)?.project.hq === true) renderSoon(app, project);
+    if (app.store.get(project)?.project.hq !== true) return;
+    renderSoon(app, project);
+    void bringDown(app, project)
+      .catch(() => [])
+      .then(() => keepRendered(app, project));
   };
   app.store.subscribe((event) => {
     if (event.type !== "project" || typeof event.id !== "string" || event.origin === "effects") return;
@@ -3246,7 +3252,10 @@ function keepRendered(app: App, project: string): void {
   // Only where it's edited: a computer watching another's edit kept its own older render over the code settled there
   // (PR #14's CodeRabbit review).
   if (!editingHere(app, project)) return;
+  // Just taken over: only the effects brought up to the cloud's version since (one that couldn't be asked may be older).
+  const catching = catchingUp.get(project);
   for (const effect of needed(app.store, project)) {
+    if (catching !== undefined && !catching.has(effect.name)) continue;
     if (effect.fresh && effect.current !== null) void keepVersion(app, project, effect.name, effect.current.key);
   }
 }
