@@ -43,3 +43,9 @@ test.if(process.platform === "linux" && devtools.headlessBinary() !== null)("the
   expect(typeof vulkan).toBe("boolean");
   console.log(`this computer's Chrome draws WebGL on Vulkan: ${vulkan}`);
 }, 30_000);
+
+// The question can answer yes: Chrome draws WebGL on the CPU (SwiftShader) wherever it runs. Matching the whole dumped
+// DOM found the page's own "GL:no" and answered no everywhere (PR #14's Codex review).
+test.if(process.platform === "linux" && devtools.headlessBinary() !== null)("a page that draws is read as drawn", async () => {
+  expect(await devtools.webglDraws([])).toBe(true);
+}, 30_000);

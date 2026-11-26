@@ -273,24 +273,33 @@ export const gpuHooks = {
   vulkan: null as boolean | null,
   /** Whether a WebGL page draws in headless Chrome on Vulkan; true when it can't be told (as before it was asked). */
   async webglOnVulkan(): Promise<boolean> {
-    const binary = headlessBinary();
-    if (binary === null) return true;
-    const profile = fs.mkdtempSync(join(os.tmpdir(), "edit-gl-check-"));
-    const page = "<script>const c=document.createElement('canvas');document.title=(c.getContext('webgl2')||c.getContext('webgl'))?'GL:yes':'GL:no'</script>";
-    const child = Bun.spawn(
-      [binary, ...(isShell(binary) ? [] : ["--headless=new"]), "--use-angle=vulkan", "--no-first-run", `--user-data-dir=${profile}`, "--dump-dom", `data:text/html,${encodeURIComponent(page)}`],
-      { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
-    );
-    const timer = setTimeout(() => child.kill(), 20_000);
-    try {
-      const out = await new Response(child.stdout).text();
-      return out.includes("GL:no") ? false : true;
-    } finally {
-      clearTimeout(timer);
-      void child.exited.then(() => fs.rmSync(profile, { recursive: true, force: true }));
-    }
+    return (await webglDraws(["--use-angle=vulkan"])) !== false;
   },
 };
+
+/**
+ * Whether a WebGL page draws in headless Chrome started with `switches`; null when it can't be told (no Chrome, no
+ * answer in 20 s). Read from the page's title alone: the dumped DOM also holds the page's script, which names both
+ * answers (PR #14's Codex review: matching the whole DOM answered "no" everywhere).
+ */
+export async function webglDraws(switches: readonly string[]): Promise<boolean | null> {
+  const binary = headlessBinary();
+  if (binary === null) return null;
+  const profile = fs.mkdtempSync(join(os.tmpdir(), "edit-gl-check-"));
+  const page = "<script>const c=document.createElement('canvas');document.title=(c.getContext('webgl2')||c.getContext('webgl'))?'GL:yes':'GL:no'</script>";
+  const child = Bun.spawn(
+    [binary, ...(isShell(binary) ? [] : ["--headless=new"]), ...switches, "--no-first-run", `--user-data-dir=${profile}`, "--dump-dom", `data:text/html,${encodeURIComponent(page)}`],
+    { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
+  );
+  const timer = setTimeout(() => child.kill(), 20_000);
+  try {
+    const title = /<title>GL:(yes|no)<\/title>/.exec(await new Response(child.stdout).text())?.[1];
+    return title === undefined ? null : title === "yes";
+  } finally {
+    clearTimeout(timer);
+    void child.exited.then(() => fs.rmSync(profile, { recursive: true, force: true }));
+  }
+}
 
 let gpuChecking: Promise<void> | null = null;
 
