@@ -110,8 +110,14 @@ const AROUND_S = 0.25;
 export const LONGEST_S = 30;
 
 const INSTALLED = join(os.homedir(), ".local", "share", "edit-finder");
-/** Files scanned in parallel when the finder runs on RunPod (local GPU stays 1 at a time). */
+/** Files scanned in parallel when the finder runs on RunPod. */
 const CLOUD_AT_ONCE = 6;
+/**
+ * Files scanned in parallel on this computer's own card: two, as the finder reads a file through FFmpeg and leaves the
+ * card mostly idle (Nov 26, mandalorian's 4060: 30% busy, 4.5 of 8 GB used, one file at a time, 12 to 45 min a file,
+ * about 21 files for four compilations); not more, as a card past its memory hung NVIDIA's driver there on Nov 22.
+ */
+const LOCAL_AT_ONCE = 2;
 let scriptsJsonCache: string | null = null;
 const scriptsJson = (): string => (scriptsJsonCache ??= JSON.stringify(SCRIPTS));
 
@@ -738,7 +744,7 @@ function drain(): void {
       void dead!.run().catch(() => {});
     }
   }
-  const limit = standIn === null && removerCloud.now() ? CLOUD_AT_ONCE : 1;
+  const limit = standIn !== null ? 1 : removerCloud.now() ? CLOUD_AT_ONCE : LOCAL_AT_ONCE;
   while (running < limit && queue.length > 0) {
     // Never give a drain slot to a slowed copy while its parent run is still queued or running (prevents single-slot deadlocks).
     const idx = queue.findIndex((item) => item.parentSource === null || !reading.has(item.parentSource));
