@@ -431,7 +431,7 @@ export function compile(script: Script, plan: Plan, peaks: ArrayLike<number> = [
 function cleanUp(script: Script, given: Clip[], format: Format, opening: Opening, peaks: ArrayLike<number>): Compiled {
   let [clips, fixed] = tidy.polish(given, script.words, script.corrections ?? {}, script.durationMs);
   const relaxed = format.kind === "courtroom";
-  if (relaxed) clips = tidy.joinLate(clips, script.words, script.speakers ?? {}, script.parts ?? [], format.compilation);
+  if (relaxed) clips = tidy.joinLate(clips, script.words, script.speakers ?? {}, script.parts ?? [], format.compilation, script.corrections ?? {});
   const [from, to] = introRange(format, opening, clips.filter(isCutIn).length);
   const footage: tidy.Footage = { words: script.words, peaks, parts: script.parts ?? [], durationMs: script.durationMs, compilation: format.compilation, relaxed };
   const run = (beat: number) => tidy.tighten(footage, clips, beat, (block) => block >= from && block < to);

@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 import type { Clip, Script, Word } from "@edit/types/writer";
 
 import { lineCount, pageCount, textWidth } from "../../src/writer/pages.ts";
-import { beatForFloor, boundaryIssues, joinSlivers, PAUSE_BEAT_MS, polish, tighten } from "../../src/writer/tidy.ts";
+import { noteAnchor } from "../../src/writer/blocks.ts";
+import { beatForFloor, boundaryIssues, joinLate, joinSlivers, PAUSE_BEAT_MS, polish, tighten } from "../../src/writer/tidy.ts";
 
 const clip = (id: string, startMs: number, endMs: number): Clip => ({ id, startMs, endMs });
 
@@ -78,4 +79,18 @@ test("a long script runs onto more pages", () => {
   const short = [0, 1].flatMap(block);
   expect(pageCount(script, short)).toBe(1);
   expect(pageCount(script, Array.from({ length: 40 }, (_, n) => block(n)).flat())).toBeGreaterThan(5);
+});
+
+test("clips a courtroom's relaxed half joins keep their notes, on the same words", () => {
+  const said = words([["Where", "s", 30_000, 30_500], ["were", "s", 30_600, 31_000], ["you?", "s", 31_100, 31_500], ["Um", "s", 32_500, 33_000], ["Home", "s", 34_000, 34_500], ["all", "s", 34_600, 35_000], ["night", "s", 35_100, 35_500]]);
+  const corrections = { w4: "Home," };
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 6, end: 9, quote: "all" } };
+  const clips: Clip[] = [clip("c0", 0, 20_000), { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Intro." }, clip("a", 30_000, 32_000), { ...clip("b", 34_000, 36_000), notes: [note] }];
+  const joined = joinLate(clips, said, { s: "Officer" }, [], false, corrections);
+  expect(joined.map((one) => one.id)).toEqual(["c0", "i", "a"]);
+  const a = joined[2]!;
+  expect(a.notes).toEqual([{ ...note, anchor: { start: 25, end: 28, quote: "all" } }]);
+  const script = { words: said, corrections } as unknown as Script;
+  expect(noteAnchor(script, a, "all", 25)).toEqual({ start: 25, end: 28, quote: "all" });
+  expect(clips[3]!.notes![0]!.anchor!.start).toBe(6);
 });
