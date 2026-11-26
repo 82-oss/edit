@@ -153,6 +153,9 @@ const markKey = (one: watermarkRemoval.Piece): string => `mark ${one.media}@${on
 const cleanKey = (one: textInpaint.InpaintPiece): string => `clean ${one.key}`;
 const sent = (one: { state: string }): boolean => one.state === "queued" || one.state === "running";
 
+/** Told each time an export's wait has looked at what's out (tests: what it has seen refused is kept by then). */
+export const waitHooks = { scanned: (_id: string): void => {} };
+
 /** Each project's pieces its last export wait went without while a retry had them out, with RunPod's words (`waitForPieces`). */
 const wentWithout = new Map<string, Map<string, string>>();
 
@@ -196,7 +199,10 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
     for (const one of textInpaint.piecesOf(id)) if (one.refused !== undefined) refused.set(cleanKey(one), one.refused);
     return [...watermarkRemoval.piecesOf(id).filter(sent).map(markKey), ...textInpaint.piecesOf(id).filter(sent).map(cleanKey)].filter((key) => refused.has(key));
   };
-  while (progressOf(id).out - retried().length > 0) {
+  for (;;) {
+    const out = progressOf(id).out - retried().length;
+    waitHooks.scanned(id);
+    if (out <= 0) break;
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");

@@ -627,10 +627,13 @@ test("an export waiting on other removal goes without a cell RunPod refused, eve
     const id = await project(app, [marked, plain], 20);
     await wm.ensure(app, id);
     while (wm.piecesOf(id)[0]?.refused === undefined) await Bun.sleep(10);
-    // The export waits on the plain tape's look.
+    // The export waits on the plain tape's look, having seen the refused cell.
+    let scanned = () => {};
+    const firstScan = new Promise<void>((resolve) => (scanned = resolve));
+    removalSchedule.waitHooks.scanned = (scannedId) => scannedId === id && scanned();
     let done = false;
     const exporting = removalSchedule.waitForPieces(app, id, 60_000).then(() => (done = true));
-    await Bun.sleep(50);
+    await firstScan;
     expect(done).toBe(false);
     // Half an hour on, the refused cell's hold ends and it's sent again (queued beside the look, its retry held),
     // while the export still waits.
@@ -647,6 +650,8 @@ test("an export waiting on other removal goes without a cell RunPod refused, eve
     // And says so, though its retry is out: the export goes without it.
     expect(removalSchedule.exportNote(app.store.get(id)!.project)).toStartWith("Going without 1 piece of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes).");
   } finally {
+    removalSchedule.waitHooks.scanned = () => {};
+    lookOpen();
     retryOpen();
     await wm.settled();
     clock.mockRestore();
