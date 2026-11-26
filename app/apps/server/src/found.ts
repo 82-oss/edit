@@ -698,18 +698,10 @@ const inFlight = new Set<Promise<void>>();
 const queue: { parentSource: string | null; cancelled: () => boolean; run: () => Promise<void> }[] = [];
 let running = 0;
 
-/** Serializes local GPU `find.py` invocations to 1 at a time even when RunPod is on and 6 cloud slots are open. */
-let localChain: Promise<void> = Promise.resolve();
-async function withLocalGpu<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = localChain;
-  let release!: () => void;
-  localChain = new Promise<void>((resolve) => (release = resolve));
-  await prev;
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
+/** `find.py` on this computer's card, LOCAL_AT_ONCE at a time, even when RunPod is on and 6 cloud slots are open. */
+const localGpu = new Semaphore(LOCAL_AT_ONCE);
+function withLocalGpu<T>(fn: () => Promise<T>): Promise<T> {
+  return localGpu.with(fn);
 }
 
 /** Called with a file's source when its boxes are written (text_blur.ts lets go of the tracks it made from the old ones). */
@@ -1105,12 +1097,14 @@ async function find(app: App, want: Want, stopped: () => boolean): Promise<void>
         found = finished.found;
         parentState = bundle.parentState === undefined ? null : { ...bundle.parentState, verdicts: finished.parentVerdicts };
       } else if (localAvailable()) {
-        // Always serialize local GPU runs to 1 at a time even when RunPod is enabled with 6 cloud slots.
+        // The file comes down before it takes the card (a 700 MB original held it for minutes, the card idle), then
+        // LOCAL_AT_ONCE runs on the card at a time even when RunPod is enabled with 6 cloud slots.
+        if (stopped()) throw new Error("stopped");
+        const { file, fetched } = await localFile(app, want.media);
         const localResult = await withLocalGpu(async () => {
           if (stopped()) throw new Error("stopped");
           if (want.parent !== null) await syncLocalParentScanFiles(app, want.parent.source);
-          const { file, fetched } = await localFile(app, want.media);
-          try {
+          {
             fs.mkdirSync(root, { recursive: true });
             const spans = join(root, `${mid}.spans.json`);
             fs.writeFileSync(spans, JSON.stringify(spansToScan));
@@ -1129,9 +1123,9 @@ async function find(app: App, want: Want, stopped: () => boolean): Promise<void>
             const pstate = parent === null ? readLocalScanParentState(app, want.source) : null;
             fs.rmSync(spans, { force: true });
             return { found: parsed, parentState: pstate };
-          } finally {
-            if (fetched) fs.rmSync(file, { force: true });
           }
+        }).finally(() => {
+          if (fetched) fs.rmSync(file, { force: true });
         });
         found = localResult.found;
         parentState = localResult.parentState;
