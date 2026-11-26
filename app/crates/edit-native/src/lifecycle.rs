@@ -99,6 +99,8 @@ pub fn init(options: InitOptions) -> napi::Result<()> {
     } = options;
     crate::hand_back_freed_memory();
     crate::give_back_as_allocated();
+    // Before the engine has threads or starts a child: the environment changed safely.
+    edit_engine::render::choose_wsl_driver();
     edit_engine::log::use_sink(Box::new(ToJs(log)));
     edit_engine::util::use_tools(ffmpeg.into(), ffprobe.into());
     edit_engine::util::use_cache_dir(cache_dir.into());
