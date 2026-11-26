@@ -38,14 +38,13 @@ import { isFile, join, parent } from "./paths.ts";
 import { Semaphore } from "./semaphore.ts";
 import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
-import { RELEASE } from "./version.ts";
 
 /**
  * The working copy, in one place (a Mac measuring playback off local files may change these). Measured Nov 18 on an M1
  * (the plan's measure-originals.md): an original whose keyframes are at most about 2 s apart jumps as fast as a proxy
  * (33–54 ms) and plays as it is, up to 1080p at 30 fps; anything else (every YouTube download: keyframes 4–7 s apart,
  * up to 13.5 s) gets one proxy: 720p (smaller sources as they are), a keyframe every second, no B-frames, at most 30 fps,
- * about 1.8 Mbit/s, the sound as today's proxies keep it (AAC 160k stereo). It's made `segment_s` of the source at a
+ * about 1.8 Mbit/s (never more than the original spends: `workingRate`), the sound AAC 128k stereo. It's made `segment_s` of the source at a
  * time, each its own turn on the encoder, so an export or a play takes the encoder at the next stretch and a restart
  * carries on from the stretches made.
  */
@@ -54,7 +53,9 @@ export const WORKING = {
   keyframe_s: 1,
   most_fps: 30,
   bitrate: 1_800_000,
-  audio: "160k",
+  /** The least a copy's picture is given, whatever its source spends (a source this thin is rare). */
+  least_bitrate: 400_000,
+  audio: "128k",
   /** An original is its own working copy when its keyframes are this close at most, and its picture this big at most. */
   own_gap_s: 2,
   own_height: 1080,
@@ -64,6 +65,11 @@ export const WORKING = {
   segment_s: 60,
 };
 
+/** About what a working copy of `seconds` of footage takes on the disk: its picture and sound at their rates, a quarter over. */
+export const workingRoom = (seconds: number): number => Math.ceil((Math.max(seconds, 0) * (WORKING.bitrate + AUDIO_BITS) * 1.25) / 8);
+/** The working copy's sound, in bits a second (`WORKING.audio`). */
+const AUDIO_BITS = 128_000;
+
 /** Every working copy's key starts so: new, since blocks and whole copies are kept per key and the registry's proxies are shared by every project. */
 export const WORKING_KEYS = "edit/proxies/v720/";
 
@@ -71,10 +77,9 @@ export const WORKING_KEYS = "edit/proxies/v720/";
  * Who takes the local path for a project's first import (Nov 22: new channel projects, Edit V2). Widening it later is
  * this one line; a project that already has its footage keeps the path it took.
  */
-const takesLocalMedia = (project: Project): boolean => !RELEASE && project.hq === true && typeof project.channel === "string" && project.channel !== "";
-// Not in a released build yet (Nov 22): none of this has run on a Mac (VideoToolbox making the copy, the window
-// switching from the original to it), and nightly-98 went out the same evening. A build from source takes it; take
-// `!RELEASE` out once a real import on a Mac has been seen. A project that already chose it keeps it (`chosen`).
+const takesLocalMedia = (project: Project): boolean => project.hq === true && typeof project.channel === "string" && project.channel !== "";
+// In released builds since Nov 25: run on the M1 Air (PR #12's trial: VideoToolbox's copy, the window's switch to it,
+// a Drive file on today's path, caption removal waiting for the upload, an 8/2 Mbit/s line).
 
 /**
  * Whether `project` keeps its footage local while in work (`Project.local_media`), or its footage says so (a build from
@@ -342,14 +347,14 @@ export function stretchFrames(probe: Pick<Probe, "duration" | "fps">, n: number)
 }
 
 /** FFmpeg's command for stretch `n` (`stretchFrames`) into `out`, picture only. */
-export function stretchCommand(input: string, probe: Probe, n: number, out: string): string[] {
+export function stretchCommand(input: string, probe: Probe, n: number, out: string, bitrate: number = WORKING.bitrate): string[] {
   const fps = workingFps(probe.fps);
   const [width, height] = workingSize(probe.width, probe.height);
   const [first, end] = stretchFrames(probe, n);
   const from = first / fps;
   const frames = Math.max(1, end - first);
   const gop = String(Math.max(1, Math.round(fps * WORKING.keyframe_s)));
-  const kbps = Math.round(WORKING.bitrate / 1000);
+  const kbps = Math.round(bitrate / 1000);
   // On a Mac, VideoToolbox (its speed first, as the pieces' encode: proxy_pieces.ts); elsewhere NVENC, else libx264.
   const mac = tools.videoHardware() === "videotoolbox";
   const codec = mac ? ["-c:v", "h264_videotoolbox", "-prio_speed", "1"] : tools.h264();
@@ -365,6 +370,19 @@ export function stretchCommand(input: string, probe: Probe, n: number, out: stri
     "-g", gop, "-bf", "0", "-force_key_frames", `expr:gte(t,n_forced*${WORKING.keyframe_s})`,
     "-f", "mp4", out,
   ];
+}
+
+/**
+ * The working copy's picture rate for an original of `bytes` over `seconds`: `WORKING.bitrate` at most, and no
+ * more than the original's own picture spends (but for a source thinner than `WORKING.least_bitrate`, rare, whose copy
+ * is given that) (Nov 25, the M1 Air's trial: a 90 MB YouTube original made a 168 MB
+ * copy, its picture at 1.8 Mbit/s over a source of under 1, and sent up at 2 Mbit/s it took twice the original's
+ * 6 minutes). The original's sound is taken off its rate at the copy's own (`WORKING.audio`); `WORKING.least_bitrate`
+ * at least, so a copy of a source with a broken length still reads.
+ */
+export function workingRate(bytes: number, seconds: number): number {
+  const source = seconds > 0 && bytes > 0 ? (bytes * 8) / seconds - AUDIO_BITS : WORKING.bitrate;
+  return Math.round(Math.max(WORKING.least_bitrate, Math.min(WORKING.bitrate, source)));
 }
 
 /** The stretches the source is made in. */
@@ -393,6 +411,8 @@ async function makeNow(home: string, key: string, cache: string, one: Making): P
   const total = stretchesOf(one.probe.duration);
   const length = minutes(one.probe.duration);
   const stretch = (n: number) => join(dir, `${n}.mp4`);
+  // Never more than the original spends (`workingRate`): one stat, not the media-sized read.
+  const rate = workingRate((await fs.promises.stat(one.input)).size, one.probe.duration);
   for (let n = 0; n < total; n++) {
     if (isFile(stretch(n))) continue;
     jobs.step(home, key, `Making it quick to scrub, ${minutes(n * WORKING.segment_s)} of ${length} min`);
@@ -402,7 +422,7 @@ async function makeNow(home: string, key: string, cache: string, one: Making): P
     const hold = await encoder.turn("an import's working copy");
     const temp = join(dir, `${n}.part.mp4`);
     try {
-      await hooks.run(stretchCommand(one.input, one.probe, n, temp));
+      await hooks.run(stretchCommand(one.input, one.probe, n, temp, rate));
       fs.renameSync(temp, stretch(n));
     } finally {
       hold.release();

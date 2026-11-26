@@ -181,11 +181,8 @@ export function beneathOf(project: { media: Media[] }, media: string, from: numb
   return { strips, under };
 }
 
-/** A file's key on R2 (its original), if it has one Edit may use. */
-const cloudKeyOf = (media: Pick<Media, "cloud">): string | undefined => {
-  const key = media.cloud?.original;
-  return key !== undefined && key !== "" && cloud.validKey(key) ? key : undefined;
-};
+/** A file's key on R2 (its original), if it has one RunPod may read (none while it's still going up from here). */
+const cloudKeyOf = removerCloud.keyOf;
 
 /** Whether a watermark piece of the file over [from, to) is still being made (watermark_removal.ts; removal_schedule.ts sets it): a stretch waits for it. */
 export const watermarks = { pending: (_id: string, _media: string, _from: number, _to: number): boolean => false };
@@ -680,6 +677,13 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       piece.state = "done";
       if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange, stands);
       if (!stands()) return;
+      continue;
+    }
+    // Not on the shelf, and its original still going up from here while RunPod cleans: cleaned once it's up (removal_schedule.ts wakes it),
+    // where it was sent for a file R2 hadn't got and failed.
+    const original = plan.media.cloud?.original;
+    if (cloudNow() && original !== undefined && cloud.waitFor(original, id, plan.media.name)) {
+      piece.state = "waiting";
       continue;
     }
     // Only expand per-frame masks when we actually need to queue work.

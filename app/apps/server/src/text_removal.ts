@@ -770,8 +770,10 @@ export function takesItsPlace(plans: Pick<blur.BlurPlan, "media" | "spans">[], s
   return sections.minus([[from + 0.2, to - 0.2]], asked).length === 0;
 }
 
-// A file read by the finder: the project's plan again, with its boxes (one look at a time a project).
+// A file read by the finder: the project's plan again, with its boxes (one look at a time a project). Out until it's
+// in (`planningAfterRead`): an export looking meanwhile waits for what the read found.
 const planning = new Map<string, Promise<void>>();
+export const planningAfterRead = (id: string): boolean => planning.has(id);
 found.whenFound.push((app, id) => {
   if (planning.has(id)) return;
   const run = new Promise<void>((resolve) => setTimeout(resolve, 500))

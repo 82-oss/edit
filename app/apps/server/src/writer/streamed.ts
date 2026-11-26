@@ -423,6 +423,8 @@ export const homeNow = (): string | null => home;
 
 /** The uploads going on, by script folder and source. */
 const going = new Map<string, Promise<void>>();
+/** How many scripts here send each original up now, by key. */
+const sendersOf = new Map<string, number>();
 
 /**
  * `one`'s original to the cloud behind the import: the relay's copy for a
@@ -457,6 +459,20 @@ function goUp(dir: string, one: Held, local: Promise<string>): void {
     file = await local;
     return upFromHere(one, file);
   })();
+  // Not in R2 until it lands (relay's copy or this Mac's upload): RunPod isn't sent its key meanwhile (cloud.ts `notUp`).
+  cloud.goingUp(one.key, () => (watch.total !== null && watch.total > 0 ? Math.min(watch.sent() / watch.total, 1) : null));
+  // Failed, it's let go only when it was the last script here sending the same original (another's landing ends it).
+  sendersOf.set(one.key, (sendersOf.get(one.key) ?? 0) + 1);
+  const sent = (landed: boolean) => {
+    const left = (sendersOf.get(one.key) ?? 1) - 1;
+    if (left > 0) sendersOf.set(one.key, left);
+    else sendersOf.delete(one.key);
+    if (landed || left <= 0) cloud.upEnded(one.key, landed);
+  };
+  up.then(
+    (landed) => sent(landed.key === one.key),
+    () => sent(false),
+  );
   cloudMedia.goingUpBehind(one.source, up, watch);
   const began = Date.now();
   const run = up

@@ -28,13 +28,14 @@ import * as burned from "./burned_subtitles.ts";
 import { readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
+import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import * as found from "./found.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { framingAt } from "./frames_fill.ts";
 import type { Media, Project, VideoClip } from "./model.ts";
-import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
+import { clipEnd, fps as fpsOf, mediaOf, trackOf } from "./project.ts";
 import { isOverlay } from "./clean_strips.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
@@ -85,14 +86,33 @@ export async function resume(app: App): Promise<number> {
  * started on what the timeline newly shows. Nothing for a channel taught
  * nothing (theirs left, ours off them).
  */
-export async function ensure(app: App, id: string): Promise<void> {
+export function ensure(app: App, id: string): Promise<void> {
+  // One plan of a project at a time: a plan's waits on uploads are stamped with it (cloud.ts `planBegins`), and an
+  // older plan still going when a newer one began registered its waits as the newer one's, kept for good.
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id));
+  const settled = run.catch(() => {});
+  ensuring.set(id, settled);
+  void settled.finally(() => {
+    if (ensuring.get(id) === settled) ensuring.delete(id);
+  });
+  return run;
+}
+
+/** Each project's plan under way (`ensure`), the next one after it. */
+const ensuring = new Map<string, Promise<void>>();
+
+async function ensureNow(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null) return;
+  if (live === null) return cloud.stopWaiting(id);
+  // What this plan asks to wait for (uploads still going up from here) is all the project waits for once it's in.
+  const plan = cloud.planBegins(id);
   await removal.refresh();
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
   if (removal.kinds(lesson).blur.length > 0) await textRemoval.ensure(app, id);
+  cloud.planDone(id, plan);
+  keepWaits(app, id);
   noteRun(app, id);
 }
 
@@ -132,7 +152,8 @@ export function progressOf(id: string): { done: number; out: number } {
   const blurs = textBlur.piecesOf(id);
   const cleans = textInpaint.piecesOf(id);
   // A file the finder is still reading counts as out too: its stretches aren't known yet (found.ts).
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id);
+  // A file still going up from here that the finder or the model waits for counts as out too (cloud.ts `waitFor`).
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id) + found.outOf(id) + cloud.waitedFor(id).length + (replanning.get(id) ?? 0) + (textRemoval.planningAfterRead(id) ? 1 : 0);
   const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
@@ -140,6 +161,12 @@ export function progressOf(id: string): { done: number; out: number } {
 /** The export's step while pieces are out: "3 of 19 pieces" (null when none is). */
 export function exportLine(id: string): string | null {
   const { done, out } = progressOf(id);
+  const up = cloud.waitsOf(id);
+  if (up.length > 0) {
+    // How far its upload is, so the line (and the export's row) moves while it goes.
+    const share = cloud.shareUp(up[0]!.key) ?? cloudMedia.upShare(up[0]!.key);
+    return `Removing their text · waiting for ${up[0]!.name}${up.length > 1 ? ` and ${up.length - 1} more` : ""} to finish uploading${share === null ? "" : ` (${Math.floor(share * 100)}%)`}`;
+  }
   return out === 0 ? null : `Removing their text · ${done} of ${done + out} pieces`;
 }
 
@@ -151,11 +178,14 @@ export function exportLine(id: string): string | null {
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
   const started = Date.now();
-  while (progressOf(id).out > 0) {
+  while ((keepWaits(app, id), progressOf(id).out > 0)) {
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
-    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
+    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) {
+      const up = cloud.waitedFor(id);
+      throw new Error(up.length > 0 ? `${up[0]} is still uploading from this computer, and their text in it is taken out once it's up; export again then.` : "Their text is still being taken out of the footage; export again once the chat says it's done.");
+    }
     await Bun.sleep(1000);
   }
 }
@@ -561,6 +591,8 @@ export function stop(app: App, id: string, kinds: readonly removal.Kind[] = remo
     textBlur.stop(id);
     textInpaint.stop(id);
     found.stop(id);
+    // Nothing of its text waits for an upload now (planned again, a part left asks again).
+    cloud.stopWaiting(id);
   }
   if (all) active.delete(id);
   diag.info("removal", `${id}: ${all ? "stopped" : `${kinds.join(" and ")} stopped`} by the person`);
@@ -675,6 +707,25 @@ let wakeGeneration = 0;
 export function start(app: App): void {
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
+  // An original that went up from here: the projects that waited for it (cloud.ts `waitFor`: RunPod's finder read and
+  // clean) brought up to date now, with no edit needed to wake them.
+  const before = upListener === null ? -1 : cloud.whenUp.indexOf(upListener);
+  if (before >= 0) cloud.whenUp.splice(before, 1);
+  upListener = (key, waiting) => {
+    for (const id of waiting) {
+      diag.info("removal", `${id}: ${key} is up, so what waited for it goes`);
+      // Out until what waited is queued again: an export looking meanwhile still waits (`progressOf`).
+      replanning.set(id, (replanning.get(id) ?? 0) + 1);
+      ensure(app, id)
+        .catch((error: unknown) => diag.warn("removal", `${id}: after ${key} went up: ${diag.messageOf(error)}`))
+        .finally(() => {
+          const left = (replanning.get(id) ?? 1) - 1;
+          if (left > 0) replanning.set(id, left);
+          else replanning.delete(id);
+        });
+    }
+  };
+  cloud.whenUp.push(upListener);
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
   app.store.subscribe((event) => {
@@ -690,11 +741,27 @@ export function start(app: App): void {
   });
 }
 
+let upListener: ((key: string, waiting: string[]) => void) | null = null;
+
+/** `id` waits only for uploads of footage its timeline still shows (a clip taken off lets an export go without it). */
+function keepWaits(app: App, id: string): void {
+  const project = app.store.get(id)?.project;
+  if (project === undefined) return cloud.stopWaiting(id);
+  // A slowed copy's own file reads as its parent, so the parent's upload is waited for too (text_removal `slowedFrom`).
+  const media = project.clips.flatMap((clip) => ("media" in clip && typeof clip.media === "string" ? [mediaOf(project, clip.media)] : [])).filter((one) => one !== undefined);
+  const shown = new Set([...media, ...media.map((one) => textRemoval.slowedFrom(project, one))].map((one) => one?.cloud?.original));
+  cloud.keepWaiting(id, (key) => shown.has(key));
+}
+/** Projects being planned again after an upload they waited for landed, by how many such plans are under way. */
+const replanning = new Map<string, number>();
+
 /** For tests. */
 export function reset(): void {
   looked.clear();
   active.clear();
   wakes.clear();
+  replanning.clear();
+  ensuring.clear();
   wakeGeneration += 1;
   if (watcher !== null) clearInterval(watcher);
   watcher = null;

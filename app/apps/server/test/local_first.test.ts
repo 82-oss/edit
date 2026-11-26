@@ -22,7 +22,8 @@ import { useNative, wrap } from "../src/native/index.ts";
 import { createStub } from "../src/native/stub.ts";
 import * as relay from "../src/relay.ts";
 import * as seams from "../src/seams.ts";
-import { Jobs, start } from "../src/script.ts";
+import * as storage from "../src/storage.ts";
+import { copiesHere, Jobs, start } from "../src/script.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome, scratch, type Fixture } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
@@ -122,6 +123,9 @@ function filesUnder(dir: string): string[] {
 
 /** The footage in the cloud stand-in (a V2 project's chat goes up too). */
 const footageUp = () => [...mock.cloud.objects.keys()].filter((key) => key.startsWith("edit/originals/") || key.startsWith("edit/proxies/"));
+
+/** The video id of a `youtube:<id>` file. */
+const youtube = (file: string): string => file.slice("youtube:".length);
 
 const gapOf = async (path: string, duration: number) => {
   keyframes.forget();
@@ -531,13 +535,62 @@ test("every reader reads a plain file here: the agent's looks, the page's player
   }
 }, 60_000);
 
-test("a Drive file on a new channel project comes to this computer whole, straight from Drive, and is its own working copy when its keyframes are close", async () => {
+// Nov 25, the reviews of turning local-first on: the local path brought a Drive file down whole before the answer and
+// sent it all back up (a 6 GB file on JJ's line: about 100 min, then about 6.7 h), where the relay copies it without the
+// Mac and the edit's stretches are cut by range. Only footage whose whole original comes here anyway takes it.
+test("a Drive file on a new channel project keeps today's path: the relay's copy, cut by range, nothing brought here whole", async () => {
   const scripts = new Jobs();
   const fixture = home("local-first-drive", { services: { scripts } });
   const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
   const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const asked: string[] = [];
+  const original = spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (file: string) => {
+    asked.push(file);
+    return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/Bodycam 1.mp4`, name: "Bodycam 1.mp4", size: 100 };
+  });
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = `edit/proxies/drive/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
   try {
-    mock.driveFile("1LocalDriveFile01", new Uint8Array(fs.readFileSync(close)), "Bodycam 1.mp4");
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1LocalDriveFile01", url: "https://drive.google.com/file/d/1LocalDriveFile01/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    const project = fixture.store.get(id)!.project;
+    expect(scripts.get(id)!.state).toBe("done");
+    expect(project.local_media).toBe(true);
+    expect(asked).toEqual(["1LocalDriveFile01"]);
+    const media = project.media[0]!;
+    expect(media.cloud!.proxy).toBe("edit/proxies/drive/1LocalDriveFile01.mp4");
+    expect(fs.existsSync(cloudMedia.localPath(fixture.store.cacheDir(), media.cloud!.original))).toBe(false);
+  } finally {
+    original.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a Drive file whose whole copy Script mode keeps here takes the local path from that copy, with nothing downloaded", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive-held", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const asked = spyOn(seams.cloudMedia, "driveOriginal");
+  const find = copiesHere.find;
+  const held = join(fixture.dir, "held", "Bodycam 1.mp4");
+  fs.mkdirSync(join(held, ".."), { recursive: true });
+  fs.copyFileSync(close, held);
+  let released = 0;
+  let leased = 0;
+  copiesHere.find = (source) =>
+    source === "drive:1LocalDriveFile01" ? (leased++, { copy: { path: held, key: "edit/originals/drive/1LocalDriveFile01/Bodycam 1.mp4", name: "Bodycam 1.mp4", size: fs.statSync(held).size, release: () => void released++ } }) : null;
+  try {
     const id = channelProject(fixture);
     await fixture.store.update(id, "test", (project) => {
       project.script = { blocks: [{ kind: "footage", file: "1LocalDriveFile01", url: "https://drive.google.com/file/d/1LocalDriveFile01/view", start: 2, end: 4, label: "00:02–00:04" }] };
@@ -547,21 +600,336 @@ test("a Drive file on a new channel project comes to this computer whole, straig
     expect(scripts.get(id)!.state).toBe("done");
     const media = project.media[0]!;
     expect(media.cloud!.original).toBe("edit/originals/drive/1LocalDriveFile01/Bodycam 1.mp4");
-    // Its own working copy: what plays is the original, at its key's place.
+    // Its own working copy (close keyframes): the original itself plays, linked in at its key's place.
     expect(media.cloud!.proxy).toBe(media.cloud!.original);
-    const cache = fixture.store.cacheDir();
-    const original = cloudMedia.localPath(cache, media.cloud!.original);
-    expect(fs.readFileSync(original)).toEqual(fs.readFileSync(close));
-    const sources = (await (await nativeSources(fixture.app, project)).json()) as { sources: Record<string, string> };
-    expect(sources.sources[media.id]).toBe(original);
-    // Up behind, never copied inside the cloud first.
-    await until(() => footageUp().length === 1 && jobs.list(fixture.home, "upload").length === 0);
-    expect(footageUp()).toEqual([media.cloud!.original]);
-    expect(mock.calls(/\/v1\/cloud\/jobs\/drive/).length).toBe(0);
+    expect(fs.readFileSync(cloudMedia.localPath(fixture.store.cacheDir(), media.cloud!.original))).toEqual(fs.readFileSync(close));
+    expect(asked).not.toHaveBeenCalled();
+    // Held once, let go once: the cleaner never sees it as in use for good (PR #12's review).
+    expect([leased, released]).toEqual([1, 1]);
   } finally {
+    copiesHere.find = find;
+    asked.mockRestore();
     enabled.mockRestore();
     researched.mockRestore();
     localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a YouTube download with no room here to keep it whole beside its working copy goes on today's path, downloaded once", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-youtube-short", { services: { scripts } });
+  const previous = process.env.EDIT_YTDLP;
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const short = spyOn(storage, "roomFor").mockReturnValue(false);
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = `edit/proxies/youtube/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  try {
+    process.env.EDIT_YTDLP = fakeYtDlp(fixture.dir, farApart);
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "youtube:shortroom01", url: "https://youtu.be/shortroom01", start: 1, end: 3, label: "00:01–00:03" }] };
+    });
+    await start(fixture.app, id, false);
+    const project = fixture.store.get(id)!.project;
+    expect(scripts.get(id)!.state).toBe("done");
+    expect(project.media.length).toBeGreaterThan(0);
+    for (const media of project.media) expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    // Today's path: the original went up before the answer and its copy here went.
+    expect(mock.cloud.objects.has("edit/originals/youtube/shortroom01/far.mp4")).toBe(true);
+    expect(fs.existsSync(cloudMedia.localPath(fixture.store.cacheDir(), "edit/originals/youtube/shortroom01/far.mp4"))).toBe(false);
+    expect(fs.readFileSync(join(fixture.dir, "calls"), "utf8").trim().split("\n")).toHaveLength(1);
+  } finally {
+    short.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    if (previous === undefined) delete process.env.EDIT_YTDLP;
+    else process.env.EDIT_YTDLP = previous;
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a YouTube video Script mode has here, or one already on its way up from somewhere, keeps today's path: nothing downloaded", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-youtube-elsewhere", { services: { scripts } });
+  const previous = process.env.EDIT_YTDLP;
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const asked: string[] = [];
+  const original = spyOn(seams.cloudMedia, "youtubeOriginal").mockImplementation(async (_home, file) => {
+    asked.push(file);
+    return [{ file, source: file, key: `edit/originals/youtube/${youtube(file)}/clip.mp4`, name: "clip.mp4", size: 100 }, null];
+  });
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = `edit/proxies/youtube/${youtube(one.file)}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  const find = copiesHere.find;
+  let released = 0;
+  copiesHere.find = (source) => (source === "youtube:heldScript1" ? { copy: { path: farApart, key: "edit/originals/youtube/heldScript1/far.mp4", name: "far.mp4", size: 1, release: () => void released++ } } : null);
+  try {
+    process.env.EDIT_YTDLP = fakeYtDlp(fixture.dir, farApart);
+    // Another computer's import has it on its way up: in the registry, not ready.
+    mock.cloud.convex.media.set("youtube:goingUpElse", { source: "youtube:goingUpElse", name: "clip.mp4", originalKey: "edit/originals/youtube/goingUpElse/clip.mp4", originalReady: false, size: 100 } as never);
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = {
+        blocks: [
+          { kind: "footage", file: "youtube:heldScript1", url: "https://youtu.be/heldScript1", start: 1, end: 3, label: "00:01–00:03" },
+          { kind: "footage", file: "youtube:goingUpElse", url: "https://youtu.be/goingUpElse", start: 1, end: 3, label: "00:01–00:03" },
+        ],
+      };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    // Script mode's copy is cut from as it is; the one on its way up is waited for or taken from the cloud.
+    expect(asked).toEqual(["youtube:goingUpElse"]);
+    for (const media of fixture.store.get(id)!.project.media) expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    expect(fs.existsSync(join(fixture.dir, "calls"))).toBe(false);
+    // Each hold on Script mode's copy let go (the local path's look, and today's path's cut from it).
+    expect(released).toBe(2);
+  } finally {
+    copiesHere.find = find;
+    original.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    if (previous === undefined) delete process.env.EDIT_YTDLP;
+    else process.env.EDIT_YTDLP = previous;
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a no-room fallback leaves nothing of the download behind, even when today's path finds the original up meanwhile", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-youtube-short-race", { services: { scripts } });
+  const previous = process.env.EDIT_YTDLP;
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const short = spyOn(storage, "roomFor").mockReturnValue(false);
+  // Another computer's upload landed between the looks: today's path takes the cloud's and leaves the download alone.
+  const original = spyOn(seams.cloudMedia, "youtubeOriginal").mockImplementation(async (_home, file) => [{ file, source: file, key: "edit/originals/youtube/shortRace01/far.mp4", name: "far.mp4", size: 100 }, null]);
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = "edit/proxies/youtube/shortRace01.mp4";
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  try {
+    process.env.EDIT_YTDLP = fakeYtDlp(fixture.dir, farApart);
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "youtube:shortRace01", url: "https://youtu.be/shortRace01", start: 1, end: 3, label: "00:01–00:03" }] };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    expect(fs.existsSync(join(seams.cloudMedia.scratchDir(fixture.store.cacheDir()), "youtube-shortRace01"))).toBe(false);
+  } finally {
+    short.mockRestore();
+    original.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    if (previous === undefined) delete process.env.EDIT_YTDLP;
+    else process.env.EDIT_YTDLP = previous;
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("an original counts as up once it lands, though its proxy's upload fails after it; and what the job table has going up counts as not up at a start", async () => {
+  const fixture = home("local-first-up-boundary");
+  const realUpload = cloud.uploadFile;
+  const uploads = spyOn(cloud, "uploadFile").mockImplementation(async (...args: Parameters<typeof cloud.uploadFile>) => {
+    if (args[1].startsWith("edit/proxies/")) throw new Error("the line dropped");
+    return realUpload(...args);
+  });
+  const key = "edit/originals/sha256/boundary/clip.mp4";
+  try {
+    const file = join(fixture.dir, "clip.mp4");
+    fs.copyFileSync(close, file);
+    const proxy = join(fixture.dir, "proxy.mp4");
+    fs.copyFileSync(close, proxy);
+    cloudMedia.uploadLater(fixture.home, { file, source: "sha256:boundary", size: fs.statSync(file).size, duration: SECONDS, originalKey: key, uploadOriginal: true, proxy: "edit/proxies/sha256/boundary.mp4", local: proxy, name: "clip.mp4" });
+    expect(cloud.notUp(key)).toBe(true);
+    expect(await cloudMedia.uploaded(file)).toBe(false);
+    expect(cloud.notUp(key)).toBe(false);
+    // Its row, put off for the proxy, says the original is up: a start doesn't count it as not up again.
+    cloudMedia.noteOriginalsGoingUp(fixture.home);
+    expect(cloud.notUp(key)).toBe(false);
+    // Its row put off for later: a start notes its original as not up until it's sent again.
+    const later = "edit/originals/sha256/putoff/clip.mp4";
+    const row = jobs.begin(fixture.home, "upload", "-", { file, source: "sha256:putoff", size: 1, duration: 1, originalKey: later, uploadOriginal: true, proxy: null, local: null }, "sha256:putoff");
+    jobs.putOff(fixture.home, row, "offline");
+    expect(cloud.notUp(later)).toBe(false);
+    cloudMedia.noteOriginalsGoingUp(fixture.home);
+    expect(cloud.notUp(later)).toBe(true);
+    cloud.upEnded(later, false);
+  } finally {
+    uploads.mockRestore();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a Drive file whose Script mode download fails while the import waits for it keeps today's path, never brought down whole", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive-landing-fails", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const asked: string[] = [];
+  const original = spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (file: string) => {
+    asked.push(file);
+    return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/Bodycam 1.mp4`, name: "Bodycam 1.mp4", size: 100 };
+  });
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one) => {
+    const proxy = `edit/proxies/drive/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  const find = copiesHere.find;
+  const failed = Promise.reject(new Error("Script mode's download failed"));
+  failed.catch(() => {});
+  let landing = true;
+  copiesHere.find = (source) => (source === "drive:1LandingFails1" && landing ? ((landing = false), { landing: { path: join(fixture.dir, "nothing.mp4"), size: 100, name: "Bodycam 1.mp4", done: failed } }) : null);
+  try {
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1LandingFails1", url: "https://drive.google.com/file/d/1LandingFails1/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    expect(asked).toEqual(["1LandingFails1"]);
+    const media = fixture.store.get(id)!.project.media[0]!;
+    expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    expect(fs.existsSync(cloudMedia.localPath(fixture.store.cacheDir(), media.cloud!.original))).toBe(false);
+  } finally {
+    copiesHere.find = find;
+    original.mockRestore();
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("an upload whose file is gone when it's started again after a restart is no longer waited for, and stays refused to RunPod", () => {
+  const fixture = home("local-first-resume-gone");
+  const key = "edit/originals/sha256/resumegone/clip.mp4";
+  try {
+    cloud.goingUp(key);
+    cloud.waitFor(key, "p1", "gone.mp4");
+    expect(() => cloudMedia.resumeUpload(fixture.home, { file: join(fixture.dir, "gone.mp4"), source: "sha256:resumegone", size: 1, duration: 1, originalKey: key, uploadOriginal: true, proxy: null, local: null })).toThrow("is gone");
+    expect(cloud.waitedFor("p1")).toEqual([]);
+    // R2 never got it: RunPod isn't sent its key.
+    expect(cloud.notUp(key)).toBe(true);
+  } finally {
+    cloud.upEnded(key, false);
+    fixture.cleanup();
+  }
+});
+
+test("a Script mode copy on another disk (no link into the cache) goes on today's path, cut from it under its hold", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive-held-other-disk", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  const inputs: (string | null | undefined)[] = [];
+  const excerpts = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, one, _ranges, input) => {
+    inputs.push(input);
+    const proxy = `edit/proxies/drive/${one.file}.mp4`;
+    const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+    return [{ path, from: 0, to: SECONDS, cloud: { path, name: one.name, probe: PROBE, cloud: { source: one.source, original: one.key, proxy, size: 100 } } }];
+  });
+  const find = copiesHere.find;
+  const held = join(fixture.dir, "held", "Bodycam 1.mp4");
+  fs.mkdirSync(join(fixture.dir, "held"), { recursive: true });
+  fs.copyFileSync(close, held);
+  let leased = 0;
+  let released = 0;
+  copiesHere.find = (source) =>
+    source === "drive:1OtherDisk001" ? (leased++, { copy: { path: held, key: "edit/originals/drive/1OtherDisk001/Bodycam 1.mp4", name: "Bodycam 1.mp4", size: fs.statSync(held).size, release: () => void released++ } }) : null;
+  const link = spyOn(fs, "linkSync").mockImplementation(() => {
+    throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+  });
+  try {
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1OtherDisk001", url: "https://drive.google.com/file/d/1OtherDisk001/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    expect(scripts.get(id)!.state).toBe("done");
+    const media = fixture.store.get(id)!.project.media[0]!;
+    expect(localFirst.isWorkingKey(media.cloud?.proxy)).toBe(false);
+    expect(inputs).toEqual([held]);
+    expect(leased).toBe(released);
+  } finally {
+    link.mockRestore();
+    copiesHere.find = find;
+    excerpts.mockRestore();
+    enabled.mockRestore();
+    researched.mockRestore();
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+// Nov 25, the M1 Air's trial of PR #12: a 90 MB YouTube original made a 168 MB working copy (its picture at 1.8 Mbit/s
+// over a source spending under 1), and at 2 Mbit/s up it took twice the original's 6 minutes to send.
+test("a working copy spends no more than its original (but for the floor a very thin source gets): a thin source's copy is made at the source's own rate", () => {
+  const minutes = (n: number) => n * 60;
+  // The trial's: 90 MB over 16 minutes is about 0.75 Mbit/s, so the copy's picture is about 0.62 (its sound taken off).
+  const thin = localFirst.workingRate(90e6, minutes(16));
+  expect(thin).toBeLessThan(700_000);
+  expect(thin).toBeGreaterThan(550_000);
+  // A 383 MB original over the same length spends 3.2 Mbit/s: the copy keeps its 1.8.
+  expect(localFirst.workingRate(383e6, minutes(16))).toBe(localFirst.WORKING.bitrate);
+  // A length that can't be read, or a source thinner than any copy should be: never under the least.
+  expect(localFirst.workingRate(1e6, 0)).toBe(localFirst.WORKING.bitrate);
+  expect(localFirst.workingRate(1e6, minutes(60))).toBe(localFirst.WORKING.least_bitrate);
+  // And it's what the encode is told.
+  const command = localFirst.stretchCommand("in.mp4", PROBE, 0, "out.mp4", thin);
+  expect(command[command.indexOf("-b:v") + 1]).toBe(`${Math.round(thin / 1000)}k`);
+});
+
+test("the same upload asked for again after its original landed, while its proxy still goes, is carried by the one going: no second row, nothing waited on", async () => {
+  const fixture = home("local-first-up-twice");
+  const realUpload = cloud.uploadFile;
+  let letProxy!: () => void;
+  const proxyGate = new Promise<void>((resolve) => (letProxy = resolve));
+  let proxyStarted = false;
+  const uploads = spyOn(cloud, "uploadFile").mockImplementation(async (...args: Parameters<typeof cloud.uploadFile>) => {
+    if (args[1].startsWith("edit/proxies/")) {
+      proxyStarted = true;
+      await proxyGate;
+    }
+    return realUpload(...args);
+  });
+  const key = "edit/originals/sha256/twice/clip.mp4";
+  try {
+    const file = join(fixture.dir, "clip.mp4");
+    fs.copyFileSync(close, file);
+    const proxy = join(fixture.dir, "proxy.mp4");
+    fs.copyFileSync(close, proxy);
+    const upload = { file, source: "sha256:twice", size: fs.statSync(file).size, duration: SECONDS, originalKey: key, uploadOriginal: true, proxy: "edit/proxies/sha256/twice.mp4", local: proxy, name: "clip.mp4" };
+    cloudMedia.uploadLater(fixture.home, { ...upload });
+    await until(() => proxyStarted);
+    expect(cloud.notUp(key)).toBe(false);
+    cloudMedia.uploadLater(fixture.home, { ...upload });
+    expect(cloud.notUp(key)).toBe(false);
+    expect(jobs.list(fixture.home, "upload").filter((job) => jobs.live(job))).toHaveLength(1);
+    letProxy();
+    expect(await cloudMedia.uploaded(file)).toBe(true);
+  } finally {
+    letProxy();
+    uploads.mockRestore();
     fixture.cleanup();
   }
 }, 60_000);

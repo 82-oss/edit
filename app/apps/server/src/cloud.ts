@@ -801,6 +801,97 @@ export function uploadJournals(): { key: string; size: number; up: number; parts
   });
 }
 
+/**
+ * Originals not in R2 yet whose upload from here is on its way (going now, waiting its turn, or put off), by key, with
+ * the projects waiting for each to land and what each calls it. A local-first import names its original's key in the
+ * project from its answer, before a byte is up (local_first.ts), so whatever reads R2 for it (RunPod: remover_cloud.ts
+ * `keyOf`) finds nothing until it lands. Kept by whatever sends originals up (cloud_media `uploadLater` and the job
+ * table at a start, Script mode's copies: writer/streamed.ts); each `whenUp` is told once one lands, with who waits.
+ */
+const notUpYet = new Map<string, Map<string, { name: string; plan: number }>>();
+/** Originals whose only way up from here ended without them (their file gone, or its upload failed for this run). */
+const neverUp = new Set<string>();
+/** Each project's plan, counted (`planBegins`): a wait is kept only while plans since still ask for it. */
+const plans = new Map<string, number>();
+export const whenUp: ((key: string, waiting: string[]) => void)[] = [];
+/**
+ * Whether `key`'s original isn't in R2 from here: still on its way up, or its way up ended without it. Ended without
+ * it, R2 is asked again now and then (at most once a minute a key), as another computer may have sent it since.
+ */
+export function notUp(key: string): boolean {
+  if (notUpYet.has(key)) return true;
+  if (!neverUp.has(key)) return false;
+  const at = askedR2.get(key) ?? 0;
+  if (Date.now() - at >= 60_000) {
+    askedR2.set(key, Date.now());
+    void head(key).then(
+      (there) => {
+        if (there !== null && neverUp.delete(key)) diag.info("cloud", `${key} is in the cloud after all (sent from another computer): read there again`);
+      },
+      () => {},
+    );
+  }
+  return true;
+}
+const askedR2 = new Map<string, number>();
+/** How far each original going up by a way of its own is (0 to 1, null when it can't say): Script mode's, the relay's copy. */
+const shares = new Map<string, () => number | null>();
+/** `key`'s original is on its way up (or will be, at its next try); `share`, how far it is when its sender can say. */
+export function goingUp(key: string, share?: () => number | null): void {
+  neverUp.delete(key);
+  if (share !== undefined) shares.set(key, share);
+  if (!notUpYet.has(key)) notUpYet.set(key, new Map());
+}
+/** How far `key`'s original is on its way up, by the sender that said (`goingUp`); null when none can say. */
+export const shareUp = (key: string): number | null => (notUpYet.has(key) ? (shares.get(key)?.() ?? null) : null);
+/** Project `project` waits for `key`'s original (`name`) to land, when it's still on its way; whether it is. */
+export function waitFor(key: string, project: string, name: string): boolean {
+  const waiting = notUpYet.get(key);
+  waiting?.set(project, { name, plan: plans.get(project) ?? 0 });
+  return waiting !== undefined;
+}
+/** A plan of `project` begins: what it asks to wait for (`waitFor`) is all it waits for once it's done (`planDone`). */
+export function planBegins(project: string): number {
+  const plan = (plans.get(project) ?? 0) + 1;
+  plans.set(project, plan);
+  return plan;
+}
+/** The plan begun as `plan` is done: waits no plan since asked for are let go (footage off the timeline, read elsewhere, untaught). */
+export function planDone(project: string, plan: number): void {
+  for (const waiting of notUpYet.values()) if ((waiting.get(project)?.plan ?? plan) < plan) waiting.delete(project);
+}
+/** `project` waits for nothing to land (a Stop): an export of it no longer waits on uploads. */
+export function stopWaiting(project: string): void {
+  for (const waiting of notUpYet.values()) waiting.delete(project);
+}
+/** `project` waits only for the originals `still` says it needs. */
+export function keepWaiting(project: string, still: (key: string) => boolean): void {
+  for (const [key, waiting] of notUpYet) if (!still(key)) waiting.delete(project);
+}
+/** What `project` waits for to land: each original's key and name. */
+export function waitsOf(project: string): { key: string; name: string }[] {
+  return [...notUpYet].flatMap(([key, waiting]) => (waiting.has(project) ? [{ key, name: waiting.get(project)!.name }] : []));
+}
+/** What `project` waits for to land: each original's name. */
+export const waitedFor = (project: string): string[] => waitsOf(project).map((one) => one.name);
+/**
+ * `key`'s original landed (`up`), or its way up from here ended without it (its file gone, its upload failed for this
+ * run): no longer waited for. Ended without it, it stays refused to RunPod (`notUp`) until it's sent again, and what
+ * waited for it is let go, said once a project.
+ */
+export function upEnded(key: string, up: boolean): void {
+  shares.delete(key);
+  if (up) neverUp.delete(key);
+  const waiting = notUpYet.get(key);
+  if (waiting === undefined) return;
+  notUpYet.delete(key);
+  if (up) for (const tell of whenUp) tell(key, [...waiting.keys()]);
+  else {
+    neverUp.add(key);
+    for (const project of waiting.keys()) diag.warn("removal", `${project}: ${key} won't be in the cloud from here, so their text in it isn't taken out on rented machines`);
+  }
+}
+
 /** Lets go of a resumable upload of `key` begun here (the object got there another way): its parts in R2 and its journal. */
 export function forgetUpload(key: string): void {
   const file = journalPath(key);

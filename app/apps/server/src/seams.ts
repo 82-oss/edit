@@ -227,6 +227,8 @@ export interface CloudMediaSeam {
   removeWhenUploaded(file: string): void;
   /** Starts again an import's upload a restart cut short (its job's args). */
   resumeUpload(home: string, args: Record<string, unknown>): void;
+  /** Notes every original the job table has going up from here as not in R2 yet (as the server starts). */
+  noteOriginalsGoingUp(home: string): void;
   /** `<cache>/cloud/tmp`, for files on their way up (old leftovers removed). */
   scratchDir(cache: string): string;
   /** The file on this machine that is still the original at `key`, if any (`use`: read now, so a copy Edit downloaded stays while it's used). */

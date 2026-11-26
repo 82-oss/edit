@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { App } from "../src/app.ts";
+import * as cloud from "../src/cloud.ts";
 import * as found from "../src/found.ts";
 import type { Media } from "../src/model.ts";
 import * as removerCloud from "../src/remover_cloud.ts";
@@ -731,4 +732,95 @@ test("a file not uploaded from here is read from R2 when another machine read it
   } finally {
     found.whenFound.splice(found.whenFound.indexOf(listener), 1);
   }
+});
+
+// Nov 25, the reviews of turning local-first on: a local-first import names its original's key in the project from its
+// answer, before a byte is up, so a Mac's finder sent RunPod a key R2 hadn't got, and the failed read was kept as failed.
+test("a file whose original is still going up from here waits for it, with no RunPod job, and is read once it's up", async () => {
+  const app = makeApp(path.join(tmpDir, "going-up"));
+  const key = "edit/originals/youtube/goingUp0001/clip.mp4";
+  const media = makeMedia("mg", "clip.mp4", key);
+  const told: [string, string[]][] = [];
+  const listener = (up: string, waiting: string[]) => void told.push([up, waiting]);
+  cloud.whenUp.push(listener);
+  cloud.goingUp(key);
+  try {
+    expect(removerCloud.keyOf(media)).toBeUndefined();
+    found.ensure(app, "p1", [{ media, source: "youtube:goingUp0001", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(jobsPosted).toHaveLength(0);
+    expect(found.piecesOf("p1")).toEqual([]);
+    // Its project waits for it (an export of it too), by name.
+    expect(cloud.waitedFor("p1")).toEqual(["clip.mp4"]);
+    // Up: the project that waited is told, and the next look reads it on RunPod.
+    cloud.upEnded(key, true);
+    expect(told).toEqual([[key, ["p1"]]]);
+    expect(cloud.waitedFor("p1")).toEqual([]);
+    expect(removerCloud.keyOf(media)).toBe(key);
+    found.ensure(app, "p1", [{ media, source: "youtube:goingUp0001", shown: [[0, 30]], parent: null }]);
+    await found.settled();
+    expect(jobsPosted).toHaveLength(1);
+    expect(jobsPosted[0]!.request.input).toBe(key);
+    expect(found.foundOf(app, "youtube:goingUp0001")).not.toBeNull();
+  } finally {
+    cloud.upEnded(key, false);
+    cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
+  }
+});
+
+test("an original whose file went before it was up is no longer waited on, nobody is told it's up, and RunPod isn't sent it", () => {
+  const key = "edit/originals/youtube/goneGone001/clip.mp4";
+  const told: string[] = [];
+  const listener = (up: string) => void told.push(up);
+  cloud.whenUp.push(listener);
+  try {
+    cloud.goingUp(key);
+    cloud.waitFor(key, "p1", "clip.mp4");
+    expect(cloud.notUp(key)).toBe(true);
+    cloud.upEnded(key, false);
+    expect(cloud.notUp(key)).toBe(true);
+    expect(removerCloud.keyOf(makeMedia("mg", "clip.mp4", key))).toBeUndefined();
+    expect(told).toEqual([]);
+    expect(cloud.waitedFor("p1")).toEqual([]);
+    // Sent up again later (a new import of it): waited for again, and refused only until it lands.
+    cloud.goingUp(key);
+    cloud.upEnded(key, true);
+    expect(cloud.notUp(key)).toBe(false);
+  } finally {
+    cloud.whenUp.splice(cloud.whenUp.indexOf(listener), 1);
+  }
+});
+
+test("an original refused after its way up from here failed is read again once another computer has sent it (R2 asked), or once an upload of it lands", async () => {
+  const key = "edit/originals/youtube/elsewhere01/clip.mp4";
+  cloud.goingUp(key);
+  cloud.upEnded(key, false);
+  expect(cloud.notUp(key)).toBe(true);
+  // Another computer sends it: the next look (a minute on, at most) asks R2, which has it.
+  r2Store.set(key, "bytes");
+  const later = "edit/originals/youtube/elsewhere02/clip.mp4";
+  cloud.goingUp(later);
+  cloud.upEnded(later, false);
+  r2Store.set(later, "bytes");
+  expect(cloud.notUp(later)).toBe(true);
+  const until = Date.now() + 5_000;
+  while (cloud.notUp(later) && Date.now() < until) await Bun.sleep(20);
+  expect(cloud.notUp(later)).toBe(false);
+  // An upload of it landing here clears it at once, whatever the earlier way's end.
+  cloud.upEnded(key, true);
+  expect(cloud.notUp(key)).toBe(false);
+});
+
+test("an original going up by a way that says how far it is gives the export its share", () => {
+  const key = "edit/originals/drive/relayShare1/clip.mp4";
+  let sent = 25;
+  cloud.goingUp(key, () => sent / 100);
+  try {
+    expect(cloud.shareUp(key)).toBe(0.25);
+    sent = 60;
+    expect(cloud.shareUp(key)).toBe(0.6);
+  } finally {
+    cloud.upEnded(key, true);
+  }
+  expect(cloud.shareUp(key)).toBeNull();
 });

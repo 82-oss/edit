@@ -452,7 +452,11 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     if (!trials) optional("export ahead", () => exportAhead.start(app));
     // Their see-through watermark out of the footage on the timeline, free, as soon as edits rest (a channel taught its mark).
     // What a channel is taught to take out of its footage (their subtitles, text, watermark), as soon as edits rest.
-    optional("removal", () => removalSchedule.start(app));
+    optional("removal", () => {
+      // What the job table still has going up isn't on R2 for RunPod yet, put off or not (cloud_media.ts).
+      seams.cloudMedia.noteOriginalsGoingUp(app.store.home);
+      removalSchedule.start(app);
+    });
     // Projects archived on Repack: their big files freed here, and restores asked for done.
     if (!trials) optional("archive", () => archive.start(app));
     // Script mode: Writer's scripts on this Mac brought in once, and its background work.

@@ -49,6 +49,7 @@ import * as steps from "./import_steps.ts";
 import * as keyframeIndex from "./keyframe_index.ts";
 import * as localFirst from "./local_first.ts";
 import * as cloudMediaModule from "./cloud_media.ts";
+import * as storage from "./storage.ts";
 import { WORK_FLOOR_BYTES } from "./storage.ts";
 import * as cloud from "./cloud.ts";
 import { THIS_MACHINE } from "./machine.ts";
@@ -3475,8 +3476,29 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
     const cut = await seams.cloudMedia.youtubeExcerpts(app.store.home, app.store.cacheDir(), file, fileRanges(live.project, file), progress);
     return [cut.reduce((n, one) => n + (one.cloud?.cloud?.size ?? 0), 0), cut[0]?.cloud?.name ?? file, cut];
   }
-  // Footage local while the project is in work: the original kept here whole, one working copy (local_first.ts).
-  if (live !== null && live !== undefined && localFirst.chosen(live.project) && localFirstSource(file) !== null) return localFootage(app, id, index, file, letGo);
+  // Footage local while the project is in work: the original kept here whole, one working copy (local_first.ts), when
+  // its whole original comes to this Mac anyway (`localFirstWay`).
+  if (live !== null && live !== undefined && localFirst.chosen(live.project)) {
+    const way = await localFirstWay(app, file, progress, letGo);
+    try {
+      if (way !== null) return await localFootage(app, id, index, file, letGo, way);
+    } catch (error) {
+      if (!(error instanceof AsBefore)) throw error;
+      diag.info("script", error.dir !== null ? `${file}: no room on ${THIS_MACHINE} to keep it whole as well as its working copy, so it goes as before (up, cut, and let go here)` : `${file}: its whole original isn't coming to ${THIS_MACHINE}, so it goes as before`);
+      // Today's path finds a download where it was left; whatever it does with it, nothing of it stays after.
+      // Failed, the download stays for the file's next try (nothing brought down twice); the scratch sweep has it after.
+      const done = await footageAsBefore(app, id, index, file, letGo);
+      if (error.dir !== null) fs.rmSync(error.dir, { recursive: true, force: true });
+      return done;
+    }
+  }
+  return footageAsBefore(app, id, index, file, letGo);
+}
+
+/** Today's path for `file` (`footageToCloud`'s): its original in the cloud, the edit's stretches cut from it. */
+async function footageAsBefore(app: App, id: string, index: number, file: string, letGo: () => void): Promise<Fetched> {
+  const progress = fileProgress(app, id, index);
+  const live = app.store.get(id);
   const scratch = seams.cloudMedia.scratchDir(app.store.cacheDir());
   const shared = file.startsWith("sha256:");
   const expectedKey = live?.project.script?.blocks.find((block) => block.kind === "footage" && block.file === file)?.notes?.find((note) => note.startsWith("Shared original: "))?.slice("Shared original: ".length);
@@ -3540,11 +3562,54 @@ function localFirstSource(file: string): string | null {
   return !file.includes(":") && /^[A-Za-z0-9_-]{10,200}$/u.test(file) ? `drive:${file}` : null;
 }
 
+type Registered = Awaited<ReturnType<typeof cloudMediaModule.getRecord>>;
+
+/** How a local-first project's file comes in on the local path (`localFirstWay`). */
+interface LocalWay {
+  /** Script mode's copy here, held until the import has it (released by `localFootage`). */
+  held: { path: string; key: string; name: string; size: number; release: () => void } | null;
+  /** The registry's record of it, when that was asked (undefined: not asked). */
+  record: Registered | undefined;
+}
+
+/**
+ * Whether a local-first project's `file` comes in on the local path, and how; null keeps today's path. Only when its
+ * whole original comes to this Mac anyway, so the import brings nothing down that today's path wouldn't (Nov 25, the
+ * reviews of turning local-first on): Script mode's copy here (held from here on), the original already in this Mac's
+ * cache, or a YouTube video nobody has sent to the cloud (yt-dlp brings it whole either way). Anything else keeps
+ * today's path: a Drive file above all (the relay copies it to R2 without this Mac and the edit's stretches are cut by
+ * range, where the local path brought it all down before the answer and sent it all back up: a 6 GB file on JJ's line,
+ * 8 Mbit/s down and 2 up, about 100 min, then about 6.7 h), and a YouTube video already on its way up from somewhere,
+ * or one Script mode has here (today's path cuts from that copy, or waits for its upload, and downloads nothing).
+ * The registry not answering within `REGISTRY_WAIT_MS` (the relay down or slow) is taken as nobody having it, by choice
+ * (Nov 22: nothing about playing here waits on the cloud): the video comes down and plays here, and its upload behind
+ * finds an original already up under its key and sends nothing (cloud_media `runUpload`'s look first).
+ */
+async function localFirstWay(app: App, file: string, progress: (bytes: number, total: number | null, name: string) => void, letGo: () => void): Promise<LocalWay | null> {
+  const source = localFirstSource(file);
+  if (source === null) return null;
+  if (youtube.idOf(file) === null) {
+    // Script mode's copy, waited for while it lands, held once (it lets go only when the import's done with it).
+    const held = await scriptModeCopy(file, progress, letGo);
+    if (held !== null) return { held, record: undefined };
+  } else {
+    const there = copiesHere.find(sourceOf(file));
+    if (there !== null) {
+      if ("copy" in there) there.copy.release();
+      return null;
+    }
+  }
+  const record = await recordSoon(source);
+  const ready = cloudMediaModule.readyOriginal(record);
+  if (ready !== null) return isFileHere(cloudMediaModule.localPath(app.store.cacheDir(), ready)) ? { held: null, record } : null;
+  return youtube.idOf(file) !== null && record === null ? { held: null, record } : null;
+}
+
 /** The longest the registry is waited on before a local-first import goes on without it (the relay down: local_first.ts). */
 export const REGISTRY_WAIT_MS = { value: 15_000 };
 
 /** The footage registry's record of `source`, or null when it has none or doesn't answer soon (nothing here waits on the cloud for long). */
-async function recordSoon(source: string): Promise<Awaited<ReturnType<typeof cloudMediaModule.getRecord>> | null> {
+async function recordSoon(source: string): Promise<Registered | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), REGISTRY_WAIT_MS.value)));
   try {
@@ -3566,15 +3631,15 @@ async function recordSoon(source: string): Promise<Awaited<ReturnType<typeof clo
  * mode's copy here linked in), its upload and its working copy behind, and the whole source one media the script's
  * ranges play from.
  */
-async function localFootage(app: App, id: string, index: number, file: string, letGo: () => void): Promise<Fetched> {
+async function localFootage(app: App, id: string, index: number, file: string, letGo: () => void, way: LocalWay): Promise<Fetched> {
   const progress = fileProgress(app, id, index);
   const cache = app.store.cacheDir();
   const source = localFirstSource(file)!;
   const scratch = seams.cloudMedia.scratchDir(cache);
-  const held = youtube.idOf(file) !== null ? null : await scriptModeCopy(file, progress, letGo);
+  const { held, record } = way;
   let here: localFirst.Here;
   try {
-    here = await diag.timeOnAsync("script", "script: footage here", file, () => originalHere(app, file, source, cache, scratch, held, progress));
+    here = await diag.timeOnAsync("script", "script: footage here", file, () => originalHere(app, file, source, cache, scratch, held, progress, record));
   } finally {
     held?.release();
   }
@@ -3592,6 +3657,7 @@ async function originalHere(
   scratch: string,
   held: { path: string; key: string; name: string; size: number } | null,
   progress: (bytes: number, total: number | null, name: string) => void,
+  asked: Registered | undefined,
 ): Promise<localFirst.Here> {
   const place = (key: string) => cloudMediaModule.localPath(cache, key);
   if (held !== null) {
@@ -3601,44 +3667,37 @@ async function originalHere(
       try {
         fs.linkSync(held.path, at);
       } catch {
-        // Another disk: Script mode's own copy is read where it is (it keeps it until the cloud has it).
-        progress(held.size, held.size, held.name);
-        return { source, key: held.key, name: held.name, path: held.path, size: held.size, upload: false };
+        // Another disk: it can't be this project's own copy (Script mode may let it go for room once it's up, while the
+        // working copy still reads it), so it goes on today's path, cut from it under Script mode's hold.
+        throw new AsBefore(null);
       }
     }
     progress(held.size, held.size, held.name);
     return { source, key: held.key, name: held.name, path: at, size: held.size, upload: false };
   }
-  const record = await recordSoon(source);
+  const record = asked === undefined ? await recordSoon(source) : asked;
   const ready = cloudMediaModule.readyOriginal(record);
-  if (record !== null && ready !== null) {
-    // In the cloud already (another project's import): brought from there, never from YouTube or Drive again.
-    const at = place(ready);
-    const name = record.name;
+  if (record !== null && ready !== null && isFileHere(place(ready))) {
+    // In the cloud already (another project's import) and here too: never brought down again.
     const size = Math.max(Math.trunc(record.size), 0);
-    if (!isFileHere(at)) await diag.timeOnAsync("script", "script: original from the cloud", ready, () => cloud.download(ready, at, (bytes) => progress(bytes, size, name)));
-    progress(size, size, name);
-    return { source, key: ready, name, path: at, size: fs.statSync(at).size, upload: false };
+    progress(size, size, record.name);
+    return { source, key: ready, name: record.name, path: place(ready), size: fs.statSync(place(ready)).size, upload: false };
   }
-  if (source.startsWith("sha256:")) {
-    // A shared master is only ever in the cloud.
-    const original = await seams.cloudMedia.registeredOriginal(source);
-    const at = place(original.key);
-    if (!isFileHere(at)) await cloud.download(original.key, at, (bytes) => progress(bytes, original.size, original.name));
-    return { source, key: original.key, name: original.name, path: at, size: fs.statSync(at).size, upload: false };
-  }
+  // Only a YouTube video nobody has sent to the cloud comes down whole here (yt-dlp brings it whole on today's path
+  // too): anything else (a Drive file whose Script mode copy fell through, a shared master, an original only in the
+  // cloud) goes on today's path, never brought down whole to be sent back up (`localFirstWay`).
   const video = youtube.idOf(file);
-  const dir = join(scratch, video !== null ? `youtube-${video}` : `drive-${file}`);
-  const got =
-    video !== null
-      ? await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress))
-      : await diag.timeOnAsync("script", "script: drive download", file, async () => {
-          const path = await download(dir, file, progress);
-          return { path, name: fileName(path) ?? `${file}.mp4`, size: fs.statSync(path).size };
-        });
+  if (video === null || (record !== null && ready !== null)) throw new AsBefore(null);
+  const dir = join(scratch, `youtube-${video}`);
+  const got = await diag.timeOnAsync("script", "script: youtube download", file, () => youtube.download(app.store.home, video, dir, progress));
+  // Kept whole here beside its working copy only with room for both (the download itself takes what today's path's
+  // does): short, it's left in its folder for today's path, which finds it there and downloads nothing again.
+  // Its length unread, the copy is taken to be as big as the download (a copy is at most its rate, and smaller).
+  const seconds = await durationOf(got.path).catch(() => null);
+  if (!storage.roomFor(cache, seconds === null ? got.size : localFirst.workingRoom(seconds))) throw new AsBefore(dir);
   const name = safeName(got.name);
   const segment = cloudMediaModule.segment(name);
-  const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/${video !== null ? `youtube/${video}` : `drive/${file}`}/${segment}`;
+  const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/youtube/${video}/${segment}`;
   const at = place(key);
   fs.mkdirSync(parent(at)!, { recursive: true });
   // The same video imported twice at once shares one download (youtube.ts): the first to get here moved it.
@@ -3646,6 +3705,16 @@ async function originalHere(
   fs.rmSync(dir, { recursive: true, force: true });
   // The registry is told by the upload behind, once the original is up (cloud_media `runUpload`).
   return { source, key, name, path: at, size: got.size, upload: true };
+}
+
+/**
+ * A file that goes on today's path after all: a YouTube download with no room here to keep it whole beside its working
+ * copy (left in `dir`, where today's path finds it), or one whose whole original isn't coming here (`dir` null).
+ */
+class AsBefore extends Error {
+  constructor(readonly dir: string | null) {
+    super("it goes on today's path");
+  }
 }
 
 const isFileHere = (path: string): boolean => {

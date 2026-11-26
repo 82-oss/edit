@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import type { App } from "../src/app.ts";
 import * as burned from "../src/burned_subtitles.ts";
 import * as channels from "../src/channels.ts";
+import * as cloud from "../src/cloud.ts";
 import { enforceCleanStrips, NAME, strippedFrames, WATERMARK_NAME } from "../src/clean_strips.ts";
 import { beneathKey } from "../src/effect_inputs.ts";
 import type { Media, Project, VideoClip } from "../src/model.ts";
@@ -28,6 +29,7 @@ import * as removal from "../src/removal_lesson.ts";
 import { EDIT_EVENT } from "../src/edit_event.ts";
 import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
+import * as removerCloud from "../src/remover_cloud.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import * as wm from "../src/watermark_removal.ts";
@@ -975,6 +977,77 @@ test("removal starts by itself as soon as edits rest; a longer clip is blurred t
     expect(removalSchedule.statusOf(app, project.id)).toEqual({ background: null });
   } finally {
     removalSchedule.timing.restMs = 2000;
+    cleanup();
+  }
+}, 120_000);
+
+// Nov 25, the reviews of turning local-first on (PR #12): what waits for an original to be on R2 (RunPod's finder read
+// and clean) had nothing to wake it once the upload landed, short of an edit, and an export didn't wait for it.
+test("a project waiting for an original going up from here: its export waits, naming it, and the upload landing wakes its removal", async () => {
+  const { app, dir, cleanup } = fixtureHome("removal-woken-by-upload");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const reads: number[] = [];
+  blurReads(reads);
+  // Edits resting and the start's resume wake nothing during the test: only the upload does.
+  removalSchedule.timing.restMs = 600_000;
+  removalSchedule.timing.resumeMs = 600_000;
+  removalSchedule.start(app);
+  // Tracked here (the test has no relay): what matters is that it's woken.
+  removerCloud.setOnForTests(false);
+  const key = "edit/originals/youtube/wokenByUp1/tape.mp4";
+  try {
+    // Its original here at its key's place, as a local-first import keeps it.
+    const file = cloudMedia.localPath(app.store.cacheDir(), key);
+    fs.mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true });
+    fs.renameSync(await labelledFootage(dir, 8), file);
+    cloudMedia.rememberLocalOriginal(app.store.cacheDir(), key, file);
+    const live = app.store.create("p", { width: 1920, height: 1080, fps: 30 });
+    const project = structuredClone(live.project) as Project;
+    const media: Media = { id: "m", name: "tape", path: file, kind: "video", duration: 8, width: 320, height: 180, fps: 30, has_audio: false, cloud: { source: "youtube:wokenByUp1", original: key, proxy: key, size: 1 } };
+    project.media = [media];
+    project.channel = "ch-taught";
+    project.clips = [{ id: "f", track: "v1", start: 0, duration: 240, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip];
+    await app.store.replace(project.id, null, project, "test");
+    await burned.warm(app.media, media);
+    takeProposed(app, project.id);
+    // The finder (or the model) waits for it to land, as a Mac's does with it still going up.
+    cloud.goingUp(key);
+    expect(cloud.waitFor(key, project.id, "tape")).toBe(true);
+    expect(removalSchedule.progressOf(project.id).out).toBe(1);
+    expect(removalSchedule.exportLine(project.id)).toBe("Removing their text · waiting for tape to finish uploading");
+    expect(blurs(project.id)).toEqual([]);
+    // Up: the project that waited is brought up to date by itself, and nothing waits on it any more.
+    cloud.upEnded(key, true);
+    expect(cloud.waitedFor(project.id)).toEqual([]);
+    // Still out while what waited is planned again: an export looking in that moment doesn't slip through.
+    expect(removalSchedule.progressOf(project.id).out).toBeGreaterThan(0);
+    const until = Date.now() + 30_000;
+    while (!tracked(app, project.id) && Date.now() < until) await Bun.sleep(100);
+    await blur.settled();
+    expect(blurs(project.id)).toEqual([["m", 0, 8, "done"]]);
+    // Going up again, with removal on rented machines (a Mac's: no finder here): the export's own plan asks the finder,
+    // which waits for the upload, and the export waits with it ("still rendering" to the quick look).
+    cloud.goingUp(key);
+    removerCloud.setOnForTests(true);
+    expect(await removalSchedule.waitForPieces(app, project.id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
+    expect(cloud.waitedFor(project.id)).toEqual(["tape"]);
+    // A file the finder has just read: out until the plan it starts is in, so an export doesn't slip between them.
+    for (const listener of found.whenFound) listener(app, project.id);
+    expect(removalSchedule.progressOf(project.id).out).toBeGreaterThan(1);
+    // Its clip taken off the timeline: an export no longer waits for that footage's upload.
+    await app.store.update(project.id, "agent", (p) => void (p.clips = []));
+    expect(await removalSchedule.waitForPieces(app, project.id, 5_000).then(() => "went", (error: unknown) => String(error))).toBe("went");
+    expect(cloud.waitedFor(project.id)).toEqual([]);
+    cloud.waitFor(key, project.id, "tape");
+    removalSchedule.stop(app, project.id, ["text"]);
+    expect(cloud.waitedFor(project.id)).toEqual([]);
+  } finally {
+    cloud.upEnded(key, false);
+    removalSchedule.timing.restMs = 2000;
+    removalSchedule.timing.resumeMs = 15_000;
+    removalSchedule.reset();
+    removerCloud.setOnForTests(null);
     cleanup();
   }
 }, 120_000);

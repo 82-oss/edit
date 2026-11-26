@@ -9,6 +9,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 
+import * as localFirst from "../src/local_first.ts";
 import * as storage from "../src/storage.ts";
 
 const GB = 1e9;
@@ -89,6 +90,27 @@ test("on the team's Macs: what Edit keeps free, and whether each kind of work is
   }
   // JJ's 2 GB edit and his 5.5 GB recording are kept on his Mac (the old rule kept nothing there).
   expect(kept(494 * GB, 41 * GB, 5.5 * GB)).toBe(true);
+  console.log(lines.join("\n"));
+});
+
+// Nov 25: a local-first project's YouTube download is kept whole here beside its working copy only with room for the
+// copy over what Edit keeps free (script.ts `originalHere`); short, it goes on today's path (up, cut, let go here).
+test("on the team's Macs: a YouTube download kept whole beside its working copy, or sent on today's path", () => {
+  const lines: string[] = [];
+  const sources = [30 * 60, 2 * 3600];
+  for (const mac of MACS) {
+    const whole = sources.filter((seconds) => kept(mac.disk, mac.free, localFirst.workingRoom(seconds))).map((seconds) => `${seconds / 60} min`);
+    lines.push(`${mac.who}: has ${mac.free / GB} GB free; a working copy is about ${(localFirst.workingRoom(30 * 60) / GB).toFixed(2)} GB for 30 min, ${(localFirst.workingRoom(7200) / GB).toFixed(1)} GB for 2 h; kept whole: ${whole.length > 0 ? whole.join(", ") : "none (today's path)"}`);
+  }
+  // JJ, Marc and kenobi keep a two-hour source whole; Sphe's M4 (17 GB free, 15 kept) keeps a 30-minute one and sends a
+  // two-hour one on today's path; a Mac at the 15 GB Edit keeps free sends everything on today's path.
+  for (const who of ["JJ's MacBook Pro", "Marc's MacBook Air", "kenobi (the test M1)"]) {
+    const mac = MACS.find((one) => one.who === who)!;
+    expect([who, kept(mac.disk, mac.free, localFirst.workingRoom(7200))]).toEqual([who, true]);
+  }
+  expect(kept(245 * GB, 17 * GB, localFirst.workingRoom(30 * 60))).toBe(true);
+  expect(kept(245 * GB, 17 * GB, localFirst.workingRoom(7200))).toBe(false);
+  expect(kept(245 * GB, 15 * GB, localFirst.workingRoom(30 * 60))).toBe(false);
   console.log(lines.join("\n"));
 });
 
