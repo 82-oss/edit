@@ -466,6 +466,44 @@ test("a save tried again after another computer took the project over keeps noth
   }
 });
 
+test("just taken over, an effect not caught up with the cloud's newer version keeps nothing of its older code here (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-not-caught-up");
+  const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("A, the older"));
+    const a = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "board", dir, { source: a, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "board", path: "/elsewhere/board.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "board", effect_key: a });
+    });
+    // B settled on the computer that had it.
+    const there = `${dir}-there`;
+    fs.mkdirSync(there);
+    fs.writeFileSync(join(there, "scene.html"), page("B, settled there, not caught up with"));
+    await v2cloud.save(item, "board", there, { source: "b-there", reason: "settled" });
+    // Taken over here; its catching up fails (B's page can't be fetched).
+    effects.tookOver(id);
+    const object = `edit/library/sha256/${createHash("sha256").update(page("B, settled there, not caught up with")).digest("hex")}`;
+    const held = mock.cloud.objects.get(object)!;
+    mock.cloud.objects.delete(object);
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    // A settled pass asks to keep A: nothing kept, B stays in use.
+    await effects.keepVersion(app, id, "board", a, "settled");
+    expect((await v2cloud.version(item))!.version.source).toBe("b-there");
+    // Caught up once B can be fetched.
+    mock.cloud.objects.set(object, held);
+    expect(await effects.bringDown(app, id)).toEqual(["board"]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("an effect on the timeline twice is brought down once, whole (PR #14's CodeRabbit review)", async () => {
   const { app, cleanup, id } = hq("v2-twice");
   try {

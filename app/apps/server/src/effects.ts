@@ -2333,6 +2333,10 @@ export function keepVersion(app: App, project: string, name: string, key: string
       const still = (folder: string, sent?: readonly { path: string; sha256: string }[]) => {
         const live = app.store.get(project);
         if (live === null || !editingHere(app, project) || !fs.existsSync(join(folder, ENTRY))) return false;
+        // Just taken over and not caught up with the cloud's version yet: the code here may be the older one (PR #14's
+        // CodeRabbit review); kept once it has caught up, by the pass that follows.
+        const catching = catchingUp.get(project);
+        if (catching !== undefined && !catching.has(name)) return false;
         const frame = frameOf(live.project);
         const now = sent === undefined ? keyOf(app.store, project, folder, frame) : codeKey(sent.filter((file) => isCode(file.path)).map(({ path, sha256 }) => ({ path, sha256 })), frame, fontsUsed(app.store, project, folder));
         return now === key;
