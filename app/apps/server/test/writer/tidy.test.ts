@@ -146,3 +146,11 @@ test("a re-cut on the exact hearing puts each cut-in's notes back on it", () => 
   keepNotes([], before, [], after);
   expect(after[1]!.notes).toEqual([note]);
 });
+
+test("a note whose words a correction recased goes with them when the clip splits", () => {
+  const said = words([["Start.", "s", 0, 500], ["Um", "s", 2_000, 2_300], ["Home.", "s", 4_000, 4_500]]);
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 10, end: 15, quote: "Home." } };
+  const pieces = removeRange([{ id: "c", startMs: 0, endMs: 5_000, notes: [note] }], 1_900, 2_400, { words: said, corrections: { w2: "HOME." } });
+  expect(pieces[0]!.notes).toEqual([]);
+  expect(pieces[1]!.notes).toEqual([{ ...note, anchor: { start: 0, end: 5, quote: "HOME." } }]);
+});

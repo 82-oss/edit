@@ -58,9 +58,15 @@ export function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
 function located(anchor: Note["anchor"], text: string): NonNullable<Note["anchor"]> | null {
   if (anchor === undefined || anchor.quote === "") return null;
   if (text.slice(anchor.start, anchor.end) === anchor.quote) return anchor;
-  let best = -1;
-  for (let at = text.indexOf(anchor.quote); at >= 0; at = text.indexOf(anchor.quote, at + 1)) if (best < 0 || Math.abs(at - anchor.start) < Math.abs(best - anchor.start)) best = at;
-  return best < 0 ? null : { ...anchor, start: best, end: best + anchor.quote.length };
+  // As noteAnchor reads it: the exact words, else the same words in another case (a correction changed it, CodeRabbit on #17).
+  const nearest = (hay: string, needle: string) => {
+    let best = -1;
+    for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) if (best < 0 || Math.abs(at - anchor.start) < Math.abs(best - anchor.start)) best = at;
+    return best;
+  };
+  let best = nearest(text, anchor.quote);
+  if (best < 0) best = nearest(text.toLowerCase(), anchor.quote.toLowerCase());
+  return best < 0 ? null : { ...anchor, start: best, end: best + anchor.quote.length, quote: text.slice(best, best + anchor.quote.length) };
 }
 
 /** A clip joined onto the one before it brings its notes, on the same words: offsets into what the joined clip says. */
