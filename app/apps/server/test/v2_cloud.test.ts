@@ -300,6 +300,55 @@ test("one effect's versions are kept in the order asked, and a save whose code m
   }
 });
 
+test("a newer save of one effect waits for the one whose files are going up, and the newer stays in use (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-in-flight");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("one, slow to go up"));
+    const one = effects.list(app.store, id)[0]!.key;
+    // The first save's upload held open once it has started.
+    const order: string[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let started = () => {};
+    const going = new Promise<void>((resolve) => (started = resolve));
+    const shaOf = (text: string) => `edit/library/sha256/${createHash("sha256").update(text).digest("hex")}`;
+    mock.cloud.beforePut = async (key) => {
+      if (key === shaOf(page("one, slow to go up"))) {
+        order.push("one starts");
+        started();
+        await held;
+        order.push("one ends");
+      } else if (key === shaOf(page("two, once the first is up"))) order.push("two starts");
+    };
+    const first = effects.keepVersion(app, id, "board", one, "settled");
+    await going;
+    // Kept as it was when it started (its copy went up): the agent's next code doesn't change what's being sent.
+    fs.writeFileSync(join(dir, "scene.html"), page("two, once the first is up"));
+    const two = effects.list(app.store, id)[0]!.key;
+    const second = effects.keepVersion(app, id, "board", two, "settled");
+    await Bun.sleep(200);
+    expect(order).toEqual(["one starts"]);
+    release();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["one starts", "one ends", "two starts"]);
+    // The first's folder moved on while it went up: no version of it; the second's is the one in use.
+    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([two]);
+    expect((await v2cloud.version(item))!.version.source).toBe(two);
+    // What went up for the first is the content its key names.
+    expect(mock.cloud.text(shaOf(page("one, slow to go up")))).toBe(page("one, slow to go up"));
+  } finally {
+    mock.cloud.beforePut = null;
+    cleanup();
+  }
+});
+
 test("a version fetched into a folder its agent changed meanwhile isn't swapped in over it (PR #14's CodeRabbit review)", async () => {
   const { cleanup, id, app } = hq("v2-changed-meanwhile");
   try {

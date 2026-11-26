@@ -55,6 +55,8 @@ export class CloudMock {
   listPage = 1000;
   /** Waited on before an R2 GET of its key is answered (a slow download). */
   beforeGet: ((key: string) => Promise<void>) | null = null;
+  /** Waited on before an R2 PUT of its key is taken (a slow upload). */
+  beforePut: ((key: string) => Promise<void>) | null = null;
   /** R2 PUTs answered 500 while above 0 (each counts one down). */
   failPuts = 0;
   /** When set, /v1/cloud/* needs `Bearer <token>` (the relay's CLOUD_TOKEN). */
@@ -197,7 +199,10 @@ export class CloudMock {
       return json(200, answer);
     });
     // R2 itself, behind the presigned URLs.
-    mock.on("PUT", /^\/r2\//, (request) => this.r2Put(request));
+    mock.on("PUT", /^\/r2\//, async (request) => {
+      await this.beforePut?.(decodeKey(request.path.slice("/r2/".length)));
+      return this.r2Put(request);
+    });
     mock.on("GET", /^\/r2\//, async (request) => {
       await this.beforeGet?.(decodeKey(request.path.slice("/r2/".length)));
       return this.r2Get(request);

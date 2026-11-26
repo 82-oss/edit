@@ -31,6 +31,7 @@
 import * as addons from "./addons.ts";
 import { ADDON_PREFIX } from "./addons.ts";
 import fs from "node:fs";
+import os from "node:os";
 import { dirname, join, sep } from "node:path";
 import type { App } from "./app.ts";
 import * as accounts from "./accounts.ts";
@@ -146,16 +147,30 @@ function walk(dir: string, under = ""): string[] {
   return found.sort();
 }
 
-/** A folder's files in R2, each once by its content: the list of them. */
+/**
+ * A folder's files in R2, each once by its content: the list of them. Each is hashed and sent from a copy of its own:
+ * read where it's written (an agent's edit landing between the hash and the upload), R2 kept bytes that weren't the
+ * content its key names, for every version after that names it (PR #14's CodeRabbit review).
+ */
 async function putFiles(dir: string, only?: readonly string[]): Promise<File[]> {
   const files = only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path));
-  return eachAtOnce(files, async (path) => {
-    const full = join(dir, path);
-    const sha256 = await sha256File(full);
-    if (!(await cloud.has(fileKey(sha256)))) await cloud.uploadFile(full, fileKey(sha256));
-    return { path, sha256, size: fs.statSync(full).size };
-  });
+  const copies = await fs.promises.mkdtemp(join(os.tmpdir(), "edit-put-"));
+  let made = 0;
+  try {
+    return await eachAtOnce(files, async (path) => {
+      const copy = join(copies, String(made++));
+      await fs.promises.copyFile(join(dir, path), copy);
+      const sha256 = await sha256File(copy);
+      if (!(await cloud.has(fileKey(sha256)))) await cloud.uploadFile(copy, fileKey(sha256));
+      return { path, sha256, size: (await fs.promises.stat(copy)).size };
+    });
+  } finally {
+    await fs.promises.rm(copies, { recursive: true, force: true });
+  }
 }
+
+/** A save whose folder moved on while its files went up (`save`'s `still`): no version made of them. */
+export class Moved extends Error {}
 
 /**
  * How many of a version's files go up or come down at once. One at a time, an
@@ -229,9 +244,11 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
  * (an effect's key): the same as the newest makes no new version. `only`:
  * just these of its files (a kept effect's, effect_kept.ts), the rest left.
  */
-export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[] } = {}): Promise<{ n: number; made: boolean }> {
-  const { only, ...given } = options;
+export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: () => boolean } = {}): Promise<{ n: number; made: boolean }> {
+  const { only, still, ...given } = options;
   const files = await putFiles(dir, only);
+  // Asked once its files are up: a folder that changed meanwhile may have sent some of each (`Moved`).
+  if (still !== undefined && !still()) throw new Moved(`${name} changed while it went up`);
   // The same files as the version in use (a version just brought back, saved again as it renders): not a new one.
   const now = await version(key).catch(() => null);
   const same = (a: File[], b: File[]) => a.length === b.length && a.every((one, at) => one.path === b[at]!.path && one.sha256 === b[at]!.sha256);

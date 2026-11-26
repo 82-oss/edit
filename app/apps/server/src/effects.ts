@@ -2325,11 +2325,18 @@ export function keepVersion(app: App, project: string, name: string, key: string
   // whose code here has moved on is left to the save asked for the newer code: its files aren't the code `key` names.
   const next = (keeping.get(item) ?? Promise.resolve())
     .then(async () => {
-      const live = app.store.get(project);
-      if (live === null || !fs.existsSync(join(dir, ENTRY)) || keyOf(app.store, project, dir, frameOf(live.project)) !== key) return;
-      await v2cloud.save(item, name, dir, { source: key, reason });
+      // Its code as `key` names it, when the save starts and again once its files are up (what went up is all of it).
+      const still = () => {
+        const live = app.store.get(project);
+        return live !== null && fs.existsSync(join(dir, ENTRY)) && keyOf(app.store, project, dir, frameOf(live.project)) === key;
+      };
+      if (!still()) return;
+      await v2cloud.save(item, name, dir, { source: key, reason, still });
     })
-    .catch((error: unknown) => diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`))
+    .catch((error: unknown) => {
+      // Moved on while it went up: the save asked for the newer code keeps that.
+      if (!(error instanceof v2cloud.Moved)) diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`);
+    })
     .finally(() => {
       if (keeping.get(item) === next) keeping.delete(item);
     });
