@@ -22,7 +22,7 @@ just nightly       # tag and publish a nightly (only with permission)
 
 Data lives in `~/.edit` (prod) or `~/.edit-dev` (`just dev`).
 
-A server an agent starts in its own shell on Linux is stopped when that agent's turn ends, even under `setsid nohup` (T3 Code keeps each agent's processes in a group it ends): start one that has to outlive the turn with `systemd-run --user --same-dir --unit=<name> …` (`--same-dir`: from the repo, not the home folder a user service otherwise starts in). A server run from source serves the UI from `apps/web/dist`, which needs `just wasm` and then `just web` first; neither needs a restart (Nov 26: prod Edit on mandalorian went down mid-export when the Trooper thread finished).
+A server an agent starts in its own shell on Linux is stopped when that agent's turn ends, even under `setsid nohup` (T3 Code keeps each agent's processes in a group it ends): start one that has to outlive the turn with `systemd-run --user --same-dir --unit=<name> …` (`--same-dir`: from the repo, not the home folder a user service otherwise starts in). A server run from source serves the UI from `apps/web/dist`, which needs `just wasm` and then `just web` first; neither needs a restart.
 
 ## Dev vs Prod
 
