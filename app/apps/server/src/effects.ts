@@ -1861,6 +1861,22 @@ export function graphicsOf(app: App, project: string, now = Date.now()): Graphic
 /** Why a render failed, by what can be done about it. */
 type Failure = "code" | "passing" | "network" | "disk";
 
+/**
+ * A page's words for the browser's WebGL not starting (CesiumJS's, three.js's, Chrome's own): this computer's, never
+ * the effect's code (Nov 25, Boyfriends on mandalorian under WSL: Chrome's WebGL found no graphics card, and the agent,
+ * told to fix its code, drew the three 3D date maps as flat 2D titles instead).
+ */
+const NO_WEBGL = /WebGL, but initialization failed|Error creating WebGL context|WebGL (?:isn't|is not) (?:available|supported)|could not create a WebGL/iu;
+
+/** What the agent is told when this computer's browser couldn't start WebGL: what's there stays, and it waits on Edit. */
+export const NO_WEBGL_LINE =
+  "THIS COMPUTER'S BROWSER COULDN'T START WEBGL: nothing in the effect's code to fix, and no other look in its place. Leave the effect and its clips on the timeline as they are (their render made before is what plays), report_problem, and say it's FAILED in your summary: Edit's to fix, and the change waits on it.";
+
+/** Whether `said` is the browser's WebGL not starting (`NO_WEBGL`). */
+export function noWebgl(said: string): boolean {
+  return NO_WEBGL.test(said);
+}
+
 /** A page held up by the network, not its code: Edit's relay unreachable, its requests through Edit hanging or failing. */
 export class NetworkDown extends Error {}
 
@@ -1956,6 +1972,8 @@ export function failureKind(error: unknown): Failure {
   // Its frames not joining is the encoder's moment (NVENC refusing a session while the card is shared), never the
   // page's code: its frames were drawn (Nov 22, the trial server: every render for five minutes "failed at encoding",
   // told the agent to fix its effect, and the same command worked by hand two minutes on).
+  // The browser's WebGL not starting is this computer's: tried again as Edit tries any passing failure, never the code's.
+  if (noWebgl(said)) return "passing";
   if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome|frames didn't join into a video/.test(said)) return "passing";
   return "code";
 }
@@ -2903,7 +2921,8 @@ export function renderState(project: string, name: string, key: string): string 
   }
   const failure = failureOf(id(project, name, key));
   if (failure?.kind === "network") return `not made yet: the connection dropped while it rendered (${failure.said.replace(/[.\s]+$/u, "")}); nothing in its code to fix, it renders again by itself once Edit's relay answers`;
-  return failure === undefined ? null : `its render failed: ${failure.said}`;
+  if (failure === undefined) return null;
+  return noWebgl(failure.said) ? `its render failed: ${failure.said.replace(/[.\s]+$/u, "")}. ${NO_WEBGL_LINE}` : `its render failed: ${failure.said}`;
 }
 
 /**

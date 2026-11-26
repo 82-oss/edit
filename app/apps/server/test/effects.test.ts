@@ -462,6 +462,18 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(tool.content.filter((part) => part.type === "image").length).toBe(1);
     expect(tool.content.at(-1)!.text).toContain("BREAKS THE EFFECT CONTRACT");
     await expect(effects.add(app, id, "wrong")).rejects.toThrow("isn't ready for the timeline");
+    // A page whose WebGL wouldn't start (this computer's browser, Nov 25 under WSL): the agent is told it's not its code
+    // to fix and that what's there stays, never to fix it first.
+    write(app, id, "glless", {
+      "scene.html": `<!doctype html><body><script>
+        window.duration = 1; window.seek = () => {};
+        window.ready = Promise.reject(new Error("The browser supports WebGL, but initialization failed."));
+      </script></body>`,
+    });
+    const glless = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glless", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(glless).toContain(effects.NO_WEBGL_LINE);
+    expect(glless).toContain("window.ready was rejected: The browser supports WebGL, but initialization failed.");
+    expect(glless).not.toContain("fix these first");
     await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
     // A big screenshot (full-size noise, megabytes of PNG) reaches its page by a fetch, not in the call: a JPEG as any.
     write(app, id, "noise", {
@@ -648,6 +660,12 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its frames didn't join into a video: h264_nvenc: OpenEncodeSessionEx failed: out of memory (10): (no details)"))).toBe("passing");
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
+  // The browser's WebGL not starting is this computer's (Nov 25, WSL): never the agent's code to change, nor a lesser look.
+  const noWebgl = "its window.ready was rejected: The browser supports WebGL, but initialization failed.";
+  expect(effects.failureKind(new Error(noWebgl))).toBe("passing");
+  expect(effects.failureKind(new Error("its page threw at 0.00 s: Error creating WebGL context."))).toBe("passing");
+  expect([effects.noWebgl(noWebgl), effects.noWebgl("its page threw at 1.20 s: TypeError: gl is null")]).toEqual([true, false]);
+  expect(effects.NO_WEBGL_LINE).toContain("no other look in its place");
   // The network's (Sphe's M4, Nov 17): the relay unreachable, the map helper's tiles asked for and never answered.
   expect(effects.failureKind(new effects.NetworkDown("date-tulsa's page got nowhere for 15 s waiting on the network"))).toBe("network");
   expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles stopped coming: none came in 15 s, 3 asked for and unanswered (Edit's server or its relay isn't answering)"))).toBe("network");
