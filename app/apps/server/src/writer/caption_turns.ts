@@ -120,7 +120,7 @@ export function run(script: Script, dir: string, names: string[], notes: string,
 const tidy = (text: string): string => [...splitWords(text.replace(/[()[\]]/g, "")).join(" ")].slice(0, 48).join("");
 const splitWords = (text: string): string[] => text.split(/\s+/).filter((word) => word !== "");
 
-type Person = [id: string, name: string | null, role: string];
+export type Person = [id: string, name: string | null, role: string];
 
 /** Said of lines whose words carry no voice and no turn marks (Apple's on-device recogniser): only on those, so answers kept for captions and Scribe stay valid. */
 const UNVOICED = "These words come from an on-device recogniser: nothing marks where a speaker changes (no >> after a recording's first line), short replies and fillers are often missing, and rare names may be misheard. Decide every change of speaker from the conversation; split a line wherever a second person starts.";
@@ -218,7 +218,7 @@ export async function runWith(script: Script, dir: string, names: string[], note
     for (const person of (Array.isArray(answer.newPeople) ? answer.newPeople : []) as Record<string, unknown>[]) {
       if (typeof person.id !== "string") continue;
       const name = typeof person.name === "string" ? tidy(person.name) : "";
-      renamed.set(person.id, joinPerson(people, name === "" ? null : name, tidy(typeof person.role === "string" ? person.role : "")));
+      renamed.set(person.id, joinPerson(people, name === "" ? null : name, tidy(typeof person.role === "string" ? person.role : ""), new Set(renamed.values())));
     }
     const resolve = (id: unknown): string | null => (typeof id !== "string" ? null : (renamed.get(id) ?? (people.some(([known]) => known === id) ? id : null)));
     const inWindow = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= from && n < to;
@@ -277,8 +277,15 @@ export async function runWith(script: Script, dir: string, names: string[], note
 }
 
 /** The same person when a name matches, or (with no names) the same role; otherwise someone new. Answers their id. */
-function joinPerson(people: Person[], name: string | null, role: string): string {
-  const found = people.find(([, known, knownRole]) => (name !== null && known !== null ? name.toLowerCase() === known.toLowerCase() : name === null && known === null && knownRole.toLowerCase() === role.toLowerCase()));
+/**
+ * A window's new person as one of the people: the same name, or for someone unnamed, the unnamed person of that role
+ * from another window. `taken`: who this window's other new people already are, so two unnamed people of one role in a
+ * window stay two (CodeRabbit on #17).
+ */
+export function joinPerson(people: Person[], name: string | null, role: string, taken: ReadonlySet<string> = new Set()): string {
+  const found = people.find(([id, known, knownRole]) =>
+    name !== null && known !== null ? name.toLowerCase() === known.toLowerCase() : name === null && known === null && !taken.has(id) && knownRole.toLowerCase() === role.toLowerCase(),
+  );
   if (found !== undefined) return found[0];
   const plain = `p${people.length + 1}`;
   const id = people.some(([known]) => known === plain) ? `${plain}x` : plain;

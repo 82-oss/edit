@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import type { Script, Word } from "@edit/types/writer";
 
-import { answerFile, find, lines, respell, runWith, sameInput, windows, type Ask } from "../../src/writer/caption_turns.ts";
+import { answerFile, type Ask, find, joinPerson, lines, type Person, respell, runWith, sameInput, windows } from "../../src/writer/caption_turns.ts";
 import { parse } from "../../src/writer/captions.ts";
 
 const word = (text: string, startMs: number, speaker: string): Word => ({ id: "", text, startMs, endMs: startMs + 200, speaker });
@@ -70,4 +70,13 @@ test("a split is found by its first words", () => {
   const misheard = word("Jaden,", 0, "t1");
   respell(misheard, new Map([["jaden", "Jadon"]]));
   expect(misheard.text).toBe("Jadon,");
+});
+
+test("two unnamed people of one role in a window stay two; across windows they're one", () => {
+  const people: Person[] = [["p1", "Keri", "Suspect"]];
+  const first = joinPerson(people, null, "Officer");
+  const second = joinPerson(people, null, "Officer", new Set([first]));
+  expect(second).not.toBe(first);
+  expect(joinPerson(people, null, "Officer")).toBe(first);
+  expect(joinPerson(people, "keri", "Witness")).toBe("p1");
 });
