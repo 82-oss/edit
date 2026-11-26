@@ -72,6 +72,14 @@ export interface CachePaths {
   light: string
 }
 
+/**
+ * Their captions out of a stretch the still clean can't take (the engine's caption.rs `clean`: the shadow brightened
+ * back, the letters filled by LaMa at `model`, steadied along the camera's motion), from `job` (the still clean's job,
+ * text_inpaint.ts's request): on a thread of its own at background priority, stopped once it has taken longer than a
+ * stretch may.
+ */
+export declare function captionClean(job: string, model: string): Promise<CaptionAnswer>
+
 export interface CensorCheck {
   issues: Array<any>
   /** Files not read yet (`censor_check_pending`). */

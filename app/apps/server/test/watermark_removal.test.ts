@@ -110,7 +110,8 @@ test("a watermark strip lies under a text strip of the same frames, both stuck t
 test("back-to-back watermark cells leave no frame between them on a clip cut between two of the file's frames (Trooper, Nov 26)", () => {
   const project = stacked();
   const clip = project.clips[0] as VideoClip;
-  clip.source_in = 5.532;
+  // 20 s from 25.532 s of the file: across the two cells' meeting at 30 s, between two of its frames.
+  clip.source_in = 25.532;
   clip.duration = 600;
   const one = project.media.find((media) => media.id === "w")!;
   project.media = project.media.filter((media) => media.id !== "t");
