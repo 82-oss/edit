@@ -197,7 +197,11 @@ export async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => P
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(FILES_AT_ONCE, items.length) }, lane));
+  // Every lane ended before a failure is said (none takes a new item once one fails): what's cleared after it, a
+  // folder or copies, isn't written again by a lane still running (PR #14's CodeRabbit review).
+  const ended = await Promise.allSettled(Array.from({ length: Math.min(FILES_AT_ONCE, items.length) }, lane));
+  const failure = ended.find((one) => one.status === "rejected");
+  if (failure !== undefined) throw failure.reason;
   return answers;
 }
 
@@ -214,14 +218,20 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
   for (const file of files) {
     if (!join(fresh, file.path).startsWith(fresh + sep)) throw new Error(`a file outside the folder: ${file.path}`);
   }
-  await eachAtOnce(files, async (file) => {
-    const target = join(fresh, file.path);
-    fs.mkdirSync(dirname(target), { recursive: true });
-    // The same content already here (most of a revision is): copied, not fetched.
-    const here = join(dir, file.path);
-    if (fs.existsSync(here) && (await sha256File(here)) === file.sha256) fs.copyFileSync(here, target);
-    else await cloud.download(fileKey(file.sha256), target);
-  });
+  // What came of a fetch that failed is cleared (each call's folder is its own, so no later one clears it).
+  try {
+    await eachAtOnce(files, async (file) => {
+      const target = join(fresh, file.path);
+      fs.mkdirSync(dirname(target), { recursive: true });
+      // The same content already here (most of a revision is): copied, not fetched.
+      const here = join(dir, file.path);
+      if (fs.existsSync(here) && (await sha256File(here)) === file.sha256) fs.copyFileSync(here, target);
+      else await cloud.download(fileKey(file.sha256), target);
+    });
+  } catch (error) {
+    fs.rmSync(fresh, { recursive: true, force: true });
+    throw error;
+  }
   // What's made again from the timeline stays as it was here (a version that has none of its own); its key says whether it's still of what's there.
   for (const path of REMADE) {
     if (files.some((file) => file.path === path) || !fs.existsSync(join(dir, path))) continue;

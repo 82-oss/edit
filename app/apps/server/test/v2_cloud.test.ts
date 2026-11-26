@@ -264,6 +264,8 @@ test("a computer watching another's edit asks the cloud again after a minute, an
     setSystemTime(new Date(Date.now() + 61_000));
     expect(await effects.bringDown(app, id)).toEqual([]);
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe(page("one"));
+    // Nothing of the fetch that failed left beside it.
+    expect(fs.readdirSync(join(dir, "..")).filter((one) => one.includes(".incoming-"))).toEqual([]);
     // The line back: asked again at once, and the version in use comes down.
     mock.cloud.objects.set(object, held);
     expect(await effects.bringDown(app, id)).toEqual(["map"]);
