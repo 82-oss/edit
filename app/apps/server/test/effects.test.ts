@@ -466,6 +466,7 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     // to fix and that what's there stays, never to fix it first.
     write(app, id, "glless", {
       "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
         window.duration = 1; window.seek = () => {};
         window.ready = Promise.reject(new Error("The browser supports WebGL, but initialization failed."));
       </script></body>`,
@@ -474,10 +475,24 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(glless).toContain(effects.NO_WEBGL_LINE);
     expect(glless).toContain("window.ready was rejected: The browser supports WebGL, but initialization failed.");
     expect(glless).not.toContain("fix these first");
+    // A page's own canvas asked for WebGL after 2D gets none on any computer: its code's to fix, said as before (here
+    // the browser gives a fresh canvas WebGL).
+    write(app, id, "glmisused", {
+      "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? (this.dataset.used === "2d" ? null : {}) : (this.dataset.used = "2d", real.call(this, kind, ...rest)); };
+        window.duration = 1; window.seek = () => {};
+        const c = document.createElement("canvas"); c.getContext("2d");
+        window.ready = c.getContext("webgl") ? Promise.resolve() : Promise.reject(new Error("Error creating WebGL context."));
+      </script></body>`,
+    });
+    const misused = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glmisused", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(misused).toContain("fix these first");
+    expect(misused).not.toContain(effects.NO_WEBGL_LINE);
     // One whose window.ready never settles once WebGL fails (a look that rejects): told the same.
     write(app, id, "glhang", {
       "scene.html": `<!doctype html><body><script>
         window.duration = 1; window.seek = () => {};
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
         window.ready = new Promise(() => {});
         setTimeout(() => { throw new Error("The browser supports WebGL, but initialization failed."); });
       </script></body>`,
@@ -680,9 +695,10 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
   // The browser's WebGL not starting is this computer's (Nov 25, WSL): never the agent's code to change, nor a lesser look.
-  const noWebgl = "its window.ready was rejected: The browser supports WebGL, but initialization failed.";
+  // Known by what Edit's runtime adds once a fresh canvas got no WebGL here, never by the page's words alone.
+  const noWebgl = "its window.ready was rejected: The browser supports WebGL, but initialization failed. (this computer's browser has no WebGL)";
   expect(effects.failureKind(new Error(noWebgl))).toBe("passing");
-  expect(effects.failureKind(new Error("its page threw at 0.00 s: Error creating WebGL context."))).toBe("passing");
+  expect(effects.failureKind(new Error("its page threw at 0.00 s: Error creating WebGL context."))).toBe("code");
   expect([effects.noWebgl(noWebgl), effects.noWebgl("its page threw at 1.20 s: TypeError: gl is null")]).toEqual([true, false]);
   expect(effects.NO_WEBGL_LINE).toContain("no other look in its place");
   // The network's (Sphe's M4, Nov 17): the relay unreachable, the map helper's tiles asked for and never answered.
