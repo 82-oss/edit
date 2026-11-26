@@ -190,7 +190,7 @@ export async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => P
  * built beside it and swapped in, so a page is never half the old and half
  * the new.
  */
-async function getFiles(files: File[], dir: string): Promise<void> {
+async function getFiles(files: File[], dir: string, still?: () => boolean): Promise<boolean> {
   const fresh = `${dir}.incoming-${process.pid}`;
   fs.rmSync(fresh, { recursive: true, force: true });
   for (const file of files) {
@@ -210,11 +210,17 @@ async function getFiles(files: File[], dir: string): Promise<void> {
     fs.mkdirSync(fresh, { recursive: true });
     fs.linkSync(join(dir, path), join(fresh, path));
   }
+  // Asked with nothing else run between it and the swap.
+  if (still !== undefined && !still()) {
+    fs.rmSync(fresh, { recursive: true, force: true });
+    return false;
+  }
   const old = `${dir}.outgoing-${process.pid}`;
   fs.rmSync(old, { recursive: true, force: true });
   if (fs.existsSync(dir)) fs.renameSync(dir, old);
   fs.renameSync(fresh, dir);
   fs.rmSync(old, { recursive: true, force: true });
+  return true;
 }
 
 /**
@@ -274,12 +280,14 @@ export async function copyItem(from: Item, toKey: string, reason: string): Promi
   return true;
 }
 
-/** An item's version `n` (else the one in use) put in `dir`; null when the item has none. */
-export async function fetchInto(key: string, n: number | null, dir: string): Promise<Version | null> {
+/**
+ * An item's version `n` (else the one in use) put in `dir`; null when the item has none, or `still` (asked just
+ * before the swap, once its files are here) says `dir` is no longer as it was asked for.
+ */
+export async function fetchInto(key: string, n: number | null, dir: string, still?: () => boolean): Promise<Version | null> {
   const found = await version(key, n);
   if (found === null || found.version.files === null) return null;
-  await getFiles(found.version.files, dir);
-  return found.version;
+  return (await getFiles(found.version.files, dir, still)) ? found.version : null;
 }
 
 // ---------------------------------------------------------------- channels' lanes (Nov 14, channels.ts)
