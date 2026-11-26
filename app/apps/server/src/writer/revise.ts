@@ -9,7 +9,7 @@
 import * as lanes from "../lanes.ts";
 import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, editNote, isCutIn, noteAnchor, notesOnTheirWords } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
 // commentary.ts reads it from here, which keeps the order fixing.ts and this module load in.
 export { editNote };
 import * as claude from "./claude.ts";
@@ -17,7 +17,7 @@ import * as formats from "./formats.ts";
 import type { Format } from "./formats.ts";
 import { COMPILATION_PAGES, pageCount } from "./pages.ts";
 import { clock } from "./paragraphs.ts";
-import { CUT_IN_MS, EDITOR_WRITING, evidence, formatOfScript, introRange, purposes, wordAt, type Opening } from "./plan.ts";
+import { CUT_IN_MS, EDITOR_WRITING, evidence, formatOfScript, introRange, NOTE_IN_TEXT, purposes, wordAt, type Opening } from "./plan.ts";
 import { FEEDBACK_SCHEMA, feedbackOf, type Feedback } from "./fixing.ts";
 import { LESSON_RULE, LESSON_SCHEMA, lessonOf } from "./lesson_note.ts";
 import { TOOLS_NOTE } from "./turn_tools.ts";
@@ -358,6 +358,8 @@ class Work {
     const text = typeof given === "string" ? given.trim() : "";
     if (text === "") throw new Error("Give the paragraph's narration.");
     if (text.includes("—")) throw new Error("Narration never uses an em dash.");
+    // Read aloud as it is: a note for the editor goes in a note edit (CodeRabbit on #17).
+    if (NOTE_IN_TEXT.test(text)) throw new Error("A note for the editor is written into this narration. Leave the narration as it will be read and put the note in a note edit on the words it's about.");
     if ([...text].length > 6_000) throw new Error("A cut-in holds at most 6,000 characters.");
     return text;
   }
@@ -392,8 +394,11 @@ class Work {
         }
         const [startMs, endMs] = edge === "in" ? [start, clip.endMs] : [clip.startMs, end];
         if (endMs < startMs + 200) throw new Error("That trim leaves nothing of the clip; trim to a word inside it.");
+        const before = { ...clip };
         clip.startMs = startMs;
         clip.endMs = endMs;
+        // Its notes' offsets follow its words when the in-point moves (CodeRabbit on #17).
+        if (clip.notes?.length && startMs !== before.startMs) clip.notes = tidy.shareNotes(before, [{ ...clip }], { words, corrections: this.corrections })[0]!.notes;
         return;
       }
       case "remove_words": {
@@ -402,7 +407,7 @@ class Work {
         if (b < a) throw new Error("Give the first word before the last.");
         const [start, end] = [words[a]!.startMs, words[b]!.endMs];
         if (!this.clips.some((clip) => !isCutIn(clip) && start < clip.endMs && end > clip.startMs)) throw new Error(`None of w${a}–w${b} is in the cut.`);
-        this.clips = tidy.removeRange(this.clips, start, end).filter((clip) => clip.endMs >= clip.startMs + 100);
+        this.clips = tidy.removeRange(this.clips, start, end, { words, corrections: this.corrections }).filter((clip) => clip.endMs >= clip.startMs + 100);
         return;
       }
       case "insert_words": {
@@ -439,9 +444,12 @@ class Work {
         const ms = words[this.word(edit.wordId)]!.startMs;
         const clip = this.clips[index]!;
         if (isCutIn(clip) || ms < clip.startMs + 100 || ms + 100 > clip.endMs) throw new Error("Split a clip at a word inside it, away from its edges.");
-        // The timestamp's comments stay with the first half.
+        // The timestamp's id stays with the first half; each note goes with the half that says its words (CodeRabbit on #17).
+        const whole = { ...clip };
         const second: Clip = { ...structuredClone(clip), id: crypto.randomUUID(), startMs: ms, notes: [] };
         clip.endMs = ms;
+        const [firstHalf, secondHalf] = tidy.shareNotes(whole, [{ ...clip }, second], { words, corrections: this.corrections });
+        if (whole.notes?.length) [clip.notes, second.notes] = [firstHalf!.notes, secondHalf!.notes];
         if (this.pointed?.has(clip.id)) this.pointed.add(second.id);
         this.nameNew(second);
         this.clips.splice(index + 1, 0, second);
@@ -494,7 +502,7 @@ class Work {
       case "tighten_pauses": {
         const cutIns = this.clips.filter(isCutIn).length;
         const [from, to] = introRange(this.format, openingOf(this.clips, this.format), cutIns);
-        const footage: tidy.Footage = { words, peaks: this.peaks, parts: this.script.parts ?? [], durationMs: this.script.durationMs, compilation: this.format.compilation, relaxed: this.format.kind === "courtroom" };
+        const footage: tidy.Footage = { words, corrections: this.corrections, peaks: this.peaks, parts: this.script.parts ?? [], durationMs: this.script.durationMs, compilation: this.format.compilation, relaxed: this.format.kind === "courtroom" };
         const intro = (block: number) => block >= from && block < to;
         const pointed = this.pointed;
         if (pointed === null) {
@@ -618,7 +626,7 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     } else clip.narration = text;
   }
   proposals = placeNotes(script, work, proposals);
-  const clips = notesOnTheirWords({ ...script, corrections: work.corrections }, tidy.fitToParts(work.clips, script.parts ?? []));
+  const clips = tidy.fitToParts(work.clips, script.parts ?? [], { words: script.words, corrections: work.corrections });
   if (clips.length > 500) throw new Error("Those edits would leave more than 500 items in the timeline.");
   return [clips, work.corrections, settle(clips, proposals)];
 }

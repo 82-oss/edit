@@ -80,8 +80,9 @@ const WINDOW_SCHEMA = {
     splits: { type: "array", maxItems: 60, items: { type: "object", additionalProperties: false, properties: { n: { type: "integer" }, words: { type: "string" }, person: { type: "string" } }, required: ["n", "words", "person"] } },
     newPeople: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, properties: { id: { type: "string" }, name: { type: ["string", "null"] }, role: { type: "string" } }, required: ["id", "name", "role"] } },
     spellings: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, properties: { heard: { type: "string" }, written: { type: "string" } }, required: ["heard", "written"] } },
+    named: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, properties: { id: { type: "string" }, name: { type: "string" } }, required: ["id", "name"] } },
   },
-  required: ["lines", "splits", "newPeople", "spellings"],
+  required: ["lines", "splits", "newPeople", "spellings", "named"],
 };
 
 /** Speaker assignment and spelling may change after a run; identity and timing must still match before its raw turns are restored for a retry. */
@@ -120,7 +121,7 @@ export function run(script: Script, dir: string, names: string[], notes: string,
 const tidy = (text: string): string => [...splitWords(text.replace(/[()[\]]/g, "")).join(" ")].slice(0, 48).join("");
 const splitWords = (text: string): string[] => text.split(/\s+/).filter((word) => word !== "");
 
-type Person = [id: string, name: string | null, role: string];
+export type Person = [id: string, name: string | null, role: string];
 
 /** Said of lines whose words carry no voice and no turn marks (Apple's on-device recogniser): only on those, so answers kept for captions and Scribe stay valid. */
 const UNVOICED = "These words come from an on-device recogniser: nothing marks where a speaker changes (no >> after a recording's first line), short replies and fillers are often missing, and rare names may be misheard. Decide every change of speaker from the conversation; split a line wherever a second person starts.";
@@ -185,7 +186,7 @@ export async function runWith(script: Script, dir: string, names: string[], note
         recording: recordingList[all[from]!.group] ?? null,
         cast: castPeople,
         ...unvoiced(script, all.slice(from, to)),
-        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id, named as the cast is: spelled as caseNames spells that person, and a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), else null with their role. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
+        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id, named as the cast is: spelled as caseNames spells that person, and a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), else null with their role. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In named, a cast person whose name is null and whose name these lines give by the same rule: their id and the name. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
         lines: shownLines,
       });
       try {
@@ -213,12 +214,18 @@ export async function runWith(script: Script, dir: string, names: string[], note
     const after = ranges[index + 1];
     const from = index > 0 && before![1] > start ? start + Math.floor((before![1] - start) / 2) : start;
     const to = after !== undefined && after[0] < end ? after[0] + Math.floor((end - after[0]) / 2) : end;
+    // A person the cast left unnamed, named in these lines as theirs (CodeRabbit on #17): the first window to name them.
+    for (const one of (Array.isArray(answer.named) ? answer.named : []) as Record<string, unknown>[]) {
+      const person = people.find(([id]) => id === one.id);
+      const name = typeof one.name === "string" ? tidy(one.name) : "";
+      if (person !== undefined && person[1] === null && name !== "") person[1] = name;
+    }
     // This window's new people, as the cast's ids.
     const renamed = new Map<string, string>();
     for (const person of (Array.isArray(answer.newPeople) ? answer.newPeople : []) as Record<string, unknown>[]) {
       if (typeof person.id !== "string") continue;
       const name = typeof person.name === "string" ? tidy(person.name) : "";
-      renamed.set(person.id, joinPerson(people, name === "" ? null : name, tidy(typeof person.role === "string" ? person.role : "")));
+      renamed.set(person.id, joinPerson(people, name === "" ? null : name, tidy(typeof person.role === "string" ? person.role : ""), new Set(renamed.values())));
     }
     const resolve = (id: unknown): string | null => (typeof id !== "string" ? null : (renamed.get(id) ?? (people.some(([known]) => known === id) ? id : null)));
     const inWindow = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= from && n < to;
@@ -277,8 +284,15 @@ export async function runWith(script: Script, dir: string, names: string[], note
 }
 
 /** The same person when a name matches, or (with no names) the same role; otherwise someone new. Answers their id. */
-function joinPerson(people: Person[], name: string | null, role: string): string {
-  const found = people.find(([, known, knownRole]) => (name !== null && known !== null ? name.toLowerCase() === known.toLowerCase() : name === null && known === null && knownRole.toLowerCase() === role.toLowerCase()));
+/**
+ * A window's new person as one of the people: the same name, or for someone unnamed, the unnamed person of that role
+ * from another window. `taken`: who this window's other new people already are, so two unnamed people of one role in a
+ * window stay two (CodeRabbit on #17).
+ */
+export function joinPerson(people: Person[], name: string | null, role: string, taken: ReadonlySet<string> = new Set()): string {
+  const found = people.find(([id, known, knownRole]) =>
+    name !== null && known !== null ? name.toLowerCase() === known.toLowerCase() : name === null && known === null && !taken.has(id) && knownRole.toLowerCase() === role.toLowerCase(),
+  );
   if (found !== undefined) return found[0];
   const plain = `p${people.length + 1}`;
   const id = people.some(([known]) => known === plain) ? `${plain}x` : plain;

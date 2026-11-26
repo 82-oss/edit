@@ -447,8 +447,20 @@ export function planOf(script: Script): Plan {
   return { items, report: "", undated: true };
 }
 
-/** The producer's notes on the clips a script had, moved onto the new clip that plays the same first word. */
+/** The producer's notes on the clips a script had, moved onto the new clip that plays the same first word; a cut-in's onto the same cut-in. */
 export function keepNotes(beforeWords: Word[], before: Clip[], afterWords: Word[], clips: Clip[]): void {
+  // A cut-in's notes are on its narration, which the re-cut keeps as it was: each goes back on the same cut-in, in order
+  // (Codex on #17: a plan's picture notes on cut-ins were lost when the exact hearing came in after a rough build).
+  const oldCutIns = before.filter(isCutIn);
+  const newCutIns = clips.filter(isCutIn);
+  if (oldCutIns.length === newCutIns.length) {
+    for (const [index, old] of oldCutIns.entries()) {
+      const clip = newCutIns[index]!;
+      if ((old.notes ?? []).length === 0 || clip.narration !== old.narration) continue;
+      clip.notes ??= [];
+      for (const note of old.notes ?? []) if (!clip.notes.some((kept) => kept.id === note.id)) clip.notes.push(note);
+    }
+  }
   for (const old of before) {
     if (isCutIn(old) || (old.notes ?? []).length === 0) continue;
     const first = beforeWords.find((word) => word.startMs >= old.startMs);

@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 import type { Clip, Script, Word } from "@edit/types/writer";
 
 import { lineCount, pageCount, textWidth } from "../../src/writer/pages.ts";
-import { editNote, editLines, noteAnchor, notesOnTheirWords } from "../../src/writer/blocks.ts";
+import { editNote, editLines, noteAnchor } from "../../src/writer/blocks.ts";
+import { keepNotes } from "../../src/writer/exact.ts";
 import { beatForFloor, boundaryIssues, joinLate, joinSlivers, PAUSE_BEAT_MS, polish, removeRange, tighten } from "../../src/writer/tidy.ts";
 
 const clip = (id: string, startMs: number, endMs: number): Clip => ({ id, startMs, endMs });
@@ -13,7 +14,7 @@ const words = (said: [string, string, number, number][]): Word[] =>
 
 test("a sliver left by a cut pause joins its neighbour", () => {
   const card: Clip = { ...clip("", 0, 3_000), kind: "cut-in" };
-  const joined = joinSlivers([clip("", 856_400, 856_900), clip("", 857_800, 860_500), card, clip("", 900_000, 900_800), clip("", 950_000, 955_000)], []);
+  const joined = joinSlivers([clip("", 856_400, 856_900), clip("", 857_800, 860_500), card, clip("", 900_000, 900_800), clip("", 950_000, 955_000)], [], { words: [], corrections: {} });
   expect(joined.map((one) => [one.startMs, one.endMs])).toEqual([
     [856_400, 860_500],
     [0, 3_000],
@@ -52,7 +53,7 @@ test("tightens only quiet gaps", () => {
   // Loud sound in the second gap (untranscribed speech), silence in the first.
   const peaks = new Array<number>(600).fill(0.5);
   for (let i = 30; i < 270; i++) peaks[i] = 0;
-  const done = tighten({ words: said, peaks, parts: [], durationMs: 12_000, compilation: false, relaxed: false }, [clip("c", 0, 12_000)], PAUSE_BEAT_MS, () => false);
+  const done = tighten({ words: said, corrections: {}, peaks, parts: [], durationMs: 12_000, compilation: false, relaxed: false }, [clip("c", 0, 12_000)], PAUSE_BEAT_MS, () => false);
   expect(done.pauses).toBe(1);
   expect(done.clips.reduce((sum, one) => sum + one.endMs - one.startMs, 0)).toBe(12_000 - 4_000);
 });
@@ -86,7 +87,7 @@ test("clips a courtroom's relaxed half joins keep their notes, on the same words
   const corrections = { w4: "Home," };
   const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 6, end: 9, quote: "all" } };
   const clips: Clip[] = [clip("c0", 0, 20_000), { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Intro." }, clip("a", 30_000, 32_000), { ...clip("b", 34_000, 36_000), notes: [note] }];
-  const joined = joinLate(clips, said, { s: "Officer" }, [], false, corrections);
+  const joined = joinLate(clips, { words: said, corrections }, { s: "Officer" }, [], false);
   expect(joined.map((one) => one.id)).toEqual(["c0", "i", "a"]);
   const a = joined[2]!;
   expect(a.notes).toEqual([{ ...note, anchor: { start: 25, end: 28, quote: "all" } }]);
@@ -95,23 +96,61 @@ test("clips a courtroom's relaxed half joins keep their notes, on the same words
   expect(clips[3]!.notes![0]!.anchor!.start).toBe(6);
 });
 
-test("a split clip's notes go to the piece that says their words", () => {
-  const said = words([["Where", "s", 0, 500], ["were", "s", 600, 1_000], ["you?", "s", 1_100, 1_500], ["Home", "s", 5_000, 5_500], ["all", "s", 5_600, 6_000], ["night", "s", 6_100, 6_500]]);
-  const script = { words: said, corrections: {} } as unknown as Script;
-  const later = { id: "n1", text: "edit: zoom in", at: 0, anchor: { start: 12, end: 21, quote: "all night" } };
-  const earlier = { id: "n2", text: "edit: a map", at: 0, anchor: { start: 0, end: 5, quote: "Where" } };
+test("a split clip's notes go to the piece that says their words, the same occurrence", () => {
+  const said = words([["Yes.", "s", 0, 500], ["Where", "s", 600, 1_000], ["were", "s", 1_100, 1_500], ["Yes.", "s", 5_000, 5_500], ["all", "s", 5_600, 6_000], ["night", "s", 6_100, 6_500], ["Home.", "s", 9_000, 9_500]]);
+  const text = { words: said, corrections: {} };
+  const second = { id: "n1", text: "edit: zoom in", at: 0, anchor: { start: 16, end: 20, quote: "Yes." } };
+  const first = { id: "n2", text: "edit: a map", at: 0, anchor: { start: 0, end: 4, quote: "Yes." } };
   const loose = { id: "n3", text: "edit: black and white", at: 0 };
-  const across = { id: "n4", text: "edit: slow down", at: 0, anchor: { start: 11, end: 20, quote: "you? Home" } };
-  const pieces = removeRange([{ id: "c", startMs: 0, endMs: 7_000, notes: [later, earlier, loose, across] }, { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Then." }], 2_000, 4_500);
-  expect(pieces.map((one) => one.notes?.length ?? 0)).toEqual([4, 0, 0]);
-  const placed = notesOnTheirWords(script, pieces);
-  expect(placed[0]!.notes!.map((note) => note.id)).toEqual(["n2", "n3", "n4"]);
-  expect(placed[1]!.notes).toEqual([{ ...later, anchor: { start: 5, end: 14, quote: "all night" } }]);
-  expect(pieces[0]!.notes!.length).toBe(4);
+  const across = { id: "n4", text: "edit: slow down", at: 0, anchor: { start: 11, end: 20, quote: "were Yes." } };
+  const pieces = removeRange([{ id: "c", startMs: 0, endMs: 7_000, notes: [second, first, loose, across] }, { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Then." }], 2_000, 4_500, text);
+  expect(pieces.map((one) => one.id.length > 1 ? "new" : one.id)).toEqual(["c", "new", "i"]);
+  expect(pieces[0]!.notes!.map((note) => note.id)).toEqual(["n2", "n3", "n4"]);
+  expect(pieces[1]!.notes).toEqual([{ ...second, anchor: { start: 0, end: 4, quote: "Yes." } }]);
+  const script = { words: said, corrections: {} } as unknown as Script;
+  expect(noteAnchor(script, pieces[1]!, "Yes.", 0)).toEqual({ start: 0, end: 4, quote: "Yes." });
+});
+
+test("a note whose words are cut stays on its clip, never on a later one saying them too", () => {
+  const said = words([["First.", "s", 0, 500], ["Home.", "s", 1_000, 1_500], ["Home.", "s", 9_000, 9_500]]);
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 7, end: 12, quote: "Home." } };
+  const cut = removeRange([{ id: "a", startMs: 0, endMs: 2_000, notes: [note] }, { id: "b", startMs: 8_800, endMs: 9_800 }], 900, 2_000, { words: said, corrections: {} });
+  expect(cut[0]!.notes).toEqual([note]);
+  expect(cut[1]!.notes ?? []).toEqual([]);
 });
 
 test("every line of an editor's note is one the editor is shown", () => {
   expect(editNote("Show the house.")).toBe("edit: Show the house.");
   expect(editNote("Edit: Show the house.\nThen show the map.")).toBe("edit: Show the house.\nedit: Then show the map.");
   expect(editLines([editNote("Show the house.\n\nThen show the map.")])).toEqual(["edit: Show the house.", "edit: Then show the map."]);
+});
+
+test("a note's offsets follow its words when polishing moves an edge", () => {
+  const said = words([["Okay,", "s", 0, 400], ["Home.", "s", 600, 1_000], ["All", "s", 6_000, 6_300], ["night.", "s", 6_400, 6_800]]);
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 6, end: 11, quote: "Home." } };
+  const [polished] = polish([{ id: "c", startMs: 0, endMs: 7_000, notes: [note] }], said, {}, 10_000);
+  const clipped = polished[0]!;
+  const script = { words: said, corrections: {} } as unknown as Script;
+  const at = noteAnchor(script, clipped, "Home.")!;
+  expect(clipped.notes![0]!.anchor).toEqual({ ...note.anchor, start: at.start, end: at.end });
+  // Split at the pause, it stays with "Home.".
+  const pieces = removeRange(polished, 1_500, 5_500, { words: said, corrections: {} });
+  expect(pieces[0]!.notes!.map((one) => one.anchor!.quote)).toEqual(["Home."]);
+  expect(pieces[1]!.notes).toEqual([]);
+});
+
+test("a re-cut on the exact hearing puts each cut-in's notes back on it", () => {
+  const note = { id: "n", text: "edit: a photo of Payton", at: 0, anchor: { start: 4, end: 10, quote: "Payton" } };
+  const before: Clip[] = [clip("a", 0, 1_000), { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "She Payton.", notes: [note] }];
+  const after: Clip[] = [clip("b", 0, 1_000), { id: "j", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "She Payton." }];
+  keepNotes([], before, [], after);
+  expect(after[1]!.notes).toEqual([note]);
+});
+
+test("a note whose words a correction recased goes with them when the clip splits", () => {
+  const said = words([["Start.", "s", 0, 500], ["Um", "s", 2_000, 2_300], ["Home.", "s", 4_000, 4_500]]);
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 10, end: 15, quote: "Home." } };
+  const pieces = removeRange([{ id: "c", startMs: 0, endMs: 5_000, notes: [note] }], 1_900, 2_400, { words: said, corrections: { w2: "HOME." } });
+  expect(pieces[0]!.notes).toEqual([]);
+  expect(pieces[1]!.notes).toEqual([{ ...note, anchor: { start: 0, end: 5, quote: "HOME." } }]);
 });
