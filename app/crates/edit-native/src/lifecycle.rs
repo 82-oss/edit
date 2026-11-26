@@ -99,8 +99,6 @@ pub fn init(options: InitOptions) -> napi::Result<()> {
     } = options;
     crate::hand_back_freed_memory();
     crate::give_back_as_allocated();
-    // Before the engine has threads or starts a child: the environment changed safely.
-    edit_engine::render::choose_wsl_driver();
     edit_engine::log::use_sink(Box::new(ToJs(log)));
     edit_engine::util::use_tools(ffmpeg.into(), ffprobe.into());
     edit_engine::util::use_cache_dir(cache_dir.into());
@@ -149,19 +147,28 @@ pub fn hold_lock(path: String) -> bool {
 
 /// Becomes `exe` with `args`, in place (same pid, terminal and flags), after
 /// marking every descriptor above stderr close-on-exec so no listener leaks
-/// into the new server. Returns only if the exec failed.
+/// into the new server, with `env` added to its environment (this process's
+/// own is left as it is: the new one is given its own). Returns only if the
+/// exec failed.
 #[napi(ts_return_type = "never")]
-pub fn reexec(exe: String, args: Vec<String>) -> napi::Result<()> {
+pub fn reexec(
+    exe: String,
+    args: Vec<String>,
+    env: Option<std::collections::HashMap<String, String>>,
+) -> napi::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         close_on_exec_above_stderr();
-        let error = std::process::Command::new(&exe).args(&args).exec();
+        let error = std::process::Command::new(&exe)
+            .args(&args)
+            .envs(env.unwrap_or_default())
+            .exec();
         Err(crate::fail(format!("could not restart as {exe}: {error}")))
     }
     #[cfg(not(unix))]
     {
-        let _ = args;
+        let _ = (args, env);
         Err(crate::fail(format!(
             "restarting as {exe} needs a Unix system"
         )))

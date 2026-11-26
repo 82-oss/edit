@@ -223,7 +223,7 @@ export interface Native {
   init(config: InitConfig): void; // S
   shutdown(): void; // S
   holdLock(path: string): boolean; // S: flock, held for the life of the process
-  reexec(exe: string, args: string[]): never; // S
+  reexec(exe: string, args: string[], env?: Record<string, string>): never; // S
 
   // Cache keys
   mediaKey(path: string): string; // S

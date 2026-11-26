@@ -436,9 +436,11 @@ export interface RawImage {
 /**
  * Becomes `exe` with `args`, in place (same pid, terminal and flags), after
  * marking every descriptor above stderr close-on-exec so no listener leaks
- * into the new server. Returns only if the exec failed.
+ * into the new server, with `env` added to its environment (this process's
+ * own is left as it is: the new one is given its own). Returns only if the
+ * exec failed.
  */
-export declare function reexec(exe: string, args: Array<string>): never
+export declare function reexec(exe: string, args: Array<string>, env?: Record<string, string> | undefined | null): never
 
 /**
  * Takes frames `[start, end)` out of the timeline on every track
