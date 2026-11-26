@@ -488,6 +488,18 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     const misused = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glmisused", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
     expect(misused).toContain("fix these first");
     expect(misused).not.toContain(effects.NO_WEBGL_LINE);
+    // Another error naming WebGL, on a browser that has none, is still its code's ("WebGLRenderer is not defined").
+    write(app, id, "glunbound", {
+      "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+        window.duration = 1; window.seek = () => {};
+        window.ready = Promise.resolve().then(() => new WebGLRenderer());
+      </script></body>`,
+    });
+    const unbound = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glunbound", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(unbound).toContain("WebGLRenderer is not defined");
+    expect(unbound).toContain("fix these first");
+    expect(unbound).not.toContain(effects.NO_WEBGL_LINE);
     // One whose window.ready never settles once WebGL fails (a look that rejects): told the same.
     write(app, id, "glhang", {
       "scene.html": `<!doctype html><body><script>

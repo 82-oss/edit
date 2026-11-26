@@ -739,6 +739,20 @@ test.skipIf(chrome === null)("a render that fails names its effect and says what
     // Asked again while it stands: the same, at once, and no export takes the clear still for it.
     await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("ask the agent to fix the breaks effect");
     expect(effects.notReady(app.store, app.store.get(id)!.project)).toContain("The breaks effect");
+    // A page whose WebGL wouldn't start on this browser, which then never gets as far as its seek: the computer's, said
+    // before its missing seek, and the agent never asked to fix the code for it.
+    fs.writeFileSync(join(dir, "scene.html"), `<!doctype html><body><script>
+      const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+      window.duration = 2; window.ready = Promise.resolve();
+      setTimeout(() => { throw new Error("Error creating WebGL context."); });
+    </script></body>`);
+    const failed = await effects.renderNow(app, id, "breaks").then(() => "rendered", (error: unknown) => diag.messageOf(error));
+    expect(failed).toContain("couldn't render just now");
+    const line = effects.renderLine(app, id, "breaks")!;
+    expect(line).toMatch(/its page couldn't start: .*Error creating WebGL context\..* \(this computer's browser has no WebGL\)/u);
+    expect(line).toEndWith(`${effects.NO_WEBGL_LINE}`);
+    expect(line).not.toContain("no window.seek");
+    expect(await messageContext(app, id, null, true)).toBe("");
   } finally {
     await server.stop(true);
     cleanup();
