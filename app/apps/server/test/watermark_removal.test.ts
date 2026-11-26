@@ -7,7 +7,7 @@
 // frames, and only a text strip ending the blur over their subtitles. The
 // engine is a stand-in here (its own tests are Rust's: edit-engine watermark).
 
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
@@ -17,6 +17,8 @@ import type { Media, Project, VideoClip } from "../src/model.ts";
 import type { WatermarkPiece, WatermarkRemoved } from "../src/native/index.ts";
 import { join } from "../src/paths.ts";
 import * as tools from "../src/tools.ts";
+import * as removalSchedule from "../src/removal_schedule.ts";
+import * as removerCloud from "../src/remover_cloud.ts";
 import * as wm from "../src/watermark_removal.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
@@ -531,3 +533,128 @@ test.skipIf(process.env.EDIT_WATERMARK_REAL === undefined)("real footage: the ma
     cleanup();
   }
 }, 1_800_000);
+
+test("a cell RunPod refused a machine for isn't waited for or sent again at once, nor are the cells queued behind it; half an hour on they are, and done once RunPod rents", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("watermark-refused");
+  const calls: WatermarkPiece[] = [];
+  const engine = standIn(calls);
+  const words = `RunPod wouldn't rent a CPU machine for 10 minutes (402: {"detail":"Your account balance is too low to rent a pod."})`;
+  let refusing = true;
+  // As the relay fails a job it couldn't rent a machine for (remover_cloud.ts `call`): its words, flagged.
+  wm.useEngine({ ...engine, remove: async (piece, ...rest) => (refusing ? (calls.push(piece), Promise.reject(new removerCloud.RelaySaid(words, true))) : engine.remove(piece, ...rest)) });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  // Told of the project held back, so its removal is planned again when the half hour is up (removal_schedule.ts).
+  const heldBack: string[] = [];
+  const listening = (project: string) => heldBack.push(project);
+  removerCloud.heldBack.push(listening);
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const marked = join(dir, "marked.mp4");
+    fs.writeFileSync(marked, "a stand-in tape with a mark");
+    const id = await project(app, [marked], 40);
+    await wm.ensure(app, id);
+    await wm.settled();
+    // One cell at a time here: the first refused, the one queued behind it is held with it, never sent.
+    expect(calls.map((piece) => piece.from)).toEqual([0]);
+    expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state, piece.refused, piece.tries])).toEqual([[0, "failed", words, 0], [30, "failed", words, 0]]);
+    // Not waited for: an export goes on without them, and says so (Nov 25, Boyfriends: up to three hours on two machines).
+    expect(removalSchedule.progressOf(id).out).toBe(0);
+    expect([...new Set(heldBack)]).toEqual([id]);
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toBe(`Going without 2 pieces of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`);
+    await removalSchedule.waitForPieces(app, id, 200);
+    // Only what the timeline shows is counted: cut back to 20 s, the second cell isn't gone without.
+    const whole = structuredClone(store.get(id)!.project);
+    const cut = structuredClone(whole);
+    (cut.clips.find((clip) => clip.id === "f0") as VideoClip).duration = 20 * 30;
+    await app.store.replace(id, null, cut, "test");
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toStartWith("Going without 1 piece of their text");
+    await app.store.replace(id, null, whole, "test");
+    // Not sent again at once (each try is refused only after ten minutes at the relay).
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs - 1000);
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(calls.length).toBe(1);
+    // Half an hour on, with the account topped up: sent again, done, and nothing more to say.
+    refusing = false;
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs + 1000);
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(calls.length).toBe(3);
+    expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state])).toEqual([[0, "done"], [30, "done"]]);
+    expect(removalSchedule.exportNote(store.get(id)!.project)).toBeNull();
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
+  } finally {
+    removerCloud.heldBack.splice(removerCloud.heldBack.indexOf(listening), 1);
+    clock.mockRestore();
+    cleanup();
+  }
+}, 60_000);
+
+test("an export waiting on other removal goes without a cell RunPod refused, even once its retry is sent mid-wait", async () => {
+  const { app, dir, cleanup } = fixtureHome("watermark-refused-mid-export");
+  const calls: WatermarkPiece[] = [];
+  const engine = standIn(calls);
+  const words = `RunPod wouldn't rent a CPU machine for 10 minutes (402)`;
+  // The plain tape's look held (the export waits on it); the marked tape's cell refused once, its retry held.
+  let lookOpen = () => {};
+  const look = new Promise<void>((resolve) => (lookOpen = resolve));
+  let retryOpen = () => {};
+  const retry = new Promise<void>((resolve) => (retryOpen = resolve));
+  const tried = new Set<number>();
+  wm.useEngine({
+    learn: async (source, ...rest) => {
+      if (source.includes("plain")) await look;
+      return engine.learn(source, ...rest);
+    },
+    remove: async (piece, ...rest) => {
+      if (!tried.has(piece.from)) {
+        tried.add(piece.from);
+        throw new removerCloud.RelaySaid(words, true);
+      }
+      await retry;
+      return engine.remove(piece, ...rest);
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const marked = join(dir, "marked.mp4");
+    const plain = join(dir, "plain.mp4");
+    fs.writeFileSync(marked, "a stand-in tape with a mark");
+    fs.writeFileSync(plain, "a stand-in tape with none");
+    const id = await project(app, [marked, plain], 20);
+    await wm.ensure(app, id);
+    while (wm.piecesOf(id)[0]?.refused === undefined) await Bun.sleep(10);
+    // The export waits on the plain tape's look, having seen the refused cell.
+    let scanned = () => {};
+    const firstScan = new Promise<void>((resolve) => (scanned = resolve));
+    removalSchedule.waitHooks.scanned = (scannedId) => scannedId === id && scanned();
+    let done = false;
+    const exporting = removalSchedule.waitForPieces(app, id, 60_000).then(() => (done = true));
+    await firstScan;
+    expect(done).toBe(false);
+    // Half an hour on, the refused cell's hold ends and it's sent again (queued beside the look, its retry held),
+    // while the export still waits.
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs + 1000);
+    void wm.ensure(app, id);
+    const sent = () => ["queued", "running"].includes(wm.piecesOf(id)[0]?.state ?? "");
+    while (!sent()) await Bun.sleep(10);
+    expect(removalSchedule.progressOf(id).out).toBe(2);
+    // The look done: the export goes on without the retried cell, not behind it.
+    lookOpen();
+    await exporting;
+    expect(sent()).toBe(true);
+    expect(removalSchedule.progressOf(id).out).toBeGreaterThanOrEqual(1);
+    // And says so, though its retry is out: the export goes without it.
+    expect(removalSchedule.exportNote(app.store.get(id)!.project)).toStartWith("Going without 1 piece of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes).");
+  } finally {
+    removalSchedule.waitHooks.scanned = () => {};
+    lookOpen();
+    retryOpen();
+    await wm.settled();
+    clock.mockRestore();
+    cleanup();
+  }
+}, 60_000);

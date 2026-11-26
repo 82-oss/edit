@@ -1887,7 +1887,10 @@ export class ExportRegistry implements seams.Exports {
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
     const beats = extra.stretch === true ? extra.beats : key;
-    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, ...(beats === undefined ? {} : { beats }), cancelled: false, stop: new AbortController(), job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
+    // What it goes without of what it would have waited for (RunPod refusing removal's machines), said beside it: worked
+    // out at each start, never kept with its arguments (a retry once the pieces are done would say it again).
+    const note = [extra.note, seams.broll.readyNote?.(project)].filter((one): one is string => typeof one === "string" && one !== "").join(" · ") || undefined;
+    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, ...(beats === undefined ? {} : { beats }), cancelled: false, stop: new AbortController(), job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(note === undefined ? {} : { note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
     this.jobs.set(project.id, running);
     let upload = false;
     try {

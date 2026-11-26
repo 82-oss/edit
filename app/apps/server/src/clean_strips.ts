@@ -307,6 +307,25 @@ function trimCovers(project: Project, stripped: Map<string, [number, number][]>)
   project.clips = next;
 }
 
+/** The names Edit's removal lays and owns, on the clips it lays them on: such a clip is taken out and laid again as removal sees fit. */
+const RESERVED: [string, Clip["type"]][] = [[`${NAME} · `, "video"], [`${WATERMARK_NAME} · `, "video"], [`${TRACKED} · `, "adjustment"], [STAND_IN, "adjustment"]];
+
+/**
+ * Why the agent's save may not stand, when it brings a clip under a name removal owns that wasn't in the project
+ * before (null: none). Removal takes out what it didn't lay under its names, so such a clip would be gone at the next
+ * save (Nov 25, Boyfriends: the agent's logo blurs, named "Text blur · …", went at once and its tracking found no
+ * clip). One already there under that very name (a cut's second half, a moved one) is removal's and stays allowed.
+ */
+export function reservedNameRefusal(before: Project | null, after: Project): string | null {
+  const had = new Set((before?.clips ?? []).map((clip) => clip.name ?? ""));
+  const taken = after.clips.find((clip) => {
+    const name = clip.name ?? "";
+    return RESERVED.some(([prefix, type]) => clip.type === type && name.startsWith(prefix)) && !had.has(name);
+  });
+  if (taken === undefined) return null;
+  return `"${taken.name}" is a name Edit's removal keeps for its own strips and blurs, and it takes away any clip under it that it didn't lay: name it something else (e.g. "Logo blur · …"; names starting ${RESERVED.map(([prefix]) => `"${prefix.trim()}"`).join(", ")} are Edit's).`;
+}
+
 /**
  * The house rule kept on every save (the store's, as pointers.ts's): each
  * clip of footage that has cleaned strips shows them, and nothing else is

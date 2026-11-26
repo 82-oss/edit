@@ -25,7 +25,7 @@
 import type { App } from "./app.ts";
 import * as background from "./background.ts";
 import * as burned from "./burned_subtitles.ts";
-import { readyWaits } from "./broll.ts";
+import { readyNotes, readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
 import * as cloud from "./cloud.ts";
@@ -171,14 +171,66 @@ export function exportLine(id: string): string | null {
 }
 
 /**
+ * Said beside an export that goes without pieces RunPod refused a machine for (null: none): failed, they're not waited
+ * for, and they're sent again when their hold ends (remover_cloud.ts `timing.refusedRetryMs`), from the export row and the
+ * agent's export result.
+ */
+/** A watermark piece's and a text piece's key among those an export went without. */
+const markKey = (one: watermarkRemoval.Piece): string => `mark ${one.media}@${one.from}`;
+const cleanKey = (one: textInpaint.InpaintPiece): string => `clean ${one.key}`;
+const sent = (one: { state: string }): boolean => one.state === "queued" || one.state === "running";
+
+/** Told each time an export's wait has looked at what's out (tests: what it has seen refused is kept by then). */
+export const waitHooks = { scanned: (_id: string): void => {} };
+
+/** Each project's pieces its last export wait went without while a retry had them out, with RunPod's words (`waitForPieces`). */
+const wentWithout = new Map<string, Map<string, string>>();
+
+export function exportNote(project: Project): string | null {
+  const id = project.id;
+  // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again); a refused
+  // stretch waiting a moment on a watermark piece over it is held all the same (text_inpaint.ts).
+  // Each footage clip's source seconds on the timeline: a refused piece counts where it overlaps one.
+  const fps = fpsOf(project);
+  const shown = project.clips.flatMap((clip) => (clip.type === "video" ? [{ media: clip.media, from: clip.source_in, to: clip.source_in + (clip.duration / fps) * (clip.speed || 1) }] : []));
+  const onTimeline = (one: { media: string; from: number; to: number }) => shown.some((span) => span.media === one.media && span.from < one.to && span.to > one.from);
+  // Held now, or sent again while the export's wait went on without it (its retry still out).
+  const retried = wentWithout.get(id) ?? new Map<string, string>();
+  const why = (one: { state: string; refused?: string }, key: string): string | undefined =>
+    (one.state === "failed" || one.state === "waiting") && one.refused !== undefined ? one.refused : sent(one) ? retried.get(key) : undefined;
+  const held = [
+    ...watermarkRemoval.piecesOf(id).map((one) => ({ one, said: why(one, markKey(one)) })),
+    ...textInpaint.piecesOf(id).map((one) => ({ one, said: why(one, cleanKey(one)) })),
+  ].filter(({ one, said }) => said !== undefined && onTimeline(one));
+  if (held.length === 0) return null;
+  const count = held.length;
+  // The relay's own sentence ("RunPod wouldn't rent a GPU for 10 minutes"), not RunPod's answer after it: that stays in the log.
+  const said = held[0]!.said!.split(" (")[0]!;
+  return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${said}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`;
+}
+
+/**
  * Waits for `id`'s pieces still out before an export (broll's `waitForMaps`,
  * which every export goes through): caught up with the edit first, then
- * until none is out.
+ * until none is out. Pieces RunPod refused a machine for aren't, until they're
+ * sent again: the export goes on without them and says so (`exportNote`).
  */
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
   const started = Date.now();
-  while ((keepWaits(app, id), progressOf(id).out > 0)) {
+  // Pieces this export has seen RunPod refuse: it goes without them, even once a background retry sends one again
+  // while it waits on the rest (their hold ending mid-wait); the removal line and later exports count them as ever.
+  const refused = new Map<string, string>();
+  const retried = (): string[] => {
+    for (const one of watermarkRemoval.piecesOf(id)) if (one.refused !== undefined) refused.set(markKey(one), one.refused);
+    for (const one of textInpaint.piecesOf(id)) if (one.refused !== undefined) refused.set(cleanKey(one), one.refused);
+    return [...watermarkRemoval.piecesOf(id).filter(sent).map(markKey), ...textInpaint.piecesOf(id).filter(sent).map(cleanKey)].filter((key) => refused.has(key));
+  };
+  for (;;) {
+    keepWaits(app, id);
+    const out = progressOf(id).out - retried().length;
+    waitHooks.scanned(id);
+    if (out <= 0) break;
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
@@ -188,6 +240,11 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
     }
     await Bun.sleep(1000);
   }
+  // What it went without while a retry had it out, for the export's note (`exportNote`).
+  wentWithout.set(id, new Map(retried().map((key) => [key, refused.get(key)!])));
+  const project = app.store.get(id)?.project;
+  const without = project === undefined ? null : exportNote(project);
+  if (without !== null) diag.warn("removal", `${id}: ${without}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -703,8 +760,29 @@ async function wake(app: App, id: string): Promise<void> {
 /** Bumped by `reset`: wake-ups waiting from before give up. */
 let wakeGeneration = 0;
 
+/** Each project's removal to plan again once pieces RunPod refused may be sent again, by project and the minute it's due (`start`). */
+const retries = new Map<string, ReturnType<typeof setTimeout>>();
+
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
+  // A piece RunPod refused is held back a while (remover_cloud.ts `timing.refusedRetryMs`): its project's removal is planned again then (respecting a
+  // Stop), so a topped-up account gets it done without an edit or an export to set it going.
+  // One wake-up per project and minute it's due: each refusal's hold ends on its own (they come in bursts, the relay
+  // failing a whole pool at once, so a handful at most), and a burst is planned again once, after the hold of its last.
+  removerCloud.heldBack.push((id) => {
+    const hold = removerCloud.timing.refusedRetryMs;
+    // A thirtieth of the hold (a minute of the half hour): refusals that close together share one wake-up, just after the last one's hold ends.
+    const step = Math.max(1, Math.round(hold / 30));
+    const slot = Math.ceil((Date.now() + hold + step) / step);
+    const key = `${id}@${slot}`;
+    if (retries.has(key)) return;
+    const timer = setTimeout(() => {
+      retries.delete(key);
+      void ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: after RunPod's refusal: ${diag.messageOf(error)}`));
+    }, slot * step - Date.now());
+    timer.unref?.();
+    retries.set(key, timer);
+  });
   burned.theirs.takenOut = (project, one) => textRemoval.theirsTakenOut(app, project, one);
   readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
   // An original that went up from here: the projects that waited for it (cloud.ts `waitFor`: RunPod's finder read and
@@ -726,6 +804,7 @@ export function start(app: App): void {
     }
   };
   cloud.whenUp.push(upListener);
+  readyNotes.push(exportNote);
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
   app.store.subscribe((event) => {
@@ -757,6 +836,9 @@ const replanning = new Map<string, number>();
 
 /** For tests. */
 export function reset(): void {
+  wentWithout.clear();
+  for (const timer of retries.values()) clearTimeout(timer);
+  retries.clear();
   looked.clear();
   active.clear();
   wakes.clear();

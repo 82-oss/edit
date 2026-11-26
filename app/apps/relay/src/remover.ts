@@ -444,7 +444,8 @@ export class RemoverPods {
     if (job.state === "done" && job.outCleaned === true) return json(410, { error: "its result was cleaned up before it was read: send the job again" });
     if (job.state === "done") return json(200, { ...(job.output ?? { ok: true }), ...(job.shared ? { shared: true } : {}) });
     // Refused renting: no machine had it, RunPod's words say why.
-    if (job.state === "failed") return json(502, { error: job.output?.refused === true ? String(job.output.error) : `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
+    // Refused renting is flagged, so Edit knows no wait helps (an export goes on without the piece) without reading the words.
+    if (job.state === "failed") return json(502, job.output?.refused === true ? { error: String(job.output.error), refused: true } : { error: `the rented machine couldn't do it: ${String(job.output?.error ?? "it stopped twice")}` });
     if (job.state === "cancelled") return json(502, { error: "stopped" });
     return json(202, { pending: true, status: job.state });
   }

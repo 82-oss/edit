@@ -298,6 +298,9 @@ export interface Piece {
   tries?: number;
   /** Given up on after its second try: never queued again here. */
   gaveUp?: boolean;
+  /** RunPod's refusal of a machine for it (an empty account), and when: held back a while (remover_cloud.ts `timing.refusedRetryMs`) before it's sent again. */
+  refused?: string;
+  refusedAt?: number;
 }
 
 /** A piece with more of the mark than this still found isn't clean: done once more, then left. */
@@ -472,6 +475,9 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
     }
     // Stopped while a cached cell above was brought in: the rest stay unqueued (a Stop can't take out what isn't queued yet).
     if ((stops.get(id) ?? 0) !== stopsBefore) return;
+    // RunPod refused a machine for it: sent again once its hold (remover_cloud.ts `timing.refusedRetryMs`) has passed (each try is refused only after ten
+    // minutes); one done meanwhile on another computer (the shelf, above) is laid at once.
+    if (known?.state === "failed" && known.refusedAt !== undefined && Date.now() - known.refusedAt < removerCloud.timing.refusedRetryMs) continue;
     note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued", tries: known?.tries ?? 0 });
     queue.push({ project: id, media: cell.media, source: cell.source, from: cell.from, to: cell.to, model: cell.model });
   }
@@ -596,10 +602,31 @@ async function work(app: App, job: Job): Promise<void> {
     if (stopped()) return;
     piece.state = "failed";
     piece.error = diag.messageOf(error);
+    // RunPod refusing it a machine: held back a while rather than sent again at once, and no try spent; so is every cell
+    // still waiting here to be sent to RunPod (each would be refused only after another ten minutes at the relay).
+    if (removerCloud.refusal(error)) {
+      Object.assign(piece, { refused: piece.error, refusedAt: Date.now(), tries: Math.max(0, (piece.tries ?? 1) - 1) });
+      holdQueued(piece.error, piece.refusedAt!);
+      removerCloud.held(job.project);
+    }
     diag.warn("watermark", `${job.project}: ${label} wasn't cleaned (its watermark stays): ${piece.error}`);
   } finally {
     fs.rmSync(out, { force: true });
   }
+}
+
+/** The cells still waiting here to go to RunPod, failed as refused (`said`, at `at`) and taken off the queue: their account refused one. */
+function holdQueued(said: string, at: number): void {
+  // Those that would go to RunPod too (or to the stand-in engine that refused, in tests).
+  const held = queue.filter((job) => engineOverride !== null || (removerCloud.keyOf(job.media) !== undefined && removerCloud.now()));
+  if (held.length === 0) return;
+  for (const job of held) {
+    queue.splice(queue.indexOf(job), 1);
+    const known = pieces.get(job.project)?.get(pieceKey(job.media.id, job.from));
+    note(job.project, { media: job.media.id, name: job.media.name, from: job.from, to: job.to, state: "failed", error: said, refused: said, refusedAt: at, tries: known?.tries ?? 0 });
+    removerCloud.held(job.project);
+  }
+  diag.warn("watermark", `${held.length} cell(s) waiting to go to RunPod held back with the one it refused: ${said}`);
 }
 
 /** Puts a cell's strip in the project (clean_strips.ts lays it over the clips, under a text strip of the same frames). */

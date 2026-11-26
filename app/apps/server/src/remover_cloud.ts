@@ -15,7 +15,8 @@ import { CHUNK, END_GRACE_S, type Sample, type TrackPlan } from "./text_track.ts
 
 /** The relay's `remover` flag, asked at most once a minute; the last answer meanwhile. */
 const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null, forced: null as boolean | null };
-export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000 };
+/** `refusedRetryMs`: how long a piece RunPod refused a machine for waits before it's sent again (each try is refused only after ten minutes at the relay). */
+export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000, refusedRetryMs: 30 * 60_000 };
 
 /** Whether the relay cleans on RunPod now (asked again once its answer is a minute old). */
 export async function on(): Promise<boolean> {
@@ -62,8 +63,38 @@ export function keyOf(media: Pick<Media, "cloud">): string | undefined {
   return key !== undefined && key !== "" && cloud.validKey(key) && !cloud.notUp(key) ? key : undefined;
 }
 
-/** The relay refusing a job (its own words): the job failed, unlike the relay out of reach a moment. */
-export class RelaySaid extends Error {}
+/**
+ * The relay refusing a job (its own words): the job failed, unlike the relay out of reach a moment. `refused`: RunPod
+ * wouldn't rent a machine for it (an empty account), which no try soon would change (`refusal`).
+ */
+export class RelaySaid extends Error {
+  constructor(
+    message: string,
+    readonly refused = false,
+  ) {
+    super(message);
+  }
+}
+
+/** Told of each project a piece of which RunPod refused (removal_schedule.ts: its removal planned again once `timing.refusedRetryMs` has passed). */
+export const heldBack: ((project: string) => void)[] = [];
+
+/** Project `project` has a piece held back for `timing.refusedRetryMs`: those listening plan it again then. */
+export function held(project: string): void {
+  for (const listener of heldBack) listener(project);
+}
+
+/**
+ * Whether a job failed because RunPod wouldn't rent a machine for it (the relay's `refused` flag, or its words from
+ * before the flag): no wait or try soon helps, so the piece is held back for `timing.refusedRetryMs` rather than sent again at
+ * once, and isn't waited for meanwhile (Nov 25, Boyfriends: the account ran dry, removal sent the refused pieces again
+ * every time, and exports on the PC and the Mac each sat behind them for up to three hours).
+ */
+export function refusal(error: unknown): boolean {
+  if (error instanceof RelaySaid && error.refused) return true;
+  const said = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return said.startsWith("RunPod wouldn't rent");
+}
 
 /**
  * A remover call to the relay. Not relay.json: that takes only a 200, and the relay answers a job started, or still
@@ -82,7 +113,8 @@ export async function call<T>(method: string, route: string, body?: unknown): Pr
   }
   if (answer.status !== 200 && answer.status !== 202) {
     const said = (value as { error?: unknown } | null)?.error;
-    throw new RelaySaid(typeof said === "string" ? said : `the relay answered ${answer.status}`);
+    const words = typeof said === "string" ? said : `the relay answered ${answer.status}`;
+    throw new RelaySaid(words, (value as { refused?: unknown } | null)?.refused === true);
   }
   return { status: answer.status, value: value as T };
 }
