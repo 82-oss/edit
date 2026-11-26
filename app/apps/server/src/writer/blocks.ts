@@ -272,7 +272,12 @@ export function outline(script: Script, blocks: Block[]): Mark[] {
     // The opening runs to its case opening (the first cut-in that isn't the intro's): its clips are the intro's,
     // whatever recording they come from, so a recording or case begins at its first clip after that (JJ, Nov 26: a
     // "Recording 1" heading in the middle of the intro made it look two clips long).
-    const opening = script.clips.findIndex((clip) => isCutIn(clip) && clip.narrationRole !== "intro" && clip.narrationRole !== "conclusion");
+    // A house courtroom case (not a compilation, not a channel's) opens on one cut-in that is intro and case opening
+    // both (plan.ts `purposes`), so its opening ends there (Codex on #17).
+    const combined = script.kind === "courtroom" && script.compilation !== true && !(typeof script.channel === "string" && script.channel !== "");
+    const opening = combined
+      ? script.clips.findIndex(isCutIn)
+      : script.clips.findIndex((clip) => isCutIn(clip) && clip.narrationRole !== "intro" && clip.narrationRole !== "conclusion");
     const body = opening < 0 ? script.clips : script.clips.slice(opening + 1);
     let cases = 0;
     for (const [index, part] of parts.entries()) {

@@ -132,6 +132,27 @@ test("a joined case's recordings begin after the opening, never inside its intro
   expect(marks).toEqual([["a1", "Opening"], ["m2", "Recording 1: Morgan"], ["a2", "Recording 2: Anissa"]]);
 });
 
+test("a house courtroom case's opening ends on its one intro and case-opening cut-in", () => {
+  const base = script();
+  const court: Script = {
+    ...base,
+    kind: "courtroom",
+    parts: [
+      { title: "Hearing", startMs: 0, durationMs: 5_000 },
+      { title: "Sentencing", startMs: 5_000, durationMs: 5_000 },
+    ] as Script["parts"],
+    clips: [
+      { id: "c1", startMs: 0, endMs: 1_000 },
+      { id: "i1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "intro", narration: "The case." },
+      { id: "m1", startMs: 2_000, endMs: 3_000 },
+      { id: "b1", startMs: 0, endMs: 1_000, kind: "cut-in", narrationRole: "bridge", narration: "Then the sentencing." },
+      { id: "s1", startMs: 6_000, endMs: 7_000 },
+    ],
+  };
+  const marks = outline(court, blocksOf(court)).map((mark) => [mark.blockId, mark.title]);
+  expect(marks).toEqual([["c1", "Opening"], ["m1", "Recording 1: Hearing"], ["s1", "Recording 2: Sentencing"]]);
+});
+
 test("review text names places, not block ids", () => {
   const block: Block = { id: "pbd55a3f2", kind: "paragraph", text: "Adin unfollowed him, and the friend who had spent so much time" };
   const name = placeName(block);
