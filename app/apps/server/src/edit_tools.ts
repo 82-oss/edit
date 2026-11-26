@@ -226,7 +226,8 @@ async function waitTool({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const estimate = progress.remainingMs(projectId, kinds) ?? 0;
   // A link coming in is waited on a minute at most, so the person hears how far it is in between (progress.LINK_WAIT).
   const linking = progress.linking(projectId, kinds);
-  const asked = uint(args.at_most) ?? (linking ? progress.LINK_WAIT_S : Math.ceil(estimate / 1000) + 5);
+  // Nothing measured yet (a script's footage before its first file is in): the longest one wait, never five seconds at a time.
+  const asked = uint(args.at_most) ?? (linking ? progress.LINK_WAIT_S : estimate > 0 ? Math.ceil(estimate / 1000) + 5 : 300);
   const most = clamp(linking ? Math.min(asked, progress.LINK_WAIT_S) : asked, 1, 300);
   const started = progress.timing.now();
   const done = await progress.waitFor(projectId, kinds, most * 1000, exporting);

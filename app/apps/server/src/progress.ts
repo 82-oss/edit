@@ -43,6 +43,8 @@ interface Entry {
   /** The stage it's in, and what it's doing in words ("downloading “Bodycam 4”: 1.2 of 3.4 GB, 35%"): a link's. */
   step?: string;
   say?: string;
+  /** No usual length, as a link's: its time is said only once it measures one (a script's footage). */
+  unguessed?: boolean;
 }
 
 const running = new Map<string, Entry>();
@@ -52,10 +54,10 @@ function keyOf(kind: Work, project: string, part: string): string {
 }
 
 /** Notes work as started (again: a restart of the same part keeps its first start). */
-export function begin(kind: Work, project: string, part: string, total = 0): void {
+export function begin(kind: Work, project: string, part: string, total = 0, guessed = true): void {
   const key = keyOf(kind, project, part);
   if (running.has(key)) return;
-  running.set(key, { kind, project, started: timing.now(), done: 0, total, first: null });
+  running.set(key, { kind, project, started: timing.now(), done: 0, total, first: null, ...(guessed ? {} : { unguessed: true }) });
 }
 
 /** Its measured progress: `done` of `total` (a share: total 1). */
@@ -110,7 +112,7 @@ function left(entry: Entry, now: number): number {
     const rate = (entry.done - from) / Math.max(now - at, 1);
     return Math.max((entry.total - entry.done) / rate, 1000);
   }
-  if (UNGUESSED.includes(entry.kind)) return 0;
+  if (UNGUESSED.includes(entry.kind) || entry.unguessed === true) return 0;
   if (entry.kind === "watch" && entry.total > 0) {
     const rounds = Math.ceil((entry.total - entry.done) / WATCH_AT_ONCE);
     return Math.max(rounds * typical.watch - (entry.done === 0 ? elapsed : 0), 15_000);
@@ -165,7 +167,12 @@ export function summary(project: string, kinds?: readonly Work[]): string | null
     ...count("map", "a map shot rendering", "map shots rendering"),
     ...(watch === undefined ? [] : [watch.total > 0 ? `the watcher (${watch.done} of ${watch.total} windows)` : "the watcher"]),
     ...count("export", "an export", "exports"),
-    ...count("import", "a B-roll import downloading", "B-roll imports downloading"),
+    ...(() => {
+      // A script's footage says what it's doing (script.ts `told`); a B-roll import is counted.
+      const imports = mine.filter((entry) => entry.kind === "import");
+      const plain = imports.filter((entry) => entry.say === undefined).length;
+      return [...imports.flatMap((entry) => (entry.say === undefined ? [] : [entry.say])), ...(plain === 0 ? [] : [plain === 1 ? "a B-roll import downloading" : `${plain} B-roll imports downloading`])];
+    })(),
     ...mine.filter((entry) => entry.kind === "link").map((entry) => `a link ${entry.say ?? "downloading"}`),
   ];
   return `${parts.join(", ")}${when}`;

@@ -44,6 +44,7 @@ import * as posts from "./posts.ts";
 import { LINK_PREFIX as FINISHED_LINK, reviewCode, reviewOf } from "./finished.ts";
 import { finishCase, pendingCase } from "./case_insertion.ts";
 import * as durableJobs from "./jobs.ts";
+import * as progress from "./progress.ts";
 import * as failure from "./failure.ts";
 import * as steps from "./import_steps.ts";
 import * as keyframeIndex from "./keyframe_index.ts";
@@ -1634,6 +1635,17 @@ type JobState = ScriptJob["state"];
 
 const RUNNING: JobState[] = ["downloading", "transcribing", "placing", "voicing"];
 
+/** A script import's part in progress.ts. */
+const SCRIPT_WORK = "script";
+
+/** What a script's import is doing, for the agent's wait: "the script's footage coming in (1 of 4 files in)". */
+function scriptWorkWords(state: JobState, fetching: boolean, done: number, total: number): string {
+  if (fetching) return `the script's footage coming in (${done} of ${total} ${total === 1 ? "file" : "files"} in)`;
+  if (state === "transcribing") return "the script's footage being transcribed";
+  if (state === "voicing") return "the script's narration being voiced";
+  return "the script's edit being laid out";
+}
+
 /** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit, or a failure that passes (a dropped connection) tried again. */
 export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing" | "room";
 
@@ -1822,6 +1834,7 @@ export class Jobs {
     durableJobs.begin(this.home, "case", project, { ...(request === undefined ? {} : { request }), import: shownJob(job), made: this.made.get(project) ?? {} });
     this.written.set(project, signature(job));
     app.store.emit({ type: "script", id: project, job: shownJob(job) });
+    this.told(project);
     return true;
   }
 
@@ -1841,6 +1854,23 @@ export class Jobs {
     else if (job.state !== "done" && job.back !== true) delete job.done_at;
     app.store.emit({ type: "script", id: project, job: shownJob(job) });
     this.keep(project);
+    this.told(project);
+  }
+
+  /**
+   * The import as work running for the project's agent (progress.ts, kind `import`), while it fetches, lays out or
+   * voices here, with how many files are in: what its wait waits on and says. It said nothing (Nov 26, four Cuffed &
+   * Caught compilations): wait answered "nothing of that is running" while get_edit_context said "Still importing",
+   * and each agent gave the edit up as stalled ten minutes in, its footage still coming down from the cloud.
+   */
+  private told(project: string): void {
+    const job = this.jobs.get(project);
+    if (job === undefined || !this.working(project)) return progress.end("import", project, SCRIPT_WORK, false);
+    progress.begin("import", project, SCRIPT_WORK, 0, false);
+    const total = job.files.length;
+    const done = job.files.filter((file) => file.state === "done").length;
+    const fetching = job.state === "downloading" || looking(job);
+    progress.stage("import", project, SCRIPT_WORK, fetching ? "downloading" : job.state, scriptWorkWords(job.state, fetching, done, total), fetching ? done : 0, fetching ? total : 0);
   }
 
   /**
@@ -1883,6 +1913,7 @@ export class Jobs {
   /** The import ended here (done, failed or waiting): its job table entry as `settled` says, the excerpts kept only while it may go on. */
   finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: WaitingOn } & durableJobs.Settled): void {
     this.active.delete(project);
+    this.told(project);
     const timer = this.pending.get(project);
     if (timer !== undefined) clearTimeout(timer);
     this.pending.delete(project);

@@ -13,6 +13,7 @@ import * as steps from "../src/import_steps.ts";
 import * as jobs from "../src/jobs.ts";
 import * as missingMedia from "../src/missing_media.ts";
 import * as notices from "../src/notices.ts";
+import * as progress from "../src/progress.ts";
 import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
@@ -1040,6 +1041,40 @@ test("another link given after the layout fills the black card where it is, soun
     // A bad link is refused in plain words, and nothing changes.
     await expect(replaceFootage(fixture.app, id, "FILEcopy00002", "https://docs.google.com/document/d/x")).rejects.toThrow("isn't missing from this edit");
   } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 26, four Cuffed & Caught compilations: the agent's wait said "nothing of that is running" while the footage came
+// down from the cloud, file by file, and each agent gave the edit up as stalled ten minutes in.
+test("a script's footage coming in is running work the agent's wait sees, with how many files are in, until the import ends", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-told", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    cloudFootage(SOUNDLESS);
+    const original = seams.cloudMedia.driveOriginal;
+    mocked(
+      spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (...args: Parameters<typeof original>) => {
+        if (args[0] === "FILEcase0002") await held;
+        return { file: args[0], source: `drive:${args[0]}`, key: `edit/originals/drive/${args[0]}/a.mp4`, name: `${args[0]}.mp4`, size: 100 };
+      }),
+    );
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    const started = start(fixture.app, id, false);
+    for (let i = 0; i < 2000 && scripts.get(id)?.files[0]?.state !== "done"; i++) await Bun.sleep(2);
+    expect(progress.summary(id, ["import"])).toBe("the script's footage coming in (1 of 2 files in)");
+    // No rate measured yet: no time guessed (a B-roll import's "done in about 4 min"), so wait waits its longest.
+    expect(progress.remainingMs(id, ["import"])).toBe(0);
+    release();
+    await started;
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(progress.summary(id, ["import"])).toBeNull();
+  } finally {
+    progress.reset();
     fixture.cleanup();
   }
 });
