@@ -124,6 +124,16 @@ test.skipIf(chrome === null)("an effect on the timeline is rendered from its cod
     await seams.broll.waitForMaps(app, id, 90_000);
     const third = effects.list(app.store, id)[0]!.key;
     expect(fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders")).sort()).toEqual([`bar-${now}.mp4`, `bar-${third}.mp4`].sort());
+    // Its code put back exactly as it was (a change that can't be finished, effects.NO_WEBGL_LINE): the render kept of
+    // that code plays again, placed as it was, never drawn (no Chrome needed for it).
+    const kept = join(app.store.uploadsDir(id), "effect-renders", `bar-${now}.mp4`);
+    const made = fs.statSync(kept).mtimeMs;
+    fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("#e0343c", "#34e03c"));
+    expect(effects.list(app.store, id)[0]!.key).toBe(now);
+    await seams.broll.waitForMaps(app, id, 90_000);
+    const back = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
+    expect([back.effect_key, back.kind, back.path]).toEqual([now, "video", kept]);
+    expect(fs.statSync(kept).mtimeMs).toBe(made);
   } finally {
     await server.stop(true);
     cleanup();

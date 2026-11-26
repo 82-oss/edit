@@ -1870,7 +1870,7 @@ const NO_WEBGL = /WebGL, but initialization failed|Error creating WebGL context|
 
 /** What the agent is told when this computer's browser couldn't start WebGL: what's there stays, and it waits on Edit. */
 export const NO_WEBGL_LINE =
-  "THIS COMPUTER'S BROWSER COULDN'T START WEBGL: nothing in the effect's code to fix, and no other look in its place. Leave the effect and its clips on the timeline as they are (their render made before is what plays), report_problem, and say it's FAILED in your summary: Edit's to fix, and the change waits on it.";
+  "THIS COMPUTER'S BROWSER COULDN'T START WEBGL: nothing in the effect's code to fix, and no other look in its place. If you changed its code, put it back exactly as it was: the render Edit kept of that code then plays again, without being drawn. Leave its clips on the timeline as they are, report_problem, and say it's FAILED in your summary: Edit's to fix, and the change waits on it.";
 
 /** Whether `said` is the browser's WebGL not starting (`NO_WEBGL`). */
 export function noWebgl(said: string): boolean {
