@@ -1516,7 +1516,7 @@
           "type": "string"
         },
         "instead": {
-          "description": "What you did instead, if anything.",
+          "description": "What you did instead, if anything: never a lesser stand-in for the step, which stays unfinished.",
           "type": "string"
         },
         "note": {

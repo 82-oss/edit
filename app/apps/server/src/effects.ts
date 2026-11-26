@@ -954,7 +954,7 @@ async function settle<T>(page: devtools.Page, poll: string, said: { stuck: (erro
     }
     if (now - working > waits.quietMs) {
       if (!seen) throw new Error(said.unloaded);
-      const stuck = said.stuck(errors);
+      const stuck = said.stuck(await withWebgl(page, errors));
       throw stuck instanceof Error ? stuck : new Error(stuck);
     }
     if (now - started > waits.workingMostMs) throw new Error(said.endless);
@@ -981,6 +981,8 @@ async function load(page: devtools.Page, url: string, token: string, project: st
       stuck: (errors) => {
         const trouble = networkTrouble(project, name, since);
         if (trouble !== null) return new NetworkDown(`${name}'s page got nowhere for ${waits.quietMs / 1000} s waiting on the network, with ${trouble}: nothing in its code to fix, it goes once the connection is back`);
+        // Its WebGL not starting is what it waits on: this computer's, never a file to put in its folder.
+        if (errors.some(noWebgl)) return `${name}'s window.ready never resolved: this computer's browser couldn't start WebGL (it said: ${errors.join("; ")})`;
         const asked = (misses.get(`${project}/${name}`) ?? []).filter((one) => one.at >= since).map((one) => `"${one.path}"`);
         const parts = [`${name}'s window.ready never resolved: its page got nowhere for ${waits.quietMs / 1000} s (no code running, nothing loading), waiting on something that never comes`];
         parts.push(asked.length > 0 ? `it asked for ${asked.join(", ")}, not in its folder` : "a picture, font or video whose load it waits for and whose error it never hears, or a Promise nothing resolves");
@@ -1033,7 +1035,7 @@ export async function look(app: App, projectId: string, name: string, times: num
         // As it renders: nothing behind the page, its unpainted parts see-through, shown over a checkerboard.
         await page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
         const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: [...window.__edit.problems], errors: [...window.__edit.errors] })");
-        warm = { version, duration: loaded.duration, seek: loaded.seek, problems: said.problems, errors: said.errors, animation: null };
+        warm = { version, duration: loaded.duration, seek: loaded.seek, problems: said.problems, errors: await withWebgl(page, said.errors), animation: null };
       } else {
         // Kept from a look before: it says what it said as it loaded, and what this look's seeks say, as a fresh page would.
         const before = [...warm.problems, ...(warm.animation === null ? [] : [warm.animation])];
@@ -1070,7 +1072,7 @@ export async function look(app: App, projectId: string, name: string, times: num
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
       if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;
       const measured = measure && !played && stills.length > 0;
-      return { value: { duration: warm.duration, stills: measured ? stills : stills.map((still) => ({ ...still, cost: 0 })), interval, problems: said.problems, errors: said.errors, ready: readied, measured }, warm };
+      return { value: { duration: warm.duration, stills: measured ? stills : stills.map((still) => ({ ...still, cost: 0 })), interval, problems: said.problems, errors: await withWebgl(page, said.errors), ready: readied, measured }, warm };
     });
   } finally {
     stopListening();
@@ -1860,6 +1862,41 @@ export function graphicsOf(app: App, project: string, now = Date.now()): Graphic
 /** Why a render failed, by what can be done about it. */
 type Failure = "code" | "passing" | "network" | "disk";
 
+/**
+ * What Edit adds to a page's error naming WebGL when this browser gives a fresh canvas none (`withWebgl`): this
+ * computer's, never the effect's code (Nov 25, Boyfriends on mandalorian under WSL: Chrome's WebGL found no graphics
+ * card, and the agent, told to fix its code, drew the three 3D date maps as flat 2D titles instead). The page's words
+ * alone aren't it: a canvas asked for "webgl" after "2d" gets none on any computer.
+ */
+const NO_WEBGL = "(this computer's browser has no WebGL)";
+
+/** What the agent is told when this computer's browser couldn't start WebGL: what's there stays, and it waits on Edit. */
+export const NO_WEBGL_LINE =
+  "THIS COMPUTER'S BROWSER COULDN'T START WEBGL: nothing in the effect's code to fix, and no other look in its place. If you changed its code, put it back exactly as it was: the render Edit kept of that code then plays again, without being drawn. Leave its clips on the timeline as they are, report_problem, and say it's FAILED in your summary: Edit's to fix, and the change waits on it.";
+
+/** Whether `said` is the browser's WebGL not starting, as Edit found it (`NO_WEBGL`, `withWebgl`). */
+export function noWebgl(said: string): boolean {
+  return said.includes(NO_WEBGL);
+}
+
+/** Asked in the page: whether this browser gives a fresh canvas WebGL at all (the context let go at once). */
+const HAS_WEBGL = `(() => { try { const gl = document.createElement("canvas").getContext("webgl2") || document.createElement("canvas").getContext("webgl"); if (gl && gl.getExtension) gl.getExtension("WEBGL_lose_context")?.loseContext(); return !!gl; } catch { return false; } })()`;
+
+/** A page's words for a WebGL context not made (CesiumJS's, three.js's, Chrome's own): what `withWebgl` then asks about. */
+const NO_CONTEXT = /WebGL, but initialization failed|Error creating WebGL context|WebGL (?:isn't|is not) (?:available|supported)|could not create a WebGL/iu;
+
+/**
+ * A page's errors, those of a WebGL context not made (`NO_CONTEXT`) marked as this computer's (`NO_WEBGL`) when the
+ * browser gives a fresh canvas none either: both, so neither the page's words (a canvas asked for "webgl" after "2d")
+ * nor its other errors naming WebGL ("WebGLRenderer is not defined", its code's) are taken for the computer's.
+ */
+async function withWebgl(page: devtools.Page, errors: string[]): Promise<string[]> {
+  const context = (error: string) => NO_CONTEXT.test(error) && !noWebgl(error);
+  if (!errors.some(context)) return errors;
+  const has = await page.evaluate<boolean>(HAS_WEBGL, 5_000).catch(() => true);
+  return has ? errors : errors.map((error) => (context(error) ? `${error} ${NO_WEBGL}` : error));
+}
+
 /** A page held up by the network, not its code: Edit's relay unreachable, its requests through Edit hanging or failing. */
 export class NetworkDown extends Error {}
 
@@ -1955,6 +1992,8 @@ export function failureKind(error: unknown): Failure {
   // Its frames not joining is the encoder's moment (NVENC refusing a session while the card is shared), never the
   // page's code: its frames were drawn (Nov 22, the trial server: every render for five minutes "failed at encoding",
   // told the agent to fix its effect, and the same command worked by hand two minutes on).
+  // The browser's WebGL not starting is this computer's: tried again as Edit tries any passing failure, never the code's.
+  if (noWebgl(said)) return "passing";
   if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome|frames didn't join into a video/.test(said)) return "passing";
   return "code";
 }
@@ -2612,9 +2651,13 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
       const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, id, name)));
-      // A page whose window.ready failed (a map whose place wasn't found) says so, not what breaks after it.
-      const rejected = (await Promise.all(opened.map((page) => page.evaluate<string | null>("window.__edit.errors.find((error) => error.startsWith('window.ready was rejected')) ?? null")))).find((error) => error !== null);
-      if (rejected !== undefined && rejected !== null) throw new Error(`its ${rejected}`);
+      // A page whose WebGL wouldn't start here says so first (this computer's, whatever broke after it), then one whose
+      // window.ready failed (a map whose place wasn't found), not what breaks after either.
+      const said = (await Promise.all(opened.map(async (page) => withWebgl(page, await page.evaluate<string[]>("[...window.__edit.errors]"))))).flat();
+      const computer = said.find(noWebgl);
+      if (computer !== undefined) throw new Error(`its page couldn't start: ${computer}`);
+      const rejected = said.find((error) => error.startsWith("window.ready was rejected"));
+      if (rejected !== undefined) throw new Error(`its ${rejected}`);
       const duration = loaded[0]!.duration;
       if (!(duration > 0)) throw new Error("its page has no window.duration");
       if (!loaded[0]!.seek) throw new Error("its page has no window.seek(t)");
@@ -3022,7 +3065,9 @@ export function renderState(project: string, name: string, key: string): string 
   }
   const failure = failureOf(id(project, name, key));
   if (failure?.kind === "network") return `not made yet: the connection dropped while it rendered (${failure.said.replace(/[.\s]+$/u, "")}); nothing in its code to fix, it renders again by itself once Edit's relay answers`;
-  return failure === undefined ? null : `its render failed: ${failure.said}`;
+  if (failure === undefined) return null;
+  // Without its last full stop: the line it's in ends with one (`renderLine`).
+  return noWebgl(failure.said) ? `its render failed: ${failure.said.replace(/[.\s]+$/u, "")}. ${NO_WEBGL_LINE.replace(/\.$/u, "")}` : `its render failed: ${failure.said}`;
 }
 
 /**

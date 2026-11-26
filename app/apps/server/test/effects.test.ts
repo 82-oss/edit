@@ -463,6 +463,64 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(tool.content.filter((part) => part.type === "image").length).toBe(1);
     expect(tool.content.at(-1)!.text).toContain("BREAKS THE EFFECT CONTRACT");
     await expect(effects.add(app, id, "wrong")).rejects.toThrow("isn't ready for the timeline");
+    // A page whose WebGL wouldn't start (this computer's browser, Nov 25 under WSL): the agent is told it's not its code
+    // to fix and that what's there stays, never to fix it first.
+    write(app, id, "glless", {
+      "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+        window.duration = 1; window.seek = () => {};
+        window.ready = Promise.reject(new Error("The browser supports WebGL, but initialization failed."));
+      </script></body>`,
+    });
+    const glless = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glless", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(glless).toContain(effects.NO_WEBGL_LINE);
+    expect(glless).toContain("window.ready was rejected: The browser supports WebGL, but initialization failed.");
+    expect(glless).not.toContain("fix these first");
+    // A page's own canvas asked for WebGL after 2D gets none on any computer: its code's to fix, said as before (here
+    // the browser gives a fresh canvas WebGL).
+    write(app, id, "glmisused", {
+      "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? (this.dataset.used === "2d" ? null : {}) : (this.dataset.used = "2d", real.call(this, kind, ...rest)); };
+        window.duration = 1; window.seek = () => {};
+        const c = document.createElement("canvas"); c.getContext("2d");
+        window.ready = c.getContext("webgl") ? Promise.resolve() : Promise.reject(new Error("Error creating WebGL context."));
+      </script></body>`,
+    });
+    const misused = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glmisused", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(misused).toContain("fix these first");
+    expect(misused).not.toContain(effects.NO_WEBGL_LINE);
+    // Another error naming WebGL, on a browser that has none, is still its code's ("WebGLRenderer is not defined").
+    write(app, id, "glunbound", {
+      "scene.html": `<!doctype html><body><script>
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+        window.duration = 1; window.seek = () => {};
+        window.ready = Promise.resolve().then(() => new WebGLRenderer());
+      </script></body>`,
+    });
+    const unbound = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glunbound", times: [0.5] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result.content.at(-1)!.text!;
+    expect(unbound).toContain("WebGLRenderer is not defined");
+    expect(unbound).toContain("fix these first");
+    expect(unbound).not.toContain(effects.NO_WEBGL_LINE);
+    // One whose window.ready never settles once WebGL fails (a look that rejects): told the same.
+    write(app, id, "glhang", {
+      "scene.html": `<!doctype html><body><script>
+        window.duration = 1; window.seek = () => {};
+        const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+        window.ready = new Promise(() => {});
+        setTimeout(() => { throw new Error("The browser supports WebGL, but initialization failed."); });
+      </script></body>`,
+    });
+    const quiet = effects.waits.quietMs;
+    effects.waits.quietMs = 1_500;
+    try {
+      const hung = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glhang", times: [0.5] } } }, id)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
+      expect(hung.isError).toBe(true);
+      expect(hung.content.at(-1)!.text).toContain(effects.NO_WEBGL_LINE);
+      expect(hung.content.at(-1)!.text).toContain("this computer's browser couldn't start WebGL");
+      expect(hung.content.at(-1)!.text).not.toContain("must be in its own folder");
+    } finally {
+      effects.waits.quietMs = quiet;
+    }
     await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
     // A big screenshot (full-size noise, megabytes of PNG) reaches its page by a fetch, not in the call: a JPEG as any.
     write(app, id, "noise", {
@@ -649,6 +707,13 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its frames didn't join into a video: h264_nvenc: OpenEncodeSessionEx failed: out of memory (10): (no details)"))).toBe("passing");
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
+  // The browser's WebGL not starting is this computer's (Nov 25, WSL): never the agent's code to change, nor a lesser look.
+  // Known by what Edit's runtime adds once a fresh canvas got no WebGL here, never by the page's words alone.
+  const noWebgl = "its window.ready was rejected: The browser supports WebGL, but initialization failed. (this computer's browser has no WebGL)";
+  expect(effects.failureKind(new Error(noWebgl))).toBe("passing");
+  expect(effects.failureKind(new Error("its page threw at 0.00 s: Error creating WebGL context."))).toBe("code");
+  expect([effects.noWebgl(noWebgl), effects.noWebgl("its page threw at 1.20 s: TypeError: gl is null")]).toEqual([true, false]);
+  expect(effects.NO_WEBGL_LINE).toContain("no other look in its place");
   // The network's (Sphe's M4, Nov 17): the relay unreachable, the map helper's tiles asked for and never answered.
   expect(effects.failureKind(new effects.NetworkDown("date-tulsa's page got nowhere for 15 s waiting on the network"))).toBe("network");
   expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles stopped coming: none came in 15 s, 3 asked for and unanswered (Edit's server or its relay isn't answering)"))).toBe("network");

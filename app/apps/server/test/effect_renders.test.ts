@@ -124,6 +124,16 @@ test.skipIf(chrome === null)("an effect on the timeline is rendered from its cod
     await seams.broll.waitForMaps(app, id, 90_000);
     const third = effects.list(app.store, id)[0]!.key;
     expect(fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders")).sort()).toEqual([`bar-${now}.mp4`, `bar-${third}.mp4`].sort());
+    // Its code put back exactly as it was (a change that can't be finished, effects.NO_WEBGL_LINE): the render kept of
+    // that code plays again, placed as it was, never drawn (no Chrome needed for it).
+    const kept = join(app.store.uploadsDir(id), "effect-renders", `bar-${now}.mp4`);
+    const made = fs.statSync(kept).mtimeMs;
+    fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("#e0343c", "#34e03c"));
+    expect(effects.list(app.store, id)[0]!.key).toBe(now);
+    await seams.broll.waitForMaps(app, id, 90_000);
+    const back = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
+    expect([back.effect_key, back.kind, back.path]).toEqual([now, "video", kept]);
+    expect(fs.statSync(kept).mtimeMs).toBe(made);
   } finally {
     await server.stop(true);
     cleanup();
@@ -729,6 +739,21 @@ test.skipIf(chrome === null)("a render that fails names its effect and says what
     // Asked again while it stands: the same, at once, and no export takes the clear still for it.
     await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("ask the agent to fix the breaks effect");
     expect(effects.notReady(app.store, app.store.get(id)!.project)).toContain("The breaks effect");
+    // A page whose WebGL wouldn't start on this browser, which then never gets as far as its seek: the computer's, said
+    // before its missing seek, and the agent never asked to fix the code for it.
+    fs.writeFileSync(join(dir, "scene.html"), `<!doctype html><body><script>
+      const real = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (kind, ...rest) { return /webgl/.test(kind) ? null : real.call(this, kind, ...rest); };
+      window.duration = 2; window.ready = Promise.resolve();
+      setTimeout(() => { throw new Error("Error creating WebGL context."); });
+    </script></body>`);
+    const failed = await effects.renderNow(app, id, "breaks").then(() => "rendered", (error: unknown) => diag.messageOf(error));
+    expect(failed).toContain("couldn't render just now");
+    // Read first: the render's line marks a failure told (`renderLine`), which would leave nothing here to see.
+    expect(await messageContext(app, id, null, true)).toBe("");
+    const line = effects.renderLine(app, id, "breaks")!;
+    expect(line).toMatch(/its page couldn't start: .*Error creating WebGL context\..* \(this computer's browser has no WebGL\)/u);
+    expect(line).toEndWith(`${effects.NO_WEBGL_LINE}`);
+    expect(line).not.toContain("no window.seek");
   } finally {
     await server.stop(true);
     cleanup();
