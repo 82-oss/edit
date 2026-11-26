@@ -375,6 +375,36 @@ test("a settled save that failed is tried again while it's still the code here, 
   }
 });
 
+test("a save tried again after another computer took the project over keeps nothing (PR #14's Codex review)", async () => {
+  const { app, cleanup, id, home } = hq("v2-again-taken");
+  const projects = new cloudProjects.Cloud(home, "this-mac");
+  projects.attach(app.store);
+  const before = { ...effects.keepHooks };
+  effects.keepHooks.againMs = 20;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    projects.projects.set(id, new cloudProjects.Entry({ rev: 1, dirty: false }));
+    projects.projects.get(id)!.lock = { kind: "held" };
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), "<p>settled here, then taken over</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const key = effects.list(app.store, id)[0]!.key;
+    mock.cloud.failPuts = 4;
+    await effects.keepVersion(app, id, "board", key, "settled");
+    // Taken over before the next try.
+    projects.projects.get(id)!.lock = { kind: "elsewhere", holder: "marc-mac" };
+    await Bun.sleep(300);
+    expect(await v2cloud.versions(item)).toEqual([]);
+  } finally {
+    mock.cloud.failPuts = 0;
+    Object.assign(effects.keepHooks, before);
+    cleanup();
+  }
+});
+
 test("an effect on the timeline twice is brought down once, whole (PR #14's CodeRabbit review)", async () => {
   const { app, cleanup, id } = hq("v2-twice");
   try {
