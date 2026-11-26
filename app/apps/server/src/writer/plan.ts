@@ -11,7 +11,7 @@ import * as addons from "../addons.ts";
 import * as lanes from "../lanes.ts";
 import type { Clip, Part, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, editNote, isCutIn, noteAnchor, notesOnTheirWords } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
 import { describe } from "./brief.ts";
 import * as formats from "./formats.ts";
 import type { Format } from "./formats.ts";
@@ -431,9 +431,9 @@ export function compile(script: Script, plan: Plan, peaks: ArrayLike<number> = [
 function cleanUp(script: Script, given: Clip[], format: Format, opening: Opening, peaks: ArrayLike<number>): Compiled {
   let [clips, fixed] = tidy.polish(given, script.words, script.corrections ?? {}, script.durationMs);
   const relaxed = format.kind === "courtroom";
-  if (relaxed) clips = tidy.joinLate(clips, script.words, script.speakers ?? {}, script.parts ?? [], format.compilation, script.corrections ?? {});
+  if (relaxed) clips = tidy.joinLate(clips, { words: script.words, corrections: script.corrections ?? {} }, script.speakers ?? {}, script.parts ?? [], format.compilation);
   const [from, to] = introRange(format, opening, clips.filter(isCutIn).length);
-  const footage: tidy.Footage = { words: script.words, peaks, parts: script.parts ?? [], durationMs: script.durationMs, compilation: format.compilation, relaxed };
+  const footage: tidy.Footage = { words: script.words, corrections: script.corrections ?? {}, peaks, parts: script.parts ?? [], durationMs: script.durationMs, compilation: format.compilation, relaxed };
   const run = (beat: number) => tidy.tighten(footage, clips, beat, (block) => block >= from && block < to);
   const length = (cut: Clip[]) => cut.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0);
   let beat = tidy.PAUSE_BEAT_MS;
@@ -444,7 +444,7 @@ function cleanUp(script: Script, given: Clip[], format: Format, opening: Opening
     else beat = found;
   }
   const done = run(beat);
-  return { clips: notesOnTheirWords(script, done.clips), fixed, pauses: done.pauses, stalls: done.stalls, belowFloor };
+  return { clips: done.clips, fixed, pauses: done.pauses, stalls: done.stalls, belowFloor };
 }
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

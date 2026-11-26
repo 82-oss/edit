@@ -5,7 +5,7 @@
 // section headings and its paragraphs. Offsets are UTF-16 units, as the
 // review page counts them.
 
-import type { Clip, Draft, Note, Paragraph, Part, Script } from "@edit/types/writer";
+import type { Clip, Draft, Paragraph, Part, Script } from "@edit/types/writer";
 
 import { splitWhitespace } from "../rust.ts";
 import { citeLine, liveMarks, noteLines, paragraphText, WORDS_PER_MINUTE } from "./paragraphs.ts";
@@ -120,38 +120,6 @@ export function noteAnchor(script: Script, clip: Clip, on: string, near?: number
   let start = near !== undefined && said.slice(near, near + quote.length) === quote ? near : said.indexOf(quote);
   if (start < 0) start = said.toLowerCase().indexOf(quote.toLowerCase());
   return start < 0 ? null : { start, end: start + quote.length, quote: said.slice(start, start + quote.length) };
-}
-
-/**
- * A split clip's notes, each on the piece that says its words (CodeRabbit on #17): tightening a pause, a recording's
- * edge or a removed range splits a clip and leaves its notes on the first piece. A note whose words that piece doesn't
- * say moves to the next piece of the same block that does, anchored there; one whose words no piece says whole (they
- * ran across the cut) stays where it was.
- */
-export function notesOnTheirWords(script: Script, clips: Clip[]): Clip[] {
-  const out = clips.map((clip) => ({ ...clip }));
-  for (const [at, clip] of out.entries()) {
-    if (isCutIn(clip) || !clip.notes?.length) continue;
-    const stay: Note[] = [];
-    for (const note of clip.notes) {
-      if (!note.anchor || noteAnchor(script, clip, note.anchor.quote, note.anchor.start) !== null) {
-        stay.push(note);
-        continue;
-      }
-      let moved = false;
-      for (let next = at + 1; next < out.length && !isCutIn(out[next]!) && out[next]!.startMs >= clip.endMs; next++) {
-        const piece = out[next]!;
-        const anchor = noteAnchor(script, piece, note.anchor.quote);
-        if (anchor === null) continue;
-        piece.notes = [...(piece.notes ?? []), { ...note, anchor }];
-        moved = true;
-        break;
-      }
-      if (!moved) stay.push(note);
-    }
-    if (stay.length !== clip.notes.length) clip.notes = stay;
-  }
-  return out;
 }
 
 function spoken(script: Script, indexes: number[]): string {

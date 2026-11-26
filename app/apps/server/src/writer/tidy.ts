@@ -5,11 +5,59 @@
 
 import * as fs from "node:fs";
 
-import type { Clip, Part, Word } from "@edit/types/writer";
+import type { Clip, Note, Part, Word } from "@edit/types/writer";
 
 import { writeAtomic } from "../files.ts";
 import { join } from "../paths.ts";
 import { isCutIn } from "./blocks.ts";
+
+/** What the footage says, for keeping a clip's notes on their words as it's split or joined: the transcript and its corrections. */
+export type Said = { words: Word[]; corrections: Record<string, string> };
+
+/** Each word a stretch of footage says, with where it starts in that text (blocks.wordSpans counts the same way). */
+function spansOf(said: Said, startMs: number, endMs: number): [Word, number][] {
+  let at = 0;
+  return said.words.flatMap((word): [Word, number][] => {
+    if (!(word.startMs < endMs && word.endMs > startMs)) return [];
+    const span: [Word, number] = [word, at];
+    at += (said.corrections[word.id] ?? word.text).length + 1;
+    return [span];
+  });
+}
+
+/**
+ * A split clip's notes, each with the word its anchor starts on (Codex and CodeRabbit on #17: pause tightening, a
+ * recording's edge or a removed range left them all on the first piece): it goes to the piece that says that word,
+ * its offsets moved into that piece's text, so a repeated word keeps its own occurrence. A quote running across the
+ * cut goes with its first word. An unanchored note, or one whose first word was cut, stays on the first piece.
+ */
+function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
+  if (pieces.length === 0 || !source.notes?.length) return pieces;
+  const kept: Note[][] = pieces.map(() => []);
+  const from = spansOf(said, source.startMs, source.endMs);
+  for (const note of source.notes) {
+    const anchor = note.anchor;
+    const word = anchor ? from.findLast(([, at]) => at <= anchor.start) : undefined;
+    const piece = word ? pieces.findIndex((one) => word[0].startMs < one.endMs && word[0].endMs > one.startMs) : -1;
+    if (anchor === undefined || word === undefined || piece < 0) {
+      kept[0]!.push(note);
+      continue;
+    }
+    const to = spansOf(said, pieces[piece]!.startMs, pieces[piece]!.endMs).find(([one]) => one === word[0])![1];
+    const shift = to - word[1];
+    kept[piece]!.push({ ...note, anchor: { ...anchor, start: anchor.start + shift, end: anchor.end + shift } });
+  }
+  return pieces.map((piece, index) => ({ ...piece, notes: kept[index]! }));
+}
+
+/** A clip joined onto the one before it brings its notes, on the same words: offsets into what the joined clip says. */
+function joinNotes(last: Clip, clip: Clip, said: Said): Note[] | undefined {
+  if (!clip.notes?.length) return last.notes;
+  const first = said.words.findIndex((word) => word.startMs < clip.endMs && word.endMs > clip.startMs);
+  const shift = first < 0 ? 0 : (spansOf(said, last.startMs, last.endMs).find(([word]) => word === said.words[first]) ?? [null, 0])[1];
+  const moved = clip.notes.map((note) => (note.anchor ? { ...note, anchor: { ...note.anchor, start: note.anchor.start + shift, end: note.anchor.end + shift } } : note));
+  return [...(last.notes ?? []), ...moved];
+}
 
 /** Breathing room kept before a clip's first word and after its last. */
 export const LEAD_MS = 150;
@@ -250,7 +298,8 @@ function relaxedFrom(clips: Clip[], compilation: boolean): number {
 }
 
 /** Where the pacing is relaxed, two clips of a block from one recording less than 10 s apart play as one range; never across a narrator. */
-export function joinLate(clips: Clip[], words: Word[], speakers: Record<string, string>, parts: Part[], compilation: boolean, corrections: Record<string, string> = {}): Clip[] {
+export function joinLate(clips: Clip[], said: Said, speakers: Record<string, string>, parts: Part[], compilation: boolean): Clip[] {
+  const words = said.words;
   const from = relaxedFrom(clips, compilation);
   const narrated = (a: number, b: number) =>
     words.some((word) => word.startMs < b && word.endMs > a && word.speaker != null && (speakers[word.speaker] ?? "").toLowerCase().startsWith("narrator"));
@@ -268,14 +317,7 @@ export function joinLate(clips: Clip[], words: Word[], speakers: Record<string, 
       !narrated(last.endMs, clip.startMs)
     ) {
       last.endMs = clip.endMs;
-      // Its notes for the editor come along, on the same words: offsets into what the joined clip says (blocks.wordSpans).
-      if (clip.notes?.length) {
-        const first = words.findIndex((word) => word.startMs < clip.endMs && word.endMs > clip.startMs);
-        let shift = 0;
-        if (first > 0) for (const word of words.slice(0, first)) if (word.startMs < last.endMs && word.endMs > last.startMs) shift += (corrections[word.id] ?? word.text).length + 1;
-        const moved = clip.notes.map((note) => (note.anchor ? { ...note, anchor: { ...note.anchor, start: note.anchor.start + shift, end: note.anchor.end + shift } } : note));
-        last.notes = [...(last.notes ?? []), ...moved];
-      }
+      last.notes = joinNotes(last, clip, said);
       continue;
     }
     joined.push({ ...clip });
@@ -361,7 +403,7 @@ const kept = (clips: Clip[], startMs: number, endMs: number): boolean => clips.s
 const newId = (): string => crypto.randomUUID();
 
 /** Removes a source interval from every footage clip, keeping what sits outside it. */
-export function removeRange(clips: Clip[], startMs: number, endMs: number): Clip[] {
+export function removeRange(clips: Clip[], startMs: number, endMs: number, said: Said): Clip[] {
   if (endMs <= startMs) return clips;
   return clips.flatMap((clip): Clip[] => {
     if (isCutIn(clip) || clip.endMs <= startMs || clip.startMs >= endMs) return [clip];
@@ -369,7 +411,7 @@ export function removeRange(clips: Clip[], startMs: number, endMs: number): Clip
     if (clip.startMs < startMs) pieces.push({ ...clip, endMs: startMs });
     // A second piece is a new timestamp: the comments stay on the first.
     if (clip.endMs > endMs) pieces.push(pieces.length === 0 ? { ...clip, startMs: endMs } : { ...clip, id: newId(), startMs: endMs, notes: [] });
-    return pieces;
+    return shareNotes(clip, pieces, said);
   });
 }
 
@@ -381,7 +423,7 @@ const SPILL_MS = 1_000;
  * from one. A piece under 100 ms is left out, and so is a spill under a second
  * beside a longer piece (it showed as "[0:00–0:00]").
  */
-export function fitToParts(clips: Clip[], parts: Part[]): Clip[] {
+export function fitToParts(clips: Clip[], parts: Part[], said: Said): Clip[] {
   if (parts.length < 2) return clips;
   return clips.flatMap((clip): Clip[] => {
     if (isCutIn(clip)) return [clip];
@@ -398,7 +440,7 @@ export function fitToParts(clips: Clip[], parts: Part[]): Clip[] {
       pieces = pieces.filter((piece) => piece.endMs - piece.startMs >= SPILL_MS || piece.endMs - piece.startMs === longest);
       if (pieces[0] !== undefined) pieces[0] = { ...pieces[0], id, notes };
     }
-    return pieces;
+    return pieces.length === 1 && pieces[0]!.startMs === clip.startMs && pieces[0]!.endMs === clip.endMs ? pieces : shareNotes(clip, pieces, said);
   });
 }
 
@@ -426,6 +468,7 @@ export interface Tightened {
 /** What tightening needs to know of the script. */
 export interface Footage {
   words: Word[];
+  corrections: Record<string, string>;
   peaks: ArrayLike<number>;
   parts: Part[];
   durationMs: number;
@@ -449,8 +492,8 @@ export function tighten(footage: Footage, clips: Clip[], beatMs: number, intro: 
       kept(clips, gap.startMs, gap.endMs) &&
       !(footage.relaxed && gap.gapMs < RELAXED_PAUSE_MS && (sourcePosition(clips, gap.startMs) ?? -1) >= relaxedAt),
   );
-  let cut = fitToParts(clips, footage.parts);
-  for (const gap of quiet) cut = removeRange(cut, gap.startMs, gap.endMs);
+  let cut = fitToParts(clips, footage.parts, footage);
+  for (const gap of quiet) cut = removeRange(cut, gap.startMs, gap.endMs, footage);
   // Intro clips are quick proof: a pause over a second inside one stalls the opening, so it is read from the sound.
   let block = 0;
   let stalls = 0;
@@ -476,10 +519,10 @@ export function tighten(footage: Footage, clips: Clip[], beatMs: number, intro: 
     pieces.push({ ...clip, id: newId(), startMs: from, endMs: clip.endMs, notes: [] });
     const playable = pieces.filter((piece) => piece.endMs >= piece.startMs + 100);
     // The timestamp keeps its id and comments on its first piece.
-    if (playable[0] !== undefined) playable[0] = { ...playable[0], id: clip.id, notes: clip.notes ?? [] };
-    out.push(...playable);
+    if (playable[0] !== undefined) playable[0] = { ...playable[0], id: clip.id };
+    out.push(...shareNotes(clip, playable, footage));
   }
-  return { clips: joinSlivers(out, footage.parts), pauses: quiet.length, stalls };
+  return { clips: joinSlivers(out, footage.parts, footage), pauses: quiet.length, stalls };
 }
 
 /** A piece this short, left by cutting a pause, plays as a blip (a lone "The", then a jump): the pause stays. */
@@ -487,7 +530,7 @@ const SLIVER_MS = 1_200;
 /** Only across a pause the tightening cut, never between clips the plan chose apart. */
 const SLIVER_GAP_MS = 3_000;
 
-export function joinSlivers(clips: Clip[], parts: Part[]): Clip[] {
+export function joinSlivers(clips: Clip[], parts: Part[], said: Said): Clip[] {
   const out: Clip[] = [];
   const short = (piece: Clip) => piece.endMs - piece.startMs < SLIVER_MS;
   for (const clip of clips) {
@@ -501,7 +544,7 @@ export function joinSlivers(clips: Clip[], parts: Part[]): Clip[] {
       partAt(parts, clip.startMs) === partAt(parts, last.startMs);
     if (beside && (short(last) || short(clip))) {
       last.endMs = clip.endMs;
-      last.notes = [...(last.notes ?? []), ...(clip.notes ?? [])];
+      last.notes = joinNotes(last, clip, said);
       continue;
     }
     out.push({ ...clip });

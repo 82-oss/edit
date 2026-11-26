@@ -9,7 +9,7 @@
 import * as lanes from "../lanes.ts";
 import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, editNote, isCutIn, noteAnchor, notesOnTheirWords } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
 // commentary.ts reads it from here, which keeps the order fixing.ts and this module load in.
 export { editNote };
 import * as claude from "./claude.ts";
@@ -402,7 +402,7 @@ class Work {
         if (b < a) throw new Error("Give the first word before the last.");
         const [start, end] = [words[a]!.startMs, words[b]!.endMs];
         if (!this.clips.some((clip) => !isCutIn(clip) && start < clip.endMs && end > clip.startMs)) throw new Error(`None of w${a}–w${b} is in the cut.`);
-        this.clips = tidy.removeRange(this.clips, start, end).filter((clip) => clip.endMs >= clip.startMs + 100);
+        this.clips = tidy.removeRange(this.clips, start, end, { words, corrections: this.corrections }).filter((clip) => clip.endMs >= clip.startMs + 100);
         return;
       }
       case "insert_words": {
@@ -494,7 +494,7 @@ class Work {
       case "tighten_pauses": {
         const cutIns = this.clips.filter(isCutIn).length;
         const [from, to] = introRange(this.format, openingOf(this.clips, this.format), cutIns);
-        const footage: tidy.Footage = { words, peaks: this.peaks, parts: this.script.parts ?? [], durationMs: this.script.durationMs, compilation: this.format.compilation, relaxed: this.format.kind === "courtroom" };
+        const footage: tidy.Footage = { words, corrections: this.corrections, peaks: this.peaks, parts: this.script.parts ?? [], durationMs: this.script.durationMs, compilation: this.format.compilation, relaxed: this.format.kind === "courtroom" };
         const intro = (block: number) => block >= from && block < to;
         const pointed = this.pointed;
         if (pointed === null) {
@@ -618,7 +618,7 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     } else clip.narration = text;
   }
   proposals = placeNotes(script, work, proposals);
-  const clips = notesOnTheirWords({ ...script, corrections: work.corrections }, tidy.fitToParts(work.clips, script.parts ?? []));
+  const clips = tidy.fitToParts(work.clips, script.parts ?? [], { words: script.words, corrections: work.corrections });
   if (clips.length > 500) throw new Error("Those edits would leave more than 500 items in the timeline.");
   return [clips, work.corrections, settle(clips, proposals)];
 }
