@@ -213,3 +213,9 @@ test("Claude is told which clips were marked, by the names it edits them by", ()
   // A timeline selection that the message isn't about stays a hint, as before.
   expect(seen(script(), { selected: ["c2"], picked: null, playheadMs: null })).toContain("Selected in the timeline: i3.");
 });
+
+test("a revision never writes a note for the editor into narration", () => {
+  expect(() => apply(script(), [{ op: "insert_cut_in", afterId: "i1", narration: "She returned. [Edit: Show the house.]" }], [], false)).toThrow("note for the editor");
+  expect(() => apply(script(), [{ op: "write", id: "i4", narration: "Then (edit: a map) he left." }], [], false)).toThrow("note for the editor");
+  expect(apply(script(), [{ op: "write", id: "i4", narration: "Then he left." }], [], false)[0][3]!.narration).toBe("Then he left.");
+});

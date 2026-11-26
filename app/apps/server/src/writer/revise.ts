@@ -17,7 +17,7 @@ import * as formats from "./formats.ts";
 import type { Format } from "./formats.ts";
 import { COMPILATION_PAGES, pageCount } from "./pages.ts";
 import { clock } from "./paragraphs.ts";
-import { CUT_IN_MS, EDITOR_WRITING, evidence, formatOfScript, introRange, purposes, wordAt, type Opening } from "./plan.ts";
+import { CUT_IN_MS, EDITOR_WRITING, evidence, formatOfScript, introRange, NOTE_IN_TEXT, purposes, wordAt, type Opening } from "./plan.ts";
 import { FEEDBACK_SCHEMA, feedbackOf, type Feedback } from "./fixing.ts";
 import { LESSON_RULE, LESSON_SCHEMA, lessonOf } from "./lesson_note.ts";
 import { TOOLS_NOTE } from "./turn_tools.ts";
@@ -358,6 +358,8 @@ class Work {
     const text = typeof given === "string" ? given.trim() : "";
     if (text === "") throw new Error("Give the paragraph's narration.");
     if (text.includes("—")) throw new Error("Narration never uses an em dash.");
+    // Read aloud as it is: a note for the editor goes in a note edit (CodeRabbit on #17).
+    if (NOTE_IN_TEXT.test(text)) throw new Error("A note for the editor is written into this narration. Leave the narration as it will be read and put the note in a note edit on the words it's about.");
     if ([...text].length > 6_000) throw new Error("A cut-in holds at most 6,000 characters.");
     return text;
   }

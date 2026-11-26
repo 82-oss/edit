@@ -297,7 +297,7 @@ ${listed.join("\n")}`;
 }
 
 /** A note for the editor written inside narration: "[Edit: …]", "(edit: …)". */
-const NOTE_IN_TEXT = /[[(]\s*edit\s*:/iu;
+export const NOTE_IN_TEXT = /[[(]\s*edit\s*:/iu;
 
 /** A plan item's notes on its clip, each on the words it names (blocks.noteAnchor), as a revision's note op puts them; not `strict` (the plan cut again on the exact hearing's words), one whose words moved is on the whole item. */
 function withNotes(script: Script, clip: Clip, given: Item["notes"], strict: boolean): Clip {
