@@ -603,7 +603,10 @@ test("an export waiting on other removal goes without a cell RunPod refused, eve
   const retry = new Promise<void>((resolve) => (retryOpen = resolve));
   const tried = new Set<number>();
   wm.useEngine({
-    learn: async (source, ...rest) => (source.includes("plain") && (await look), engine.learn(source, ...rest)),
+    learn: async (source, ...rest) => {
+      if (source.includes("plain")) await look;
+      return engine.learn(source, ...rest);
+    },
     remove: async (piece, ...rest) => {
       if (!tried.has(piece.from)) {
         tried.add(piece.from);
