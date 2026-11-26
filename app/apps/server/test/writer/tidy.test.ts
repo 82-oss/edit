@@ -4,6 +4,7 @@ import type { Clip, Script, Word } from "@edit/types/writer";
 
 import { lineCount, pageCount, textWidth } from "../../src/writer/pages.ts";
 import { editNote, editLines, noteAnchor } from "../../src/writer/blocks.ts";
+import { keepNotes } from "../../src/writer/exact.ts";
 import { beatForFloor, boundaryIssues, joinLate, joinSlivers, PAUSE_BEAT_MS, polish, removeRange, tighten } from "../../src/writer/tidy.ts";
 
 const clip = (id: string, startMs: number, endMs: number): Clip => ({ id, startMs, endMs });
@@ -136,4 +137,12 @@ test("a note's offsets follow its words when polishing moves an edge", () => {
   const pieces = removeRange(polished, 1_500, 5_500, { words: said, corrections: {} });
   expect(pieces[0]!.notes!.map((one) => one.anchor!.quote)).toEqual(["Home."]);
   expect(pieces[1]!.notes).toEqual([]);
+});
+
+test("a re-cut on the exact hearing puts each cut-in's notes back on it", () => {
+  const note = { id: "n", text: "edit: a photo of Payton", at: 0, anchor: { start: 4, end: 10, quote: "Payton" } };
+  const before: Clip[] = [clip("a", 0, 1_000), { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "She Payton.", notes: [note] }];
+  const after: Clip[] = [clip("b", 0, 1_000), { id: "j", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "She Payton." }];
+  keepNotes([], before, [], after);
+  expect(after[1]!.notes).toEqual([note]);
 });
