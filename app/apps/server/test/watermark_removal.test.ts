@@ -644,6 +644,8 @@ test("an export waiting on other removal goes without a cell RunPod refused, eve
     await exporting;
     expect(sent()).toBe(true);
     expect(removalSchedule.progressOf(id).out).toBeGreaterThanOrEqual(1);
+    // And says so, though its retry is out: the export goes without it.
+    expect(removalSchedule.exportNote(app.store.get(id)!.project)).toStartWith("Going without 1 piece of their text and watermarks taken out, left as they are: RunPod won't rent the machines (RunPod wouldn't rent a CPU machine for 10 minutes).");
   } finally {
     retryOpen();
     await wm.settled();

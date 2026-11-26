@@ -148,6 +148,14 @@ export function exportLine(id: string): string | null {
  * for, and they're sent again when their hold ends (remover_cloud.ts `timing.refusedRetryMs`), from the export row and the
  * agent's export result.
  */
+/** A watermark piece's and a text piece's key among those an export went without. */
+const markKey = (one: watermarkRemoval.Piece): string => `mark ${one.media}@${one.from}`;
+const cleanKey = (one: textInpaint.InpaintPiece): string => `clean ${one.key}`;
+const sent = (one: { state: string }): boolean => one.state === "queued" || one.state === "running";
+
+/** Each project's pieces its last export wait went without while a retry had them out, with RunPod's words (`waitForPieces`). */
+const wentWithout = new Map<string, Map<string, string>>();
+
 export function exportNote(project: Project): string | null {
   const id = project.id;
   // Only footage still on the timeline (a piece of a clip cut out since stays in the list, never sent again); a refused
@@ -156,11 +164,18 @@ export function exportNote(project: Project): string | null {
   const fps = fpsOf(project);
   const shown = project.clips.flatMap((clip) => (clip.type === "video" ? [{ media: clip.media, from: clip.source_in, to: clip.source_in + (clip.duration / fps) * (clip.speed || 1) }] : []));
   const onTimeline = (one: { media: string; from: number; to: number }) => shown.some((span) => span.media === one.media && span.from < one.to && span.to > one.from);
-  const held = [...watermarkRemoval.piecesOf(id), ...textInpaint.piecesOf(id)].filter((one) => (one.state === "failed" || one.state === "waiting") && one.refused !== undefined && onTimeline(one));
+  // Held now, or sent again while the export's wait went on without it (its retry still out).
+  const retried = wentWithout.get(id) ?? new Map<string, string>();
+  const why = (one: { state: string; refused?: string }, key: string): string | undefined =>
+    (one.state === "failed" || one.state === "waiting") && one.refused !== undefined ? one.refused : sent(one) ? retried.get(key) : undefined;
+  const held = [
+    ...watermarkRemoval.piecesOf(id).map((one) => ({ one, said: why(one, markKey(one)) })),
+    ...textInpaint.piecesOf(id).map((one) => ({ one, said: why(one, cleanKey(one)) })),
+  ].filter(({ one, said }) => said !== undefined && onTimeline(one));
   if (held.length === 0) return null;
   const count = held.length;
   // The relay's own sentence ("RunPod wouldn't rent a GPU for 10 minutes"), not RunPod's answer after it: that stays in the log.
-  const said = held[0]!.refused!.split(" (")[0]!;
+  const said = held[0]!.said!.split(" (")[0]!;
   return `Going without ${count} piece${count === 1 ? "" : "s"} of their text and watermarks taken out, left as they are: RunPod won't rent the machines (${said}). They're tried again half an hour after that; once RunPod rents machines again (top up its account) and they're done, export again.`;
 }
 
@@ -175,21 +190,21 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
   const started = Date.now();
   // Pieces this export has seen RunPod refuse: it goes without them, even once a background retry sends one again
   // while it waits on the rest (their hold ending mid-wait); the removal line and later exports count them as ever.
-  const refused = new Set<string>();
-  const out = (): number => {
-    for (const one of watermarkRemoval.piecesOf(id)) if (one.refused !== undefined) refused.add(`mark ${one.media}@${one.from}`);
-    for (const one of textInpaint.piecesOf(id)) if (one.refused !== undefined) refused.add(`clean ${one.key}`);
-    const sent = (one: { state: string }) => one.state === "queued" || one.state === "running";
-    const retried = watermarkRemoval.piecesOf(id).filter((one) => sent(one) && refused.has(`mark ${one.media}@${one.from}`)).length + textInpaint.piecesOf(id).filter((one) => sent(one) && refused.has(`clean ${one.key}`)).length;
-    return progressOf(id).out - retried;
+  const refused = new Map<string, string>();
+  const retried = (): string[] => {
+    for (const one of watermarkRemoval.piecesOf(id)) if (one.refused !== undefined) refused.set(markKey(one), one.refused);
+    for (const one of textInpaint.piecesOf(id)) if (one.refused !== undefined) refused.set(cleanKey(one), one.refused);
+    return [...watermarkRemoval.piecesOf(id).filter(sent).map(markKey), ...textInpaint.piecesOf(id).filter(sent).map(cleanKey)].filter((key) => refused.has(key));
   };
-  while (out() > 0) {
+  while (progressOf(id).out - retried().length > 0) {
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
     if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
     await Bun.sleep(1000);
   }
+  // What it went without while a retry had it out, for the export's note (`exportNote`).
+  wentWithout.set(id, new Map(retried().map((key) => [key, refused.get(key)!])));
   const project = app.store.get(id)?.project;
   const without = project === undefined ? null : exportNote(project);
   if (without !== null) diag.warn("removal", `${id}: ${without}`);
@@ -749,6 +764,7 @@ export function start(app: App): void {
 
 /** For tests. */
 export function reset(): void {
+  wentWithout.clear();
   for (const timer of retries.values()) clearTimeout(timer);
   retries.clear();
   looked.clear();
