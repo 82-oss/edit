@@ -64,6 +64,13 @@ function errorLines(errors: string[]): string[] {
   ];
 }
 
+/** A look that failed because this computer's browser couldn't start WebGL: said as such, never as the code's to fix. */
+function toldOfWebgl(error: unknown): never {
+  const said = error instanceof Error ? error.message : String(error);
+  if (!effects.noWebgl(said)) throw error;
+  throw new Error(`${effects.NO_WEBGL_LINE}\nWhat its page said: ${said}`);
+}
+
 function readyLine(look: effects.Look): string {
   if (look.ready === null || look.ready.longest < UNBROKEN_MS) return "";
   return `ITS CODE RAN ${fixed(look.ready.longest / 1000, 1)} s WITHOUT A BREAK getting ready (${fixed(look.ready.ms / 1000, 1)} s in all). It may take as long as it needs, but the person's viewer loads the same page, where a long stretch can hold up Edit's window: do that work in slices of about 50 ms, with await new Promise((go) => setTimeout(go)) between them.`;
@@ -93,7 +100,7 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   const count = Math.min(last - first + 1, EFFECT_FRAMES_MOST);
   const times = Array.from({ length: count }, (_, index) => (first + index) / fps);
   // A stretch says nothing of a frame's cost: not measured.
-  const look = await effects.look(app, projectId, name, times, SHEET_FRAME, false);
+  const look = await effects.look(app, projectId, name, times, SHEET_FRAME, false).catch(toldOfWebgl);
   const sheets: { data: Uint8Array; caption: string }[] = [];
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-frames-"));
   let seen: looker.Seen | null = null;
@@ -173,7 +180,7 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     if (given.length > 8) throw new Error("times: at most 8 moments a look (every_frame for a stretch)");
     times = given;
   }
-  const look = await effects.look(app, projectId, name, times, 0, false);
+  const look = await effects.look(app, projectId, name, times, 0, false).catch(toldOfWebgl);
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-compare-"));
   try {
     const ours = look.stills.map((still, index) => {
@@ -237,7 +244,7 @@ async function lookAtEffect({ app, args, projectId }: ToolCall): Promise<Content
   const fps = app.store.get(projectId)!.project.settings.fps;
   // detail "full": each still at the frame's own size, for small text and fine edges.
   const full = args.detail === "full";
-  const look = await effects.look(app, projectId, name, times, full ? 0 : 960);
+  const look = await effects.look(app, projectId, name, times, full ? 0 : 960).catch(toldOfWebgl);
   const out: Content[] = [];
   for (const still of look.stills) out.push(...image(still.picture, `${name} at ${fixed(still.time, 2)} s${full ? ", at full size" : ""}`, still.mime));
   const lines = [`${name}: ${look.duration > 0 ? `${fixed(look.duration, 2)} s long` : "no length (window.duration)"}.`];

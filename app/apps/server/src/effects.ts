@@ -982,6 +982,8 @@ async function load(page: devtools.Page, url: string, token: string, project: st
       stuck: (errors) => {
         const trouble = networkTrouble(project, name, since);
         if (trouble !== null) return new NetworkDown(`${name}'s page got nowhere for ${waits.quietMs / 1000} s waiting on the network, with ${trouble}: nothing in its code to fix, it goes once the connection is back`);
+        // Its WebGL not starting is what it waits on: this computer's, never a file to put in its folder.
+        if (errors.some(noWebgl)) return `${name}'s window.ready never resolved: this computer's browser couldn't start WebGL (it said: ${errors.join("; ")})`;
         const asked = (misses.get(`${project}/${name}`) ?? []).filter((one) => one.at >= since).map((one) => `"${one.path}"`);
         const parts = [`${name}'s window.ready never resolved: its page got nowhere for ${waits.quietMs / 1000} s (no code running, nothing loading), waiting on something that never comes`];
         parts.push(asked.length > 0 ? `it asked for ${asked.join(", ")}, not in its folder` : "a picture, font or video whose load it waits for and whose error it never hears, or a Promise nothing resolves");

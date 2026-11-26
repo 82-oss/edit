@@ -474,6 +474,25 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(glless).toContain(effects.NO_WEBGL_LINE);
     expect(glless).toContain("window.ready was rejected: The browser supports WebGL, but initialization failed.");
     expect(glless).not.toContain("fix these first");
+    // One whose window.ready never settles once WebGL fails (a look that rejects): told the same.
+    write(app, id, "glhang", {
+      "scene.html": `<!doctype html><body><script>
+        window.duration = 1; window.seek = () => {};
+        window.ready = new Promise(() => {});
+        setTimeout(() => { throw new Error("The browser supports WebGL, but initialization failed."); });
+      </script></body>`,
+    });
+    const quiet = effects.waits.quietMs;
+    effects.waits.quietMs = 1_500;
+    try {
+      const hung = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "glhang", times: [0.5] } } }, id)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
+      expect(hung.isError).toBe(true);
+      expect(hung.content.at(-1)!.text).toContain(effects.NO_WEBGL_LINE);
+      expect(hung.content.at(-1)!.text).toContain("this computer's browser couldn't start WebGL");
+      expect(hung.content.at(-1)!.text).not.toContain("must be in its own folder");
+    } finally {
+      effects.waits.quietMs = quiet;
+    }
     await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
     // A big screenshot (full-size noise, megabytes of PNG) reaches its page by a fetch, not in the call: a JPEG as any.
     write(app, id, "noise", {
