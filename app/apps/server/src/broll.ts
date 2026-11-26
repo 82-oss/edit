@@ -21,7 +21,7 @@ import { importPaths } from "./import.ts";
 import { probe as probeFile } from "./media.ts";
 import { Semaphore } from "./semaphore.ts";
 import type { Clip, Media, Probe, Project, VideoClip } from "./model.ts";
-import { headlessBinary, headlessCommand } from "./chrome_devtools.ts";
+import { gpuChecked, headlessBinary, headlessCommand } from "./chrome_devtools.ts";
 import { canonical, fileName, fileStem, isFile, join, withExtension } from "./paths.ts";
 import * as progress from "./progress.ts";
 import { measuredTrack, repinPlaceLabels } from "./graphics.ts";
@@ -1100,6 +1100,7 @@ async function renderMap(
   let child: Bun.Subprocess | null = null;
   try {
     // Headless, on the graphics card for the map's WebGL (`headlessCommand`).
+    await gpuChecked();
     const command = headlessCommand(
       [
         "--hide-scrollbars",
