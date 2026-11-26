@@ -2303,7 +2303,7 @@ async function place(app: App, render: Render): Promise<void> {
   }
   diag.record("effects", "render", render.spent);
   diag.info("effects", `${project}: ${name} rendered (${render.frames} frames, ${seconds(render.spent)} drawing and joining, ${seconds(render.queued)} in the queue)`);
-  keepVersion(app, project, name, key);
+  void keepVersion(app, project, name, key);
 }
 
 /**
@@ -2929,7 +2929,7 @@ function prepareAndRender(app: App, project: string): void {
       const due = needed(app.store, project).filter((one) => !one.fresh && one.current !== null);
       // Its code in the cloud before it's drawn: a render can take long, or never finish here. Not while a newer change
       // is still settling (it landed while this pass made ready): the pass that change starts keeps it (PR #14's CodeRabbit review).
-      if (!settling.has(project)) for (const effect of due) keepVersion(app, project, effect.name, effect.current!.key, "settled");
+      if (!settling.has(project)) for (const effect of due) void keepVersion(app, project, effect.name, effect.current!.key, "settled");
       for (const effect of startable(app.store, project, due)) {
         renderNow(app, project, effect.name).catch(() => {});
       }
@@ -3198,6 +3198,6 @@ export function start(app: App): void {
 /** The effects already rendered from their code as it is kept in V2's cloud too, those from before it was (Nov 11) among them: what's there already isn't sent again. */
 function keepRendered(app: App, project: string): void {
   for (const effect of needed(app.store, project)) {
-    if (effect.fresh && effect.current !== null) keepVersion(app, project, effect.name, effect.current.key);
+    if (effect.fresh && effect.current !== null) void keepVersion(app, project, effect.name, effect.current.key);
   }
 }
