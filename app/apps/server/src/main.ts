@@ -3,6 +3,7 @@
 // registers the files it carries and then imports this. Either way argv is
 // [bun, <script>, …the arguments].
 
-import { main } from "./cli.ts";
-
-await main(process.argv.slice(2));
+const args = process.argv.slice(2);
+// An effect render's frames, drawn by a process of their own that loads nothing else of the server (frame_capture.ts).
+if (args[0] === "capture-frames") await (await import("./frame_capture.ts")).run();
+else await (await import("./cli.ts")).main(args);

@@ -57,6 +57,7 @@ import os from "node:os";
 import { join, sep } from "node:path";
 import type { App } from "./app.ts";
 import * as devtools from "./chrome_devtools.ts";
+import * as frameCapture from "./frame_capture.ts";
 import * as diag from "./diag.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
@@ -2702,6 +2703,15 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
         // Something else took the disk to its floor meanwhile: refused here, never written into ENOSPC.
         const free = storage.freeBytes(dir);
         if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < WORK_FLOOR_BYTES) throw new DiskShort(WORK_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free);
+        // Each page draws its share (every page-th frame, so each works across the chunk) in a process of its own,
+        // its PNGs never on the server's thread (frame_capture.ts); a page with no address of its own draws here.
+        if (opened.every((page) => page.target !== undefined)) {
+          await captureShares(opened, wanted, frame, frames, () => keyOf(app.store, id, folder(app.store, id, name), frame) !== key, (bytes) => {
+            hold(bytes);
+            render.drawn += 1;
+          });
+          return;
+        }
         let next = 0;
         await Promise.all(
           opened.map(async (page) => {
@@ -2923,8 +2933,65 @@ async function seeThrough(input: string[], limit: string[] = []): Promise<boolea
   return [...out.matchAll(/YMIN=(\d+)/g)].some((match) => Number(match[1]) < 255);
 }
 
+/** The command that draws a share of a render's frames (frame_capture.ts): the compiled `edit capture-frames`, or the file run by bun. */
+function captureCommand(): string[] {
+  const compiled = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:\\~BUN\\");
+  return compiled ? [process.execPath, "capture-frames"] : [process.execPath, join(import.meta.dir, "frame_capture.ts")];
+}
+
+/**
+ * Draws `wanted` across `pages`, each page's share by a process of its own (frame_capture.ts), counting each frame as
+ * it lands (`landed`, its PNG's size). Its code changing meanwhile (`outdated`, asked every 60 frames) stops them all.
+ */
+async function captureShares(pages: devtools.Page[], wanted: number[], frame: ReturnType<typeof frameOf>, dir: string, outdated: () => boolean, landed: (bytes: number) => void): Promise<void> {
+  const children: ReturnType<typeof Bun.spawn>[] = [];
+  let counted = 0;
+  let stale = false;
+  const one = async (page: devtools.Page, indexes: number[]) => {
+    if (indexes.length === 0) return;
+    const spec: frameCapture.Spec = { target: page.target!, indexes, fps: frame.fps, width: frame.width, height: frame.height, dir, seekMs: waits.seekMs };
+    const child = Bun.spawn(captureCommand(), { stdin: new Blob([JSON.stringify(spec)]), stdout: "pipe", stderr: "ignore" });
+    children.push(child);
+    let said: string | null = null;
+    let rest = "";
+    const decoder = new TextDecoder();
+    for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
+      rest += decoder.decode(chunk, { stream: true });
+      let at = rest.indexOf("\n");
+      while (at >= 0) {
+        const line = rest.slice(0, at);
+        rest = rest.slice(at + 1);
+        at = rest.indexOf("\n");
+        let message: { index?: number; bytes?: number; error?: string };
+        try {
+          message = JSON.parse(line) as typeof message;
+        } catch {
+          continue;
+        }
+        if (message.error !== undefined) said = message.error;
+        else if (typeof message.bytes === "number") {
+          landed(message.bytes);
+          if (++counted % 60 === 0 && outdated()) {
+            stale = true;
+            for (const each of children) each.kill();
+          }
+        }
+      }
+    }
+    const code = await child.exited;
+    if (stale) throw new Outdated();
+    if (said !== null) throw new Error(said);
+    if (code !== 0) throw new Error(`its frames stopped being drawn (the drawing process ended with ${code})`);
+  };
+  try {
+    await Promise.all(pages.map((page, at) => one(page, wanted.filter((_, k) => k % pages.length === at))));
+  } finally {
+    for (const child of children) child.kill();
+  }
+}
+
 function frameName(index: number): string {
-  return `frame-${String(index).padStart(5, "0")}.png`;
+  return frameCapture.frameName(index);
 }
 
 /** The project's rate as FFmpeg reads it ("30", "30000/1001"). */

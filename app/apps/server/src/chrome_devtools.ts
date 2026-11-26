@@ -20,6 +20,8 @@ export interface Page {
   on(event: string, listener: (params: Record<string, unknown>) => void): () => void;
   /** Chrome went away (it was closed, it crashed, its connection dropped). */
   readonly closed: boolean;
+  /** The page's own DevTools address, for a second connection from another process (frame_capture.ts); a tab's session has none. */
+  readonly target?: string;
   /** Chrome stopped and its profile removed. */
   close(): void;
 }
@@ -522,7 +524,7 @@ async function connect(binary: string, profile: string, opening: Opening, stop: 
   await page.call("Page.enable");
   await chromeFonts(binary, page.call);
   await page.call("Emulation.setDeviceMetricsOverride", { width: opening.width, height: opening.height, deviceScaleFactor: 1, mobile: false });
-  return page;
+  return Object.assign(page, { target: target.webSocketDebuggerUrl });
 }
 
 /** One DevTools connection: commands by id (to a tab's session when given), its events to whoever listens. */
