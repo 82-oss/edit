@@ -170,6 +170,16 @@ async function putFiles(dir: string, only?: readonly string[]): Promise<File[]> 
   }
 }
 
+/** Whether `files` (as `putFiles` sent them) are the folder's as it is now, path for path and content for content. */
+async function sameHere(dir: string, files: File[], only?: readonly string[]): Promise<boolean> {
+  const here = only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path));
+  if (here.length !== files.length || here.some((path, at) => path !== files[at]!.path)) return false;
+  for (const [at, path] of here.entries()) {
+    if ((await sha256File(join(dir, path))) !== files[at]!.sha256) return false;
+  }
+  return true;
+}
+
 /** A save whose folder moved on while its files went up (`save`'s `still`): no version made of them. */
 export class Moved extends Error {}
 
@@ -260,8 +270,10 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
 export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[]; still?: () => boolean } = {}): Promise<{ n: number; made: boolean }> {
   const { only, still, ...given } = options;
   const files = await putFiles(dir, only);
-  // Asked once its files are up: a folder that changed meanwhile may have sent some of each (`Moved`).
-  if (still !== undefined && !still()) throw new Moved(`${name} changed while it went up`);
+  // Asked once its files are up: a folder that changed meanwhile may have sent some of each (`Moved`), even one that's
+  // back as it was by now (A, then B as a file was copied, then A again: PR #14's CodeRabbit review), so what went up
+  // is the folder as it is here, file for file, and `still` says that's still the code asked for.
+  if (still !== undefined && (!(await sameHere(dir, files, only)) || !still())) throw new Moved(`${name} changed while it went up`);
   // The same files as the version in use (a version just brought back, saved again as it renders): not a new one.
   const now = await version(key).catch(() => null);
   const same = (a: File[], b: File[]) => a.length === b.length && a.every((one, at) => one.path === b[at]!.path && one.sha256 === b[at]!.sha256);

@@ -351,6 +351,57 @@ test("a newer save of one effect waits for the one whose files are going up, and
   }
 });
 
+test("a save whose code changed and changed back while it went up keeps no mix of the two, and keeps the code once it's still (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-aba");
+  const before = { ...effects.keepHooks };
+  effects.keepHooks.againMs = 20;
+  const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+  const shaOf = (text: string) => `edit/library/sha256/${createHash("sha256").update(text).digest("hex")}`;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    // Eight files ahead of its page (as many as go up at once), so the page is copied once one of them is up.
+    const ahead = Array.from({ length: 8 }, (_, at) => `asset ${at} of the A-B-A board`);
+    ahead.forEach((text, at) => fs.writeFileSync(join(dir, `a${at}.txt`), text));
+    const A = page("A, as asked");
+    const B = page("B, for a moment");
+    fs.writeFileSync(join(dir, "scene.html"), A);
+    const key = effects.list(app.store, id)[0]!.key;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = 0;
+    let allHeld = () => {};
+    const heldAll = new Promise<void>((resolve) => (allHeld = resolve));
+    mock.cloud.beforePut = async (object) => {
+      if (ahead.some((text) => shaOf(text) === object)) {
+        if (++held === ahead.length) allHeld();
+        await gate;
+      }
+      // B's copy going up: the folder is back to A by the time it's judged.
+      if (object === shaOf(B)) fs.writeFileSync(join(dir, "scene.html"), A);
+    };
+    const saving = effects.keepVersion(app, id, "board", key, "settled");
+    await heldAll;
+    fs.writeFileSync(join(dir, "scene.html"), B);
+    release();
+    await saving;
+    // Tried again once it's A all through: A's files under A's key, never B's.
+    for (let wait = 0; wait < 100 && (await v2cloud.versions(item)).length === 0; wait++) await Bun.sleep(20);
+    const kept = (await v2cloud.version(item))!.version;
+    expect(kept.source).toBe(key);
+    expect(kept.files!.find((file) => file.path === "scene.html")!.sha256).toBe(createHash("sha256").update(A).digest("hex"));
+    expect((await v2cloud.versions(item)).length).toBe(1);
+  } finally {
+    mock.cloud.beforePut = null;
+    Object.assign(effects.keepHooks, before);
+    cleanup();
+  }
+});
+
 test("a settled save that failed is tried again while it's still the code here, nothing else needed (PR #14's CodeRabbit review)", async () => {
   const { app, cleanup, id } = hq("v2-again");
   const before = { ...effects.keepHooks };

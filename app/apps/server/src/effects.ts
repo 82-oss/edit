@@ -2336,9 +2336,9 @@ export function keepVersion(app: App, project: string, name: string, key: string
       await v2cloud.save(item, name, dir, { source: key, reason, still });
     })
     .catch((error: unknown) => {
-      // Moved on while it went up: the save asked for the newer code keeps that.
-      if (error instanceof v2cloud.Moved) return;
-      diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud (try ${attempt} of ${keepHooks.tries}): ${diag.messageOf(error)}`);
+      // Moved on while it went up: the save asked for the newer code keeps that, or, back to this code by now, the
+      // try below does (it does nothing once the code here isn't this).
+      if (!(error instanceof v2cloud.Moved)) diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud (try ${attempt} of ${keepHooks.tries}): ${diag.messageOf(error)}`);
       // Tried again a little later, while it's still the code here: nothing else may come to keep it (its render failing
       // too, and no change after), and the edit couldn't go on from another computer (PR #14's CodeRabbit review).
       if (attempt < keepHooks.tries) setTimeout(() => void keepVersion(app, project, name, key, reason, attempt + 1), keepHooks.againMs).unref?.();
