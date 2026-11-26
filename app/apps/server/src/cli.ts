@@ -74,10 +74,11 @@ render_frame and contact_sheet, and their edits appear live in the open project.
 }
 
 /**
- * Whether `edit serve` should start itself again with Mesa's Direct3D 12 driver chosen: Linux under WSL (`/dev/dxg`),
- * none chosen yet. Mesa's OpenGL reads it from the environment, and it's how the engine's exports and Edit's Chrome
- * reach the graphics card there (edit-engine render.rs `wsl_gpu`; Nov 25, Boyfriends on mandalorian: drawn on the
- * CPU). Set only in a process not yet started: a change to a running one's environment races its threads' reads.
+ * Whether `edit serve` (or `edit`, whose server runs in its process) should start itself again with Mesa's Direct3D
+ * 12 driver chosen: Linux under WSL (`/dev/dxg`), none chosen yet. Mesa's OpenGL reads it from the environment, and
+ * it's how the engine's exports and Edit's Chrome reach the graphics card there (edit-engine render.rs `wsl_gpu`;
+ * Nov 25, Boyfriends on mandalorian: drawn on the CPU). Set only in a process not yet started: a change to a running
+ * one's environment races its threads' reads.
  */
 export function wslDriverWanted(env: Record<string, string | undefined>, dxg: boolean, platform = process.platform): boolean {
   return platform === "linux" && dxg && env.GALLIUM_DRIVER === undefined;
@@ -204,6 +205,8 @@ export async function main(args: string[]): Promise<void> {
 
 /** The desktop app: the same server, in this process, with a window onto it (on Linux, Chrome's). */
 function app(home: string, port: number): void {
+  // Its server runs in this process, as `edit serve`'s does.
+  if (wslDriverWanted(process.env, fs.existsSync("/dev/dxg"))) startWithWslDriver();
   const url = `http://127.0.0.1:${port}/`;
   const helper = process.platform === "linux" ? null : windowHelper(home);
   const window = helper !== null ? [helper, "--url", url] : process.platform === "linux" ? windowCommand(home, port) : null;

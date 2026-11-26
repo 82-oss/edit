@@ -6618,6 +6618,7 @@ mod tests {
     /// Under WSL with a card to be had, the engine draws on it, not the
     /// CPU's stand-in (`wsl_gpu`). Says nothing elsewhere.
     #[test]
+    #[cfg(target_os = "linux")]
     fn under_wsl_the_engine_draws_on_the_gpu() {
         if !Path::new("/dev/dxg").exists() {
             return;
