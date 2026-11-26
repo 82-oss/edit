@@ -123,3 +123,17 @@ test("every line of an editor's note is one the editor is shown", () => {
   expect(editNote("Edit: Show the house.\nThen show the map.")).toBe("edit: Show the house.\nedit: Then show the map.");
   expect(editLines([editNote("Show the house.\n\nThen show the map.")])).toEqual(["edit: Show the house.", "edit: Then show the map."]);
 });
+
+test("a note's offsets follow its words when polishing moves an edge", () => {
+  const said = words([["Okay,", "s", 0, 400], ["Home.", "s", 600, 1_000], ["All", "s", 6_000, 6_300], ["night.", "s", 6_400, 6_800]]);
+  const note = { id: "n", text: "edit: zoom in", at: 0, anchor: { start: 6, end: 11, quote: "Home." } };
+  const [polished] = polish([{ id: "c", startMs: 0, endMs: 7_000, notes: [note] }], said, {}, 10_000);
+  const clipped = polished[0]!;
+  const script = { words: said, corrections: {} } as unknown as Script;
+  const at = noteAnchor(script, clipped, "Home.")!;
+  expect(clipped.notes![0]!.anchor).toEqual({ ...note.anchor, start: at.start, end: at.end });
+  // Split at the pause, it stays with "Home.".
+  const pieces = removeRange(polished, 1_500, 5_500, { words: said, corrections: {} });
+  expect(pieces[0]!.notes!.map((one) => one.anchor!.quote)).toEqual(["Home."]);
+  expect(pieces[1]!.notes).toEqual([]);
+});

@@ -35,11 +35,12 @@ function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
   if (pieces.length === 0 || !source.notes?.length) return pieces;
   const kept: Note[][] = pieces.map(() => []);
   const from = spansOf(said, source.startMs, source.endMs);
+  const text = from.map(([word]) => said.corrections[word.id] ?? word.text).join(" ");
   for (const note of source.notes) {
-    const anchor = note.anchor;
+    const anchor = located(note.anchor, text);
     const word = anchor ? from.findLast(([, at]) => at <= anchor.start) : undefined;
     const piece = word ? pieces.findIndex((one) => word[0].startMs < one.endMs && word[0].endMs > one.startMs) : -1;
-    if (anchor === undefined || word === undefined || piece < 0) {
+    if (anchor === null || word === undefined || piece < 0) {
       kept[0]!.push(note);
       continue;
     }
@@ -48,6 +49,18 @@ function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
     kept[piece]!.push({ ...note, anchor: { ...anchor, start: anchor.start + shift, end: anchor.end + shift } });
   }
   return pieces.map((piece, index) => ({ ...piece, notes: kept[index]! }));
+}
+
+/**
+ * A note's anchor as it stands in what its clip says now: its offsets where they still hold its words, else the
+ * occurrence of its words nearest them (an edge moved since it was set, Codex on #17); null when unanchored or gone.
+ */
+function located(anchor: Note["anchor"], text: string): NonNullable<Note["anchor"]> | null {
+  if (anchor === undefined || anchor.quote === "") return null;
+  if (text.slice(anchor.start, anchor.end) === anchor.quote) return anchor;
+  let best = -1;
+  for (let at = text.indexOf(anchor.quote); at >= 0; at = text.indexOf(anchor.quote, at + 1)) if (best < 0 || Math.abs(at - anchor.start) < Math.abs(best - anchor.start)) best = at;
+  return best < 0 ? null : { ...anchor, start: best, end: best + anchor.quote.length };
 }
 
 /** A clip joined onto the one before it brings its notes, on the same words: offsets into what the joined clip says. */
@@ -250,16 +263,18 @@ export function polish(clips: Clip[], words: Word[], corrections: Record<string,
     if (endMs < startMs + 200) [startMs, endMs] = [clip.startMs, clip.endMs];
     const first = words.find((word) => mid(word) >= startMs);
     const last = words.findLast((word) => mid(word) < endMs);
-    if (first === undefined || last === undefined || last.endMs <= first.startMs) return { ...clip, startMs, endMs };
+    if (first === undefined || last === undefined || last.endMs <= first.startMs) return startMs === clip.startMs ? { ...clip, startMs, endMs } : shareNotes(clip, [{ ...clip, startMs, endMs }], { words, corrections })[0]!;
     const room = breathe(words, first.startMs, last.endMs, durationMs);
     // As far as an edge may go without touching a neighbouring word.
     const reach = breatheWith(words, first.startMs, last.endMs, durationMs, Infinity, Infinity);
     // An edge cutting into a neighbour comes back to the breathing room; otherwise it keeps whichever gives the words more room.
-    return {
+    const next = {
       ...clip,
       startMs: startMs < reach[0] ? room[0] : Math.min(startMs, room[0]),
       endMs: endMs > reach[1] ? room[1] : Math.max(endMs, room[1]),
     };
+    // Its notes' offsets follow its words when an edge takes words off or adds them (Codex on #17).
+    return next.startMs === clip.startMs ? next : shareNotes(clip, [next], { words, corrections })[0]!;
   });
   return [polished, fixes.length];
 }
