@@ -394,8 +394,11 @@ class Work {
         }
         const [startMs, endMs] = edge === "in" ? [start, clip.endMs] : [clip.startMs, end];
         if (endMs < startMs + 200) throw new Error("That trim leaves nothing of the clip; trim to a word inside it.");
+        const before = { ...clip };
         clip.startMs = startMs;
         clip.endMs = endMs;
+        // Its notes' offsets follow its words when the in-point moves (CodeRabbit on #17).
+        if (clip.notes?.length && startMs !== before.startMs) clip.notes = tidy.shareNotes(before, [{ ...clip }], { words, corrections: this.corrections })[0]!.notes;
         return;
       }
       case "remove_words": {
@@ -441,9 +444,12 @@ class Work {
         const ms = words[this.word(edit.wordId)]!.startMs;
         const clip = this.clips[index]!;
         if (isCutIn(clip) || ms < clip.startMs + 100 || ms + 100 > clip.endMs) throw new Error("Split a clip at a word inside it, away from its edges.");
-        // The timestamp's comments stay with the first half.
+        // The timestamp's id stays with the first half; each note goes with the half that says its words (CodeRabbit on #17).
+        const whole = { ...clip };
         const second: Clip = { ...structuredClone(clip), id: crypto.randomUUID(), startMs: ms, notes: [] };
         clip.endMs = ms;
+        const [firstHalf, secondHalf] = tidy.shareNotes(whole, [{ ...clip }, second], { words, corrections: this.corrections });
+        if (whole.notes?.length) [clip.notes, second.notes] = [firstHalf!.notes, secondHalf!.notes];
         if (this.pointed?.has(clip.id)) this.pointed.add(second.id);
         this.nameNew(second);
         this.clips.splice(index + 1, 0, second);

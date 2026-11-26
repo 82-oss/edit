@@ -219,3 +219,16 @@ test("a revision never writes a note for the editor into narration", () => {
   expect(() => apply(script(), [{ op: "write", id: "i4", narration: "Then (edit: a map) he left." }], [], false)).toThrow("note for the editor");
   expect(apply(script(), [{ op: "write", id: "i4", narration: "Then he left." }], [], false)[0][3]!.narration).toBe("Then he left.");
 });
+
+test("a split or a trim in a revision keeps each note on the words it's about", () => {
+  // c2 says "Where were you? Home. All night." (w4–w9).
+  const base = script();
+  const home = { id: "h", text: "edit: zoom in", at: 0, anchor: { start: 16, end: 21, quote: "Home." } };
+  const where = { id: "w", text: "edit: a map", at: 0, anchor: { start: 0, end: 5, quote: "Where" } };
+  base.clips[2] = { ...base.clips[2]!, notes: [home, where] };
+  const [split] = apply(base, [{ op: "split", id: "i3", wordId: "w7" }], [], false);
+  expect(split[2]!.notes!.map((note) => note.id)).toEqual(["w"]);
+  expect(split[3]!.notes).toEqual([{ ...home, anchor: { start: 0, end: 5, quote: "Home." } }]);
+  const [trimmed] = apply(base, [{ op: "trim", id: "i3", edge: "in", wordId: "w6" }], [], false);
+  expect(trimmed[2]!.notes!.find((note) => note.id === "h")!.anchor).toEqual({ start: 5, end: 10, quote: "Home." });
+});

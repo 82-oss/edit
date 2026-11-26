@@ -31,7 +31,7 @@ function spansOf(said: Said, startMs: number, endMs: number): [Word, number][] {
  * its offsets moved into that piece's text, so a repeated word keeps its own occurrence. A quote running across the
  * cut goes with its first word. An unanchored note, or one whose first word was cut, stays on the first piece.
  */
-function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
+export function shareNotes(source: Clip, pieces: Clip[], said: Said): Clip[] {
   if (pieces.length === 0 || !source.notes?.length) return pieces;
   const kept: Note[][] = pieces.map(() => []);
   const from = spansOf(said, source.startMs, source.endMs);
