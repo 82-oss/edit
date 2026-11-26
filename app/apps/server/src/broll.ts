@@ -21,7 +21,7 @@ import { importPaths } from "./import.ts";
 import { probe as probeFile } from "./media.ts";
 import { Semaphore } from "./semaphore.ts";
 import type { Clip, Media, Probe, Project, VideoClip } from "./model.ts";
-import { headlessBinary, headlessCommand } from "./chrome_devtools.ts";
+import { headlessBinary, headlessCommand, headlessEnv } from "./chrome_devtools.ts";
 import { canonical, fileName, fileStem, isFile, join, withExtension } from "./paths.ts";
 import * as progress from "./progress.ts";
 import { measuredTrack, repinPlaceLabels } from "./graphics.ts";
@@ -1115,7 +1115,7 @@ async function renderMap(
       { gpu: true },
     );
     if (command === null) throw new Error("no Chrome");
-    child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: headlessEnv(true) });
   } catch (error) {
     answer = { error: `chrome: ${diag.messageOf(error)}` };
   }

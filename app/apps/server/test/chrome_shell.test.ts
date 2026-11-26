@@ -134,3 +134,25 @@ test("Google Chrome is started --headless=new, its graphics switches before its 
   expect(command!.slice(0, 2)).toEqual([chrome, "--headless=new"]);
   expect(command!.at(-1)).toBe("about:blank");
 });
+
+test("on the graphics card, Chrome draws with Metal on a Mac, Vulkan on Linux, and OpenGL on Direct3D 12 under WSL", () => {
+  devtools.findShell(join(work, "none"));
+  if (seams.broll.chrome() === null) return;
+  const angle = () => devtools.headlessCommand(["about:blank"], { gpu: true })!.filter((part) => part.startsWith("--use-angle="));
+  expect(devtools.headlessCommand(["about:blank"])!.some((part) => part.startsWith("--use-angle="))).toBe(false);
+  const wsl = devtools.gpuHooks.wsl;
+  try {
+    devtools.gpuHooks.wsl = false;
+    expect(angle()).toEqual(process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : []);
+    expect(devtools.headlessEnv(true)).toBeUndefined();
+    if (process.platform !== "linux") return;
+    // WSL: Vulkan there is only the CPU's; Mesa's D3D12 driver, which Chrome is started with, is the card.
+    devtools.gpuHooks.wsl = true;
+    expect(angle()).toEqual(["--use-angle=gl-egl"]);
+    expect(devtools.headlessEnv(true)?.GALLIUM_DRIVER).toBe(process.env.GALLIUM_DRIVER ?? "d3d12");
+    expect(devtools.headlessEnv(true)?.PATH).toBe(process.env.PATH);
+    expect(devtools.headlessEnv(false)).toBeUndefined();
+  } finally {
+    devtools.gpuHooks.wsl = wsl;
+  }
+});

@@ -30,7 +30,7 @@ export interface Opening {
   /** The page's size in CSS pixels, drawn one device pixel each. */
   width: number;
   height: number;
-  /** Draw on the graphics card (Metal on a Mac, Vulkan on Linux, where headless Chrome otherwise draws on the CPU). */
+  /** Draw on the graphics card (Metal on a Mac, Vulkan on Linux or OpenGL under WSL, where headless Chrome otherwise draws on the CPU). */
   gpu?: boolean;
   /** What it's for, in an error's words: "Looking at an effect". */
   what: string;
@@ -256,9 +256,34 @@ export function headlessBinary(): string | null {
   return seams.broll.chrome();
 }
 
-/** The switches that make the binary draw on the graphics card: Metal on a Mac, Vulkan on Linux, where headless Chrome otherwise draws on the CPU. */
+/** Whether this is Linux under WSL, where the graphics card is reached through `/dev/dxg` (tests: either). */
+export const gpuHooks = { wsl: process.platform === "linux" && fs.existsSync("/dev/dxg") };
+
+/**
+ * The switches that make the binary draw on the graphics card: Metal on a Mac, Vulkan on Linux, where headless Chrome
+ * otherwise draws on the CPU. Under WSL, OpenGL on Mesa's Direct3D 12 driver, which Chrome reads from its environment:
+ * WSL has no Vulkan driver for the card, so `--use-angle=vulkan` found only the CPU's and WebGL never started (Nov 25,
+ * Boyfriends on mandalorian's RTX 4060: "The browser supports WebGL, but initialization failed", so the 3D date maps
+ * couldn't be drawn). Chrome is started with that driver chosen (`headlessEnv`); the engine's exports go the same way
+ * (crates/edit-engine render.rs `wsl_gpu`).
+ */
 function gpuSwitches(): string[] {
-  return process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : [];
+  if (process.platform === "darwin") return ["--use-angle=metal"];
+  if (process.platform !== "linux") return [];
+  return [wsl() ? "--use-angle=gl-egl" : "--use-angle=vulkan"];
+}
+
+function wsl(): boolean {
+  return process.platform === "linux" && gpuHooks.wsl;
+}
+
+/**
+ * The environment a headless Chrome on the graphics card starts with: under WSL, Edit's own with Mesa's Direct3D 12
+ * driver chosen (`gpuSwitches`); elsewhere, Edit's own (undefined). Given to the spawn: Bun's child sees what
+ * Edit's environment was when it started, not a change made to `process.env` since.
+ */
+export function headlessEnv(gpu: boolean): Record<string, string | undefined> | undefined {
+  return gpu && wsl() ? { ...process.env, GALLIUM_DRIVER: process.env.GALLIUM_DRIVER ?? "d3d12" } : undefined;
 }
 
 /**
@@ -376,7 +401,12 @@ export async function open(opening: Opening): Promise<Page> {
     fs.rmSync(profile, { recursive: true, force: true });
     throw new Error(`${opening.what} needs Google Chrome installed.`);
   }
-  const child = Bun.spawn(opening.below === true ? playing.belowCommand(command) : command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const child = Bun.spawn(opening.below === true ? playing.belowCommand(command) : command, {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    env: headlessEnv(opening.gpu === true && drawing.gpu),
+  });
   started.add(child);
   const release = opening.below === true ? playing.keepBelow(child.pid) : () => {};
   void child.exited.then(() => {

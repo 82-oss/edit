@@ -42,6 +42,14 @@ fn gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
             return Ok((device.clone(), queue.clone()));
         }
         let made = new_gpu()?;
+        let info = made.0.adapter_info();
+        crate::log::info(
+            "gpu",
+            format!(
+                "drawing on {} ({:?}, {:?})",
+                info.name, info.backend, info.device_type
+            ),
+        );
         *shared = Some(made.clone());
         Ok(made)
     }
@@ -50,21 +58,15 @@ fn gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
 }
 
 fn new_gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    // Vulkan or Metal only: OpenGL (EGL) opened beside Vulkan deadlocked
-    // NVIDIA's driver when renderers came and went side by side (Linux, Nov 7).
-    descriptor.backends = wgpu::Backends::PRIMARY;
-    // No debug labels on GPU objects (a debug build's default): with renderers
-    // made side by side, Vulkan's loader crashed naming one
-    // (vkSetDebugUtilsObjectNameEXT, NVIDIA 615 on Linux, Nov 7: `just dev`'s
-    // debug addon and `just check`'s tests, never a release build).
-    descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
-    let instance = wgpu::Instance::new(descriptor);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .map_err(|error| format!("no GPU available: {error}"))?;
+    // Vulkan or Metal: OpenGL (EGL) opened beside Vulkan deadlocked NVIDIA's
+    // driver when renderers came and went side by side (Linux, Nov 7).
+    let adapter =
+        adapter(wgpu::Backends::PRIMARY).map_err(|error| format!("no GPU available: {error}"))?;
+    #[cfg(target_os = "linux")]
+    let adapter = match adapter.get_info().device_type {
+        wgpu::DeviceType::Cpu => wsl_gpu().unwrap_or(adapter),
+        _ => adapter,
+    };
     if std::env::var("EDIT_REQUIRE_GPU").as_deref() == Ok("1")
         && adapter.get_info().device_type == wgpu::DeviceType::Cpu
     {
@@ -75,6 +77,46 @@ fn new_gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
         ..Default::default()
     }))
     .map_err(|error| format!("GPU device: {error}"))
+}
+
+/// The best adapter of `backends`.
+fn adapter(backends: wgpu::Backends) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends;
+    // No debug labels on GPU objects (a debug build's default): with renderers
+    // made side by side, Vulkan's loader crashed naming one
+    // (vkSetDebugUtilsObjectNameEXT, NVIDIA 615 on Linux, Nov 7: `just dev`'s
+    // debug addon and `just check`'s tests, never a release build).
+    descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
+    let instance = wgpu::Instance::new(descriptor);
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+}
+
+/// Under WSL, the machine's own GPU, where Vulkan has only the CPU's: WSL has
+/// no Vulkan driver for it, so every frame of an export was drawn on the CPU
+/// (lavapipe, ~30 fps; Nov 25, Boyfriends: 49 minutes on mandalorian's RTX
+/// 4060 at a fifth of the Mac's speed). Mesa's OpenGL on Direct3D 12 reaches
+/// it through `/dev/dxg`, chosen by `GALLIUM_DRIVER` (EGL without a display
+/// otherwise draws on the CPU too). No NVIDIA Vulkan is opened there, so
+/// nothing sits beside this OpenGL to deadlock. Tried a few times: Mesa
+/// sometimes fails to make its screen ("failed to create dri2 screen").
+#[cfg(target_os = "linux")]
+fn wsl_gpu() -> Option<wgpu::Adapter> {
+    if !Path::new("/dev/dxg").exists() {
+        return None;
+    }
+    if std::env::var_os("GALLIUM_DRIVER").is_none() {
+        // Read by Mesa as EGL opens, below; set once, under `gpu`'s lock.
+        std::env::set_var("GALLIUM_DRIVER", "d3d12");
+    }
+    (0..3).find_map(|_| {
+        adapter(wgpu::Backends::GL)
+            .ok()
+            .filter(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu)
+    })
 }
 
 pub fn new_renderer(width: u32, height: u32) -> Result<Renderer, String> {
@@ -6541,6 +6583,18 @@ mod tests {
             assert_eq!(got, 59, "at {time:.3} s");
         }
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Under WSL the engine draws on the machine's GPU, not the CPU's
+    /// stand-in (`wsl_gpu`). Says nothing elsewhere.
+    #[test]
+    fn under_wsl_the_engine_draws_on_the_gpu() {
+        if !Path::new("/dev/dxg").exists() {
+            return;
+        }
+        let (device, _) = gpu().unwrap();
+        let info = device.adapter_info();
+        assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name);
     }
 
     /// Times a 1080p export of footage wholly under full-frame B-roll (the
