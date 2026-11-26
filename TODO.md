@@ -80,6 +80,7 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **R2 cleanup, all waiting on Sphe's go** (Nov 11 audit; run it again first: `scripts/r2-audit/list.ts`, `bodies.ts`, `analyze.py`, `report.py`): Repack's and old Writer's prefixes (536 GB), orphans (58 GB), superseded review versions (239 GB), lifecycle rules on the temporary prefixes. The bucket was 1,122 GB, $26 to $34 a month.
 - **The footage sweep is off** (accounts repo, `convex/footage.ts` `SWEEP = { clear: false }`); to turn on about Dec 15, once every Mac can bring footage back.
 - **The lessons inbox's cloud half stays until every Mac is past the build that took it out of the app** (Nov 21): the accounts cloud's `edit:listLessons`, `edit:noteLesson` and `edit:closeLesson`, their entries in the relay's allow-list (`apps/relay/src/authz.ts` `EDIT_CALLS`, and `cloud.ts`'s list of calls that name who made them), and the `editLessons` table can go then; older builds still call them.
+- **An effect's catch-up starts again when this computer takes its own lock back** (PR #14, CodeRabbit): a lapsed lease re-taken by the same holder calls `hooks.held` like a takeover, so a revert its agent made to an older kept version, not settled yet, can be fetched over with the version in use (it stays in the effect's history). `acquire` would need to tell the hook whether the lock was this holder's before.
 
 ## For Sphe to decide
 
