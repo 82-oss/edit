@@ -185,7 +185,7 @@ export async function runWith(script: Script, dir: string, names: string[], note
         recording: recordingList[all[from]!.group] ?? null,
         cast: castPeople,
         ...unvoiced(script, all.slice(from, to)),
-        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
+        task: 'Give every line below (by its n) to the person in the cast who says it. Someone not in the cast goes in newPeople with an id starting "new" and is used by that id, named as the cast is: spelled as caseNames spells that person, and a name only the transcript gives, that isn\'t among caseNames, only when it is clearly said as theirs (they give it, or it is used for them more than once), else null with their role. Where a second person starts speaking inside a line, add a split: the line\'s n, the exact words where the other person starts (copied from the line, at least three words, or all of it if shorter), and who that is; a line\'s own person is who says its first words. In spellings, only a person\'s or place\'s name YouTube misheard, one word each, as the case\'s names or conversation spell it (heard "Jaden", written "Jadon"); never other words.',
         lines: shownLines,
       });
       try {
