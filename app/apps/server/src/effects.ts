@@ -2316,12 +2316,29 @@ async function place(app: App, render: Render): Promise<void> {
  * new version). In the background; signed out, there's no cloud and nothing
  * is kept.
  */
-function keepVersion(app: App, project: string, name: string, key: string, reason: "settled" | "rendered" = "rendered"): void {
-  if (!v2cloud.enabled()) return;
-  void v2cloud
-    .save(v2cloud.effectKey(project, name), name, folder(app.store, project, name), { source: key, reason })
-    .catch((error: unknown) => diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`));
+export function keepVersion(app: App, project: string, name: string, key: string, reason: "settled" | "rendered" = "rendered"): Promise<void> {
+  if (!v2cloud.enabled()) return Promise.resolve();
+  const item = v2cloud.effectKey(project, name);
+  const dir = folder(app.store, project, name);
+  // One effect's saves one after another, in the order asked, each made the version in use: side by side, an older
+  // one whose files went up slower was made the version in use after a newer one (PR #14's CodeRabbit review). A save
+  // whose code here has moved on is left to the save asked for the newer code: its files aren't the code `key` names.
+  const next = (keeping.get(item) ?? Promise.resolve())
+    .then(async () => {
+      const live = app.store.get(project);
+      if (live === null || !fs.existsSync(join(dir, ENTRY)) || keyOf(app.store, project, dir, frameOf(live.project)) !== key) return;
+      await v2cloud.save(item, name, dir, { source: key, reason });
+    })
+    .catch((error: unknown) => diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`))
+    .finally(() => {
+      if (keeping.get(item) === next) keeping.delete(item);
+    });
+  keeping.set(item, next);
+  return next;
 }
+
+/** Each effect's saves to V2's cloud under way, by its item: the last asked, which the next waits on. */
+const keeping = new Map<string, Promise<void>>();
 
 /** Each project's bringDown under way: one at a time, every caller waiting on the same. */
 const bringing = new Map<string, Promise<string[]>>();

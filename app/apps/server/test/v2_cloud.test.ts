@@ -274,6 +274,32 @@ test("a computer watching another's edit asks the cloud again after a minute, an
   }
 }, 30_000);
 
+test("one effect's versions are kept in the order asked, and a save whose code moved on is left to the newer one's (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-in-order");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (words: string) => `<p>${words}</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>`;
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), page("one"));
+    const one = effects.list(app.store, id)[0]!.key;
+    const first = effects.keepVersion(app, id, "board", one, "settled");
+    // Changed again before the first went up: the first's files would be the second's code under the first's key.
+    fs.writeFileSync(join(dir, "scene.html"), page("two"));
+    const two = effects.list(app.store, id)[0]!.key;
+    const second = effects.keepVersion(app, id, "board", two, "settled");
+    await Promise.all([first, second]);
+    const versions = await v2cloud.versions(item);
+    expect(versions.map((one) => one.source)).toEqual([two]);
+    expect((await v2cloud.version(item))!.version.source).toBe(two);
+  } finally {
+    cleanup();
+  }
+});
+
 test("a version fetched into a folder its agent changed meanwhile isn't swapped in over it (PR #14's CodeRabbit review)", async () => {
   const { cleanup, id, app } = hq("v2-changed-meanwhile");
   try {
