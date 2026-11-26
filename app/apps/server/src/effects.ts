@@ -2337,6 +2337,11 @@ const LOOK_AGAIN_MS = 60_000;
  * it settles code, so once is enough; while another computer does, a minute (PR #14's CodeRabbit review: a version
  * settled there without a render left the render's key and the code here as they were, and was never asked for).
  */
+/** What was looked for of a project's effects forgotten: it changed hands (taken here, or the editing changed). */
+function forgetLookedFor(project: string): void {
+  for (const asked of [...lookedFor.keys()]) if (asked.startsWith(`${project}/`)) lookedFor.delete(asked);
+}
+
 function lookedForLately(asked: string, editing: boolean): boolean {
   const at = lookedFor.get(asked);
   return at !== undefined && (editing || Date.now() - at < LOOK_AGAIN_MS);
@@ -2383,7 +2388,7 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
   const frame = frameOf(live.project);
   const editing = editingHere(app, project);
   if (lookedWhileEditing.get(project) !== editing) {
-    for (const asked of [...lookedFor.keys()]) if (asked.startsWith(`${project}/`)) lookedFor.delete(asked);
+    forgetLookedFor(project);
     lookedWhileEditing.set(project, editing);
   }
   // Each effect asked of the cloud side by side: an edit of 19 effects asked one after another kept its renders waiting.
@@ -3145,7 +3150,10 @@ export function start(app: App): void {
   changed = (project) => renderSoon(app, project);
   // A project opened again here, nothing changed in it: what wasn't drawn while another computer (or nobody) held it is
   // drawn now (Nov 16, the M4: an effect brought down after its project was closed again never rendered on reopening).
+  // What was looked for in V2's cloud while another computer edited it is asked again (PR #14's Codex review: code
+  // settled there, never rendered, was otherwise not asked for until a restart).
   cloudProjects.hooks.held = (project) => {
+    forgetLookedFor(project);
     if (app.store.get(project)?.project.hq === true) renderSoon(app, project);
   };
   app.store.subscribe((event) => {
