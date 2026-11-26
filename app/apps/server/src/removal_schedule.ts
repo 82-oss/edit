@@ -173,7 +173,17 @@ export function exportNote(project: Project): string | null {
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
   const started = Date.now();
-  while (progressOf(id).out > 0) {
+  // Pieces this export has seen RunPod refuse: it goes without them, even once a background retry sends one again
+  // while it waits on the rest (their hold ending mid-wait); the removal line and later exports count them as ever.
+  const refused = new Set<string>();
+  const out = (): number => {
+    for (const one of watermarkRemoval.piecesOf(id)) if (one.refused !== undefined) refused.add(`mark ${one.media}@${one.from}`);
+    for (const one of textInpaint.piecesOf(id)) if (one.refused !== undefined) refused.add(`clean ${one.key}`);
+    const sent = (one: { state: string }) => one.state === "queued" || one.state === "running";
+    const retried = watermarkRemoval.piecesOf(id).filter((one) => sent(one) && refused.has(`mark ${one.media}@${one.from}`)).length + textInpaint.piecesOf(id).filter((one) => sent(one) && refused.has(`clean ${one.key}`)).length;
+    return progressOf(id).out - retried;
+  };
+  while (out() > 0) {
     if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");

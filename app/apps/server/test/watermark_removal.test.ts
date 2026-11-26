@@ -590,3 +590,61 @@ test("a cell RunPod refused a machine for isn't waited for or sent again at once
     cleanup();
   }
 }, 60_000);
+
+test("an export waiting on other removal goes without a cell RunPod refused, even once its retry is sent mid-wait", async () => {
+  const { app, dir, cleanup } = fixtureHome("watermark-refused-mid-export");
+  const calls: WatermarkPiece[] = [];
+  const engine = standIn(calls);
+  const words = `RunPod wouldn't rent a CPU machine for 10 minutes (402)`;
+  // The plain tape's look held (the export waits on it); the marked tape's cell refused once, its retry held.
+  let lookOpen = () => {};
+  const look = new Promise<void>((resolve) => (lookOpen = resolve));
+  let retryOpen = () => {};
+  const retry = new Promise<void>((resolve) => (retryOpen = resolve));
+  const tried = new Set<number>();
+  wm.useEngine({
+    learn: async (source, ...rest) => (source.includes("plain") && (await look), engine.learn(source, ...rest)),
+    remove: async (piece, ...rest) => {
+      if (!tried.has(piece.from)) {
+        tried.add(piece.from);
+        throw new removerCloud.RelaySaid(words, true);
+      }
+      await retry;
+      return engine.remove(piece, ...rest);
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const marked = join(dir, "marked.mp4");
+    const plain = join(dir, "plain.mp4");
+    fs.writeFileSync(marked, "a stand-in tape with a mark");
+    fs.writeFileSync(plain, "a stand-in tape with none");
+    const id = await project(app, [marked, plain], 20);
+    await wm.ensure(app, id);
+    while (wm.piecesOf(id)[0]?.refused === undefined) await Bun.sleep(10);
+    // The export waits on the plain tape's look.
+    let done = false;
+    const exporting = removalSchedule.waitForPieces(app, id, 60_000).then(() => (done = true));
+    await Bun.sleep(50);
+    expect(done).toBe(false);
+    // Half an hour on, the refused cell's hold ends and it's sent again (queued beside the look, its retry held),
+    // while the export still waits.
+    clock.mockReturnValue(now + removerCloud.timing.refusedRetryMs + 1000);
+    void wm.ensure(app, id);
+    const sent = () => ["queued", "running"].includes(wm.piecesOf(id)[0]?.state ?? "");
+    while (!sent()) await Bun.sleep(10);
+    expect(removalSchedule.progressOf(id).out).toBe(2);
+    // The look done: the export goes on without the retried cell, not behind it.
+    lookOpen();
+    await exporting;
+    expect(sent()).toBe(true);
+    expect(removalSchedule.progressOf(id).out).toBeGreaterThanOrEqual(1);
+  } finally {
+    retryOpen();
+    await wm.settled();
+    clock.mockRestore();
+    cleanup();
+  }
+}, 60_000);
