@@ -35,7 +35,13 @@ cc = "1"
 [lints]
 workspace = true
 
+# LaMa for taking captions out (caption::lama): ONNX Runtime, by Core ML on a Mac and CUDA elsewhere (the processor
+# where neither is there). Its prebuilt library is fetched at build time.
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.15", features = ["coreml"] }
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
+ort = { version = "=2.0.0-rc.15", features = ["cuda"] }
 tract-onnx = "0.23.10"
 # The agent's pictures as JPEG where ImageIO isn't (encode_for_agent): a PNG frame was 1.4–4 MB, sent and kept in its session.
 jpeg-encoder = "0.7"

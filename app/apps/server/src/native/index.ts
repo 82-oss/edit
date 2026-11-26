@@ -125,6 +125,14 @@ export interface StillAnswer {
   why?: string;
 }
 
+/** caption.rs `clean`'s answer: the strip's band (shares; null with no captions), frames LaMa filled and carried, the style's shadow it fitted and where LaMa ran (coreml, cuda or cpu). */
+export interface CaptionAnswer {
+  box: Box | null;
+  inferred: number;
+  carried?: number;
+  provider?: string;
+}
+
 export interface RenderRequest {
   project: ProjectInput;
   frames: number[];
@@ -318,6 +326,8 @@ export interface Native {
   watermarkRemove?(piece: WatermarkPiece, onProgress: (progress: number) => void): Promise<WatermarkRemoved | null>; // A
   /** Their captions out of a still camera's stretch (still.rs `clean`), from found.ts `stillClean`'s job (JSON). Missing from an addon built before it. */
   stillClean?(job: string): Promise<StillAnswer>; // A
+  /** Their captions out of a stretch the still clean can't take (caption.rs `clean`: the shadow brightened back, the letters filled by LaMa at `model`), from text_inpaint.ts's request (JSON). Missing from an addon built before it. */
+  captionClean?(job: string, model: string): Promise<CaptionAnswer>; // A
   censorIssues(project: ProjectInput, start: boolean): { issues: unknown[]; pending: string[] }; // S (+BG)
   censorWarm(path: string, read?: string | null): void; // BG
   /** Whether a person is watching a play here (playing.ts): background analysis's FFmpeg stops while one is. Missing from an addon built before it (a dev server's). */

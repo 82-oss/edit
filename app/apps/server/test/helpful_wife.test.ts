@@ -7,7 +7,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { apply, audit, hooks } from "../src/edit_plan.ts";
 import { deadAir, offScript } from "../src/edit_review.ts";
 import * as framing from "../src/framing.ts";
-import { fill, letterboxed, parseCrop } from "../src/framing.ts";
+import { bordersOf, fill, letterboxed } from "../src/framing.ts";
 import type { Project, VideoClip } from "../src/model.ts";
 import type { Transcript } from "../src/transcribe.ts";
 import { readMarks } from "../src/watermarks.ts";
@@ -32,10 +32,32 @@ function tape(): Project {
   return p;
 }
 
-test("cropdetect_borders_are_shares_of_the_picture_and_noise_is_ignored", () => {
-  expect(parseCrop("[Parsed_cropdetect] crop=710:480:10:0\n", 720, 480)).toEqual({ left: 0.0139, right: 0, top: 0, bottom: 0 });
-  expect(parseCrop("crop=720:478:0:1", 720, 480)).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
-  expect(parseCrop("nothing", 720, 480)).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
+/** Grey frames `w` × `h` of a picture (`picture(x, y, frame)`), black where `black(x, y, frame)`. */
+function frames(w: number, h: number, count: number, black: (x: number, y: number, frame: number) => boolean, picture = (x: number, y: number, frame: number) => 60 + ((x * 7 + y * 3 + frame * 11) % 150)): Uint8Array[] {
+  return Array.from({ length: count }, (_, frame) => {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = black(x, y, frame) ? 0 : picture(x, y, frame);
+    return out;
+  });
+}
+
+test("borders_are_the_edges_that_stay_black_and_noise_is_ignored", () => {
+  // A tape's own 10 black columns on the left of 720.
+  expect(bordersOf(frames(720, 48, 12, (x) => x < 10), 720, 48)).toEqual({ left: 0.0139, right: 0, top: 0, bottom: 0 });
+  // A row or two is noise.
+  expect(bordersOf(frames(72, 480, 12, (_, y) => y < 1), 72, 480)).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
+  // A dark picture past a third of the frame isn't a border.
+  expect(bordersOf(frames(72, 480, 12, (_, y) => y < 200), 72, 480).top).toBe(0);
+});
+
+test("a_re_uploads_black_bar_with_a_name_in_it_is_a_border", () => {
+  // Trooper (Nov 26): 1280×720, a black bar from row 681 with "Christian Morphis" in white in its middle, read 320 wide.
+  const name = (x: number, y: number) => y >= 686 && y <= 714 && x >= 132 && x <= 188 && (x + y) % 3 !== 0;
+  const got = bordersOf(frames(320, 720, 12, (x, y) => y >= 681 && !name(x, y)), 320, 720);
+  expect(got.bottom).toBeCloseTo(39 / 720, 3);
+  // A letterbox whose subtitles come now and then across most of its width is a border too.
+  const subtitle = (x: number, y: number, frame: number) => frame % 6 === 0 && y >= 690 && y <= 710 && x > 20 && x < 300;
+  expect(bordersOf(frames(320, 720, 12, (x, y, frame) => y >= 681 && !subtitle(x, y, frame)), 320, 720).bottom).toBeCloseTo(39 / 720, 3);
 });
 
 test("a_3_2_tape_fills_a_16_9_frame_cropped_top_and_bottom_and_its_own_border_is_cropped_past", () => {

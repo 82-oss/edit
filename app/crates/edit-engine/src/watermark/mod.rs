@@ -20,10 +20,10 @@
 //! - `flow` (DIS on that box only), `find` (the search), `restore` (the
 //!   frame's undoing and filling) and `plane` (the picture operations).
 
-mod find;
-mod flow;
+pub(crate) mod find;
+pub(crate) mod flow;
 mod learn;
-mod plane;
+pub(crate) mod plane;
 mod restore;
 mod run;
 

@@ -73,9 +73,11 @@ function covered(project: Project, clip: VideoClip, strip: Strip): [number, numb
   const fps = fpsOf(project);
   const speed = clip.speed ?? 1;
   if (!(speed > 0)) return null;
-  const step = 1 / Math.max(1, strip.fps || fps);
   const a = clip.start + Math.ceil(((strip.cleans.from - clip.source_in) * fps) / speed - 1e-6);
-  const b = clip.start + Math.floor(((strip.cleans.to - step - clip.source_in) * fps) / speed + 1e-6) + 1;
+  // Every frame whose source second is before the strip's end: its last frame shows until then. A clip cut between two
+  // of the file's frames (Trooper: source_in 235.532) left the frame just before a cell's end to neither cell, and
+  // their watermark flashed there every 30 s.
+  const b = clip.start + Math.ceil(((strip.cleans.to - clip.source_in) * fps) / speed - 1e-6);
   const from = Math.max(a, clip.start);
   const to = Math.min(b, clipEnd(clip));
   return to - from >= 1 ? [from, to] : null;

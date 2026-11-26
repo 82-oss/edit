@@ -10,7 +10,7 @@
 //! the engine does, a Mac included; the OpenCV calls it was tuned with are in `pixels`, bit for bit where it matters.
 #![allow(clippy::indexing_slicing)] // see pixels.rs: per-pixel loops, in range by construction, a slip is caught
 
-mod pixels;
+pub(crate) mod pixels;
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -205,7 +205,7 @@ fn fill_py(mask: &mut Mask, x0: i64, y0: i64, x1: i64, y1: i64) {
 }
 
 /// Python's round(): halves to even.
-fn round(value: f64) -> i64 {
+pub(crate) fn round(value: f64) -> i64 {
     value.round_ties_even() as i64
 }
 
@@ -217,7 +217,7 @@ type Read1 = std::io::Result<Option<Rgb>>;
 
 /// Raw RGB frames from an FFmpeg, at background priority. Read on a thread of their own, so an FFmpeg that stays up
 /// writing nothing can't hold the stretch past its time: `next` asks whether to stop while it waits.
-struct Frames {
+pub(crate) struct Frames {
     child: crate::util::Watched,
     frames: std::sync::mpsc::Receiver<Read1>,
 }
@@ -279,7 +279,13 @@ impl Frames {
     }
 
     /// worker.Frames: the band y0..y1 of a stretch's frames, in order, at the stretch's rate.
-    fn band(job: &Job, frames: usize, w: usize, y0: usize, y1: usize) -> Result<Self, String> {
+    pub(crate) fn band(
+        job: &Job,
+        frames: usize,
+        w: usize,
+        y0: usize,
+        y1: usize,
+    ) -> Result<Self, String> {
         let first = round(job.from * job.fps);
         let seek = ((first as f64 - 0.5) / job.fps).max(0.0);
         let mut args: Vec<OsString> = vec![
@@ -316,7 +322,7 @@ impl Frames {
     }
 
     /// The next frame, or None at the footage's end; stopped (`check`) even while FFmpeg writes nothing.
-    fn next(&mut self, stopped: Stop<'_>) -> Result<Option<Rgb>, String> {
+    pub(crate) fn next(&mut self, stopped: Stop<'_>) -> Result<Option<Rgb>, String> {
         use std::sync::mpsc::RecvTimeoutError;
         loop {
             check(stopped)?;
@@ -370,7 +376,7 @@ impl Drop for Frames {
 /// pixels came out 1–3 levels off Linux's, enough to move a mask's edge; Nov 24), so a stretch cleans the same on a Mac.
 const EXACT: &str = "bicubic+accurate_rnd+bitexact";
 
-struct Strip {
+pub(crate) struct Strip {
     child: std::process::Child,
     stdin: Option<ChildStdin>,
     errors: Option<std::thread::JoinHandle<Vec<u8>>>,
@@ -381,7 +387,7 @@ struct Strip {
 }
 
 impl Strip {
-    fn open(out: &Path, w: usize, rows: usize, fps: f64) -> Result<Self, String> {
+    pub(crate) fn open(out: &Path, w: usize, rows: usize, fps: f64) -> Result<Self, String> {
         if let Some(folder) = out.parent() {
             std::fs::create_dir_all(folder)
                 .map_err(|error| format!("making the strip's folder: {error}"))?;
@@ -458,7 +464,7 @@ impl Strip {
     }
 
     /// One frame: see-through with nothing given, else the picture premultiplied over its alpha.
-    fn write(&mut self, fill: Option<(&Rgb, &Img<f32>)>) -> Result<(), String> {
+    pub(crate) fn write(&mut self, fill: Option<(&Rgb, &Img<f32>)>) -> Result<(), String> {
         let size = self.w * self.rows * 3;
         let mut bytes = vec![0u8; size * 2];
         if let Some((picture, alpha)) = fill {
@@ -508,7 +514,7 @@ impl Strip {
         self.child.wait().map_err(|error| error.to_string())
     }
 
-    fn finish(mut self) -> Result<(), String> {
+    pub(crate) fn finish(mut self) -> Result<(), String> {
         let status = self.close()?;
         let said = self.said();
         if !status.success() {
@@ -521,7 +527,7 @@ impl Strip {
     }
 
     /// Stopped with nothing kept: FFmpeg ends what it wrote, and both files go.
-    fn abandon(mut self) {
+    pub(crate) fn abandon(mut self) {
         let _ = self.close();
         let _ = std::fs::remove_file(&self.out);
         let _ = std::fs::remove_file(&self.partial);
@@ -1508,7 +1514,7 @@ fn closed_up(frame: &Rgb, mask: &Mask) -> Rgb {
 }
 
 /// worker.band_of: the rows their words' boxes (grown) cover, on even edges.
-fn band_of(masks: &[Vec<[f64; 4]>], height: usize) -> Option<(usize, usize)> {
+pub(crate) fn band_of(masks: &[Vec<[f64; 4]>], height: usize) -> Option<(usize, usize)> {
     let scale = height as f64 / 1080.0;
     let rows: Vec<(f64, f64)> = masks.iter().flatten().map(|b| (b[1], b[3])).collect();
     if rows.is_empty() {
@@ -1536,7 +1542,7 @@ fn band_of(masks: &[Vec<[f64; 4]>], height: usize) -> Option<(usize, usize)> {
 /// Asked between frames whether to stop (the stretch's time is up): an error then, and nothing left behind.
 pub type Stop<'a> = &'a dyn Fn() -> bool;
 
-fn check(stopped: Stop<'_>) -> Result<(), String> {
+pub(crate) fn check(stopped: Stop<'_>) -> Result<(), String> {
     if stopped() {
         Err("the still clean was stopped".to_owned())
     } else {

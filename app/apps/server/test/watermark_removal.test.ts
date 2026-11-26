@@ -107,6 +107,22 @@ test("a watermark strip lies under a text strip of the same frames, both stuck t
   expect(alone.clips.filter((clip) => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `)).length).toBe(1);
 });
 
+test("back-to-back watermark cells leave no frame between them on a clip cut between two of the file's frames (Trooper, Nov 26)", () => {
+  const project = stacked();
+  const clip = project.clips[0] as VideoClip;
+  clip.source_in = 5.532;
+  clip.duration = 600;
+  const one = project.media.find((media) => media.id === "w")!;
+  project.media = project.media.filter((media) => media.id !== "t");
+  project.media.push({ ...structuredClone(one), id: "w2", cleans: { ...one.cleans!, from: 30, to: 60 } } as Media);
+  enforceCleanStrips(null, project);
+  const marks = project.clips.filter((one) => (one.name ?? "").startsWith(`${WATERMARK_NAME} · `)).sort((a, b) => a.start - b.start);
+  expect(marks.length).toBe(2);
+  expect(marks[0]!.start).toBe(0);
+  expect(marks[0]!.start + marks[0]!.duration).toBe(marks[1]!.start);
+  expect(marks[1]!.start + marks[1]!.duration).toBe(600);
+});
+
 test("a watermark strip is always strictly beneath an overlapping subtitle strip, even when previously on a mixed track, inverted, or laid incrementally", () => {
   const lane = (project: Project, id: string) => project.tracks.findIndex((track) => track.id === id);
   const assertOrdered = (project: Project) => {

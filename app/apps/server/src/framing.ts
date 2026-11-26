@@ -6,8 +6,12 @@
 // bars on the footage". So:
 // - `fill`: the scale (and x/y) that fills the frame with a media's picture,
 //   its own black borders cropped past; footage is placed that way.
-// - `borders`: those borders, found by FFmpeg's cropdetect once per file
-//   (`borders-v1.json` in its cache dir), in the background.
+// - `borders`: those borders, found once per file (`borders-v2.json` in its
+//   cache dir), in the background: rows and columns at an edge that stay
+//   black through the file, words inside them or not. A re-upload's black bar
+//   with a name in it is a border like any other (Sphe, Nov 26, on Trooper's
+//   "Christian Morphis" bar, blurred by the agent: "the bar is unecessary and
+//   the agent needs to learn this"); cropdetect counted the name as picture.
 // - `letterboxed`: the audit's issue for a picture on screen with black round
 //   it: it doesn't fill the frame and nothing beneath it does either.
 
@@ -24,7 +28,7 @@ import { round } from "./rust.ts";
 import * as tools from "./tools.ts";
 
 /** The analysis's file in the media's cache dir; a new method is a new file. */
-const FILE = "borders-v1.json";
+const FILE = "borders-v2.json";
 
 /** Shares of the picture that are black border on each side. */
 export type Borders = { left: number; right: number; top: number; bottom: number };
@@ -44,7 +48,8 @@ const known = new Map<string, Borders>();
 const finding = new Set<string>();
 
 function cacheFile(media: Pick<Media, "path">): string | null {
-  if (!isReal() || tools.isUrl(media.path)) return null;
+  // A cloud file (its path a URL) is read as well: a team's every file is one, so a URL left out meant no project's borders were ever found.
+  if (!isReal()) return null;
   const dir = tools.mediaCache(media.path);
   return dir === null ? null : join(dir, FILE);
 }
@@ -65,43 +70,88 @@ export function cachedBorders(media: Pick<Media, "path">): Borders | null {
   }
 }
 
-/** cropdetect's last `crop=w:h:x:y` as borders of a `width` × `height` picture. */
-export function parseCrop(stderr: string, width: number, height: number): Borders {
-  const all = [...stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/gu)];
-  const last = all[all.length - 1];
-  if (last === undefined || width <= 0 || height <= 0) return NONE;
-  const [w, h, x, y] = [Number(last[1]), Number(last[2]), Number(last[3]), Number(last[4])];
+/** Darker than this (of 255) is black. */
+const DARK = 24;
+/** A pixel that's black in this share of the frames is border (a subtitle in a letterbox comes and goes). */
+const STAYS = 0.8;
+/** A row or column with this share of border pixels is border: the words in a bar never fill it. */
+const MOSTLY = 0.8;
+/** Frames looked at, spread through the file (one shot's dark moment never reads as border). */
+const LOOKS = 12;
+/** The frames' width as read (their height is kept, so a bar's rows are exact). */
+const READ_WIDTH = 320;
+
+/**
+ * The borders of `frames` (grey, `width` × `height` each): from each edge, the
+ * rows or columns that stay black through them, a bar's words (white, still)
+ * or a letterbox's subtitles (coming and going) included.
+ */
+export function bordersOf(frames: Uint8Array[], width: number, height: number): Borders {
+  if (frames.length === 0 || width <= 0 || height <= 0) return NONE;
+  const black = new Uint8Array(width * height);
+  const need = Math.ceil(frames.length * STAYS);
+  for (let index = 0; index < width * height; index++) {
+    let dark = 0;
+    for (const frame of frames) if ((frame[index] ?? 255) < DARK) dark++;
+    black[index] = dark >= need ? 1 : 0;
+  }
+  const row = (y: number) => {
+    let sum = 0;
+    for (let x = 0; x < width; x++) sum += black[y * width + x]!;
+    return sum / width >= MOSTLY;
+  };
+  const column = (x: number) => {
+    let sum = 0;
+    for (let y = 0; y < height; y++) sum += black[y * width + x]!;
+    return sum / height >= MOSTLY;
+  };
+  const run = (count: number, edge: (index: number) => boolean) => {
+    let n = 0;
+    while (n < count && edge(n)) n++;
+    return n;
+  };
   const side = (share: number) => (share < THIN || share > THICK ? 0 : round(share * 10000) / 10000);
   return {
-    left: side(x / width),
-    right: side((width - x - w) / width),
-    top: side(y / height),
-    bottom: side((height - y - h) / height),
+    left: side(run(width, column) / width),
+    right: side(run(width, (n) => column(width - 1 - n)) / width),
+    top: side(run(height, row) / height),
+    bottom: side(run(height, (n) => row(height - 1 - n)) / height),
   };
 }
 
-/** Finds a media's borders (FFmpeg reads a few seconds from its middle), cached. */
+/** One grey frame of `path` at `seconds`, `READ_WIDTH` wide and its own height tall (null: none there). */
+async function greyFrame(path: string, seconds: number, height: number): Promise<Uint8Array | null> {
+  const remote = tools.isUrl(path) ? ["-protocol_whitelist", tools.protocols(path), ...tools.urlArgs(path)] : [];
+  const command = [tools.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-ss", String(seconds), ...remote, "-i", path, "-an", "-frames:v", "1", "-vf", `scale=${READ_WIDTH}:${height}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+  // Nobody waits on it but the agent's first look: below the player and exports (tools.lowPriority).
+  const child = Bun.spawn(tools.lowPriority(command), { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const [bytes] = await Promise.all([new Response(child.stdout).arrayBuffer(), child.exited]);
+  return bytes.byteLength >= READ_WIDTH * height ? new Uint8Array(bytes, 0, READ_WIDTH * height) : null;
+}
+
+/** Finds a media's borders (FFmpeg reads a frame at a dozen places through it), cached. */
 export async function findBorders(media: Picture): Promise<Borders> {
   const cached = cachedBorders(media);
   if (cached !== null) return cached;
   const file = cacheFile(media);
   if (file === null || (media.kind !== "video" && media.kind !== "image")) return NONE;
-  const input =
-    media.kind === "video"
-      ? ["-ss", String(Math.max(0, (media.duration ?? 0) * 0.3)), "-t", "8", "-i", media.path]
-      : ["-i", media.path];
-  // reset=0 keeps the widest picture seen: a dark moment never reads as border.
-  const command = [tools.ffmpeg(), "-hide_banner", "-nostdin", ...input, "-an", "-vf", "fps=2,cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"];
-  let stderr = "";
+  const height = Math.max(media.height ?? 0, 0);
+  if (height === 0) return NONE;
+  const times = media.kind === "video" ? Array.from({ length: LOOKS }, (_, index) => (media.duration ?? 0) * (0.05 + (0.9 * index) / (LOOKS - 1))) : [0];
+  let borders = NONE;
   try {
-    // Nobody waits on it but the agent's first look: below the player and exports (tools.lowPriority).
-    const child = Bun.spawn(tools.lowPriority(command), { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    [stderr] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    const frames: Uint8Array[] = [];
+    for (const seconds of times) {
+      const frame = await greyFrame(media.path, seconds, height);
+      if (frame !== null) frames.push(frame);
+    }
+    // Too few read (a cloud file out of reach): nothing kept, looked for again next time.
+    if (frames.length < Math.ceil(times.length / 2)) return NONE;
+    borders = bordersOf(frames, READ_WIDTH, height);
   } catch (error) {
     diag.warn("media", `finding ${media.name}'s borders: ${diag.messageOf(error)}`);
     return NONE;
   }
-  const borders = parseCrop(stderr, media.width ?? 0, media.height ?? 0);
   known.set(media.path, borders);
   try {
     fs.writeFileSync(file, JSON.stringify(borders));
@@ -111,9 +161,19 @@ export async function findBorders(media: Picture): Promise<Borders> {
   return borders;
 }
 
+/**
+ * A picture over its alpha (a cleaned strip, an effect's subtitles): see-through
+ * round what it draws by design, so it has no borders and never fills the frame
+ * (Nov 26: once cloud files were read, every Trooper strip read as letterboxed).
+ */
+function seeThrough(media: object): boolean {
+  const one = media as { stacked_alpha?: boolean | null; cleans?: unknown };
+  return one.stacked_alpha === true || one.cleans != null;
+}
+
 /** Starts finding a media's borders in the background (once at a time per file). */
 export function warmBorders(media: Picture): void {
-  if (cachedBorders(media) !== null || finding.has(media.path) || cacheFile(media) === null) return;
+  if (seeThrough(media) || cachedBorders(media) !== null || finding.has(media.path) || cacheFile(media) === null) return;
   finding.add(media.path);
   void findBorders(media).finally(() => finding.delete(media.path));
 }
@@ -224,7 +284,7 @@ export function letterboxed(project: Project): Record<string, unknown>[] {
     // The Windows screen's pieces sit in its windows, which are designed (and fill their screens themselves).
     if (/Desktop · /u.test(clip.name ?? "")) continue;
     const media = mediaOf(project, clip.media);
-    if (media === undefined || (media.kind !== "video" && media.kind !== "image")) continue;
+    if (media === undefined || (media.kind !== "video" && media.kind !== "image") || seeThrough(media)) continue;
     if ((clip.opacity ?? 1) < 0.5 || fills(clip)) continue;
     const designed = project.clips.some(
       (other) => other.type === "solid" && other.gradient !== undefined && other.gradient !== null && shown(other) && other.start < clipEnd(clip) && clipEnd(other) > clip.start,

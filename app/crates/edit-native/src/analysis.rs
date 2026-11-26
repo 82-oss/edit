@@ -523,6 +523,31 @@ pub async fn still_clean(job: String) -> napi::Result<serde_json::Value> {
     .await
 }
 
+/// Their captions out of a stretch the still clean can't take (the engine's caption.rs `clean`: the shadow brightened
+/// back, the letters filled by LaMa at `model`, steadied along the camera's motion), from `job` (the still clean's job,
+/// text_inpaint.ts's request): on a thread of its own at background priority, stopped once it has taken longer than a
+/// stretch may.
+#[napi(ts_return_type = "Promise<CaptionAnswer>")]
+pub async fn caption_clean(job: String, model: String) -> napi::Result<serde_json::Value> {
+    crate::blocking("cleaning a stretch's captions", move || {
+        let job: edit_engine::still::Job = serde_json::from_str(&job)
+            .map_err(|error| format!("the caption clean's job doesn't read: {error}"))?;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    edit_engine::util::background_thread();
+                    let deadline = std::time::Instant::now() + edit_engine::still::LONGEST;
+                    edit_engine::caption::clean(&job, std::path::Path::new(&model), &|| {
+                        std::time::Instant::now() > deadline
+                    })
+                })
+                .join()
+                .map_err(|payload| edit_engine::util::crashed("the caption clean", &*payload))?
+        })
+    })
+    .await
+}
+
 fn shares(values: &[f64]) -> Result<[f64; 4], String> {
     values
         .try_into()
