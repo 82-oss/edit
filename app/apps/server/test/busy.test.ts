@@ -45,6 +45,14 @@ test("what's busy here is one answer: the lock, a restart, Ready for changes and
     Object.assign(app.scripts, { get: () => ({ state: "waiting" }), running: () => false });
     expect(busy.workingOn(app, "p2")).toBe(false);
     expect(busyWith(app)).toEqual([]);
+    // An effect's render or a removal on p3 (Nov 26: two compilations' locks went 15 s after their agents' turns, and
+    // their effects were never drawn): its lock is kept while it runs, p1's isn't.
+    const rendering = busy.registerProjectWork((id) => id === "p3");
+    expect(busy.workingOn(app, "p3")).toBe(true);
+    expect(lockKept("p3")).toBe(true);
+    expect(lockKept("p1")).toBe(false);
+    rendering();
+    expect(lockKept("p3")).toBe(false);
     // Work only its own module knows (a fix) is in the same list.
     const undo = busy.register(() => "a Ready for changes fix");
     expect(busyWith(app)).toEqual(["a Ready for changes fix"]);

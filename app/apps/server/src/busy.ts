@@ -105,6 +105,10 @@ export function workingOn(app: App, key: string): boolean {
   }
   const agents = app.agents as { runningProjects?: () => string[] } | undefined;
   if (agents?.runningProjects?.().includes(key) === true) return true;
+  // An effect's render or their text being taken out, queued or under way here: each writes the project as it lands,
+  // so the lock stays while they do (Nov 26, mandalorian: two compilations' agents ended their turns, their locks went
+  // 15 s later, and their 83 effects were never drawn; after a restart their removal taking up again takes it back).
+  if ([...projectWork].some((runs) => safely(() => runs(key)))) return true;
   const scripts = app.scripts as ScriptJobs | undefined;
   // Working here, not one read back after a restart that its resumer hasn't picked up yet.
   if (scripts?.working !== undefined) return scripts.working(key);
