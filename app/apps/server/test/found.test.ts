@@ -129,3 +129,19 @@ test("stretches cleaned from the room's picture at once, by the Mac's memory and
     expect(at(gb, cores * 2)).toBeGreaterThanOrEqual(at(gb, cores));
   }
 });
+
+// Nov 26, mandalorian under WSL: its card is /dev/dxg, not /dev/nvidiactl, so the finder installed there was counted
+// as missing and every read went to RunPod, then out of funds.
+test("an NVIDIA card counts under WSL as on Linux's own driver, and the finder is here only with its venv and a card", async () => {
+  const { nvidiaHere, finderHere } = await import("../src/remover_cloud.ts");
+  const os = await import("node:os");
+  const venv = `${os.homedir()}/.local/share/edit-finder/venv/bin/python`;
+  const only = (...paths: string[]) => (path: string) => paths.includes(path);
+  expect(nvidiaHere("linux", only("/dev/nvidiactl"))).toBe(true);
+  expect(nvidiaHere("linux", only("/dev/dxg"))).toBe(true);
+  expect(nvidiaHere("linux", only())).toBe(false);
+  expect(nvidiaHere("darwin", only("/dev/dxg"))).toBe(false);
+  expect(finderHere("linux", only("/dev/dxg", venv))).toBe(true);
+  expect(finderHere("linux", only("/dev/dxg"))).toBe(false);
+  expect(finderHere("linux", only(venv))).toBe(false);
+});

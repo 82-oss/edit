@@ -5,6 +5,9 @@
 // watermark_removal.ts takes marks out by it, text_blur.ts reads their words by it).
 
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import { join } from "node:path";
 
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
@@ -18,10 +21,32 @@ const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> |
 /** `refusedRetryMs`: how long a piece RunPod refused a machine for waits before it's sent again (each try is refused only after ten minutes at the relay). */
 export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000, refusedRetryMs: 30 * 60_000 };
 
+/**
+ * Whether this computer has an NVIDIA card the finder and the caption clean draw on: Linux's own driver
+ * (`/dev/nvidiactl`), or Windows' under WSL (`/dev/dxg`, mandalorian since Nov 25, where the finder was counted as
+ * missing and every read went to RunPod).
+ */
+export function nvidiaHere(platform: string = process.platform, has: (path: string) => boolean = fs.existsSync): boolean {
+  return platform === "linux" && (has("/dev/nvidiactl") || has("/dev/dxg"));
+}
+
+/** The finder installed here (its venv), on a computer it can run on (`nvidiaHere`). */
+export function finderHere(platform: string = process.platform, has: (path: string) => boolean = fs.existsSync): boolean {
+  return nvidiaHere(platform, has) && has(join(os.homedir(), ".local", "share", "edit-finder", "venv", "bin", "python"));
+}
+
+/**
+ * A computer that finds their text itself does all of removal itself, RunPod never asked: the finder on its card, the
+ * caption clean by LaMa (text_inpaint.ts), watermark cells and the blur's tracks on its cores (Sphe, Nov 26: "I'm trying
+ * to get rid of it", with RunPod out of funds and every piece of four compilations refused). RunPod stays for the
+ * computers that can't, while the relay's flag is on.
+ */
+const selfSufficient = (): boolean => process.env.NODE_ENV !== "test" && finderHere();
+
 /** Whether the relay cleans on RunPod now (asked again once its answer is a minute old). */
 export async function on(): Promise<boolean> {
   if (remote.forced !== null) return remote.forced;
-  if (!cloud.enabled()) return false;
+  if (!cloud.enabled() || selfSufficient()) return false;
   const asked = relay.url();
   if (remote.relay === asked && Date.now() - remote.at < timing.healthMs) return remote.on;
   remote.asking ??= (async () => {
@@ -44,6 +69,7 @@ export async function on(): Promise<boolean> {
 /** The relay's last answer, without asking (the queues' choices are synchronous). */
 export function now(): boolean {
   if (remote.forced !== null) return remote.forced;
+  if (selfSufficient()) return false;
   if (cloud.enabled() && Date.now() - remote.at > timing.healthMs) void on();
   return cloud.enabled() && remote.on;
 }

@@ -130,10 +130,10 @@ export const useFinderForTests = (given: StandIn | null): void => {
 };
 
 let availableHere: boolean | null = null;
-/** Whether this machine has the local Linux NVIDIA finder installed. */
+/** Whether this machine has the local finder installed, on an NVIDIA card (natively or under WSL: remover_cloud.ts `finderHere`). */
 function localAvailable(): boolean {
   if (availableHere !== null) return availableHere;
-  availableHere = process.env.NODE_ENV !== "test" && process.platform === "linux" && fs.existsSync(join(INSTALLED, "venv", "bin", "python")) && fs.existsSync("/dev/nvidiactl");
+  availableHere = process.env.NODE_ENV !== "test" && removerCloud.finderHere();
   return availableHere;
 }
 
