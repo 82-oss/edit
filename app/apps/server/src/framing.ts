@@ -48,7 +48,8 @@ const known = new Map<string, Borders>();
 const finding = new Set<string>();
 
 function cacheFile(media: Pick<Media, "path">): string | null {
-  if (!isReal() || tools.isUrl(media.path)) return null;
+  // A cloud file (its path a URL) is read as well: a team's every file is one, so a URL left out meant no project's borders were ever found.
+  if (!isReal()) return null;
   const dir = tools.mediaCache(media.path);
   return dir === null ? null : join(dir, FILE);
 }
@@ -120,7 +121,8 @@ export function bordersOf(frames: Uint8Array[], width: number, height: number): 
 
 /** One grey frame of `path` at `seconds`, `READ_WIDTH` wide and its own height tall (null: none there). */
 async function greyFrame(path: string, seconds: number, height: number): Promise<Uint8Array | null> {
-  const command = [tools.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-ss", String(seconds), "-i", path, "-an", "-frames:v", "1", "-vf", `scale=${READ_WIDTH}:${height}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
+  const remote = tools.isUrl(path) ? ["-protocol_whitelist", tools.protocols(path), ...tools.urlArgs(path)] : [];
+  const command = [tools.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-ss", String(seconds), ...remote, "-i", path, "-an", "-frames:v", "1", "-vf", `scale=${READ_WIDTH}:${height}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"];
   // Nobody waits on it but the agent's first look: below the player and exports (tools.lowPriority).
   const child = Bun.spawn(tools.lowPriority(command), { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const [bytes] = await Promise.all([new Response(child.stdout).arrayBuffer(), child.exited]);
@@ -143,6 +145,8 @@ export async function findBorders(media: Picture): Promise<Borders> {
       const frame = await greyFrame(media.path, seconds, height);
       if (frame !== null) frames.push(frame);
     }
+    // Too few read (a cloud file out of reach): nothing kept, looked for again next time.
+    if (frames.length < Math.ceil(times.length / 2)) return NONE;
     borders = bordersOf(frames, READ_WIDTH, height);
   } catch (error) {
     diag.warn("media", `finding ${media.name}'s borders: ${diag.messageOf(error)}`);
