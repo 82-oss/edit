@@ -42,6 +42,14 @@ fn gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
             return Ok((device.clone(), queue.clone()));
         }
         let made = new_gpu()?;
+        let info = made.0.adapter_info();
+        crate::log::info(
+            "gpu",
+            format!(
+                "drawing on {} ({:?}, {:?})",
+                info.name, info.backend, info.device_type
+            ),
+        );
         *shared = Some(made.clone());
         Ok(made)
     }
@@ -50,32 +58,96 @@ fn gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
 }
 
 fn new_gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
+    // Under WSL, the card's own device first, before Vulkan is opened at all:
+    // WSL's Vulkan is only the CPU's (lavapipe, Mesa's too), and opened with
+    // Mesa's Direct3D 12 driver chosen it crashed the process as it ended
+    // (Nov 26, the engine's tests).
+    #[cfg(target_os = "linux")]
+    if let Some(made) = wsl_gpu() {
+        return Ok(made);
+    }
+    // Vulkan or Metal: OpenGL (EGL) opened beside Vulkan deadlocked NVIDIA's
+    // driver when renderers came and went side by side (Linux, Nov 7).
+    let adapter =
+        adapter(wgpu::Backends::PRIMARY).map_err(|error| format!("no GPU available: {error}"))?;
+    if std::env::var("EDIT_REQUIRE_GPU").as_deref() == Ok("1")
+        && adapter.get_info().device_type == wgpu::DeviceType::Cpu
+    {
+        return Err("the cloud worker has no hardware graphics adapter".to_owned());
+    }
+    device(&adapter).map_err(|error| format!("GPU device: {error}"))
+}
+
+fn device(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("edit native"),
+        ..Default::default()
+    }))
+}
+
+/// The best adapter of `backends`.
+fn adapter(backends: wgpu::Backends) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    // Vulkan or Metal only: OpenGL (EGL) opened beside Vulkan deadlocked
-    // NVIDIA's driver when renderers came and went side by side (Linux, Nov 7).
-    descriptor.backends = wgpu::Backends::PRIMARY;
+    descriptor.backends = backends;
     // No debug labels on GPU objects (a debug build's default): with renderers
     // made side by side, Vulkan's loader crashed naming one
     // (vkSetDebugUtilsObjectNameEXT, NVIDIA 615 on Linux, Nov 7: `just dev`'s
     // debug addon and `just check`'s tests, never a release build).
     descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
     let instance = wgpu::Instance::new(descriptor);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     }))
-    .map_err(|error| format!("no GPU available: {error}"))?;
-    if std::env::var("EDIT_REQUIRE_GPU").as_deref() == Ok("1")
-        && adapter.get_info().device_type == wgpu::DeviceType::Cpu
-    {
-        return Err("the cloud worker has no hardware graphics adapter".to_owned());
-    }
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("edit native"),
-        ..Default::default()
-    }))
-    .map_err(|error| format!("GPU device: {error}"))
 }
+
+/// Under WSL, the machine's own GPU and its device, where Vulkan has only the
+/// CPU's: WSL has no Vulkan driver for it, so every frame of an export was
+/// drawn on the CPU (lavapipe, ~30 fps; Nov 25, Boyfriends: 49 minutes on
+/// mandalorian's RTX 4060 at a fifth of the Mac's speed). Mesa's OpenGL on
+/// Direct3D 12 reaches it through `/dev/dxg`, chosen by `GALLIUM_DRIVER=d3d12`
+/// in the environment Edit starts with (EGL without a display otherwise draws
+/// on the CPU too): `edit serve` starts itself again with it under WSL
+/// (apps/server/src/cli.ts `startWithWslDriver`) and cargo's runs have it
+/// (.cargo/config.toml), since set here, with other threads reading the
+/// environment, it isn't safe. No NVIDIA Vulkan is opened there, so nothing
+/// sits beside this OpenGL to deadlock. Tried a few times: Mesa sometimes
+/// fails to make its screen ("failed to create dri2 screen"). None (the
+/// CPU's, as before) when no card is found or its device doesn't open.
+#[cfg(target_os = "linux")]
+fn wsl_gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    if !Path::new("/dev/dxg").exists() {
+        return None;
+    }
+    let mut seen = false;
+    let made = (0..3).find_map(|_| {
+        let adapter = adapter(wgpu::Backends::GL)
+            .ok()
+            .filter(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu)?;
+        seen = true;
+        match device(&adapter) {
+            Ok(made) => Some(made),
+            Err(error) => {
+                crate::log::warn(
+                    "gpu",
+                    format!("{}'s device didn't open: {error}", adapter.get_info().name),
+                );
+                None
+            }
+        }
+    });
+    let _ = WSL_CARD.set(seen);
+    made
+}
+
+/// Whether `wsl_gpu` found the card under WSL (unset: never looked), for its
+/// test: asking again would open a second OpenGL, and one let go while the
+/// engine's own draws took Mesa's display with it (Nov 26, a segfault in the
+/// engine's tests side by side).
+#[cfg(target_os = "linux")]
+static WSL_CARD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 pub fn new_renderer(width: u32, height: u32) -> Result<Renderer, String> {
     let (device, queue) = gpu()?;
@@ -6541,6 +6613,28 @@ mod tests {
             assert_eq!(got, 59, "at {time:.3} s");
         }
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Under WSL with a card to be had, the engine draws on it, not the
+    /// CPU's stand-in (`wsl_gpu`). Says nothing elsewhere.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn under_wsl_the_engine_draws_on_the_gpu() {
+        if !Path::new("/dev/dxg").exists() {
+            return;
+        }
+        let (device, _) = gpu().unwrap();
+        let info = device.adapter_info();
+        match WSL_CARD.get() {
+            None => panic!(
+                "under WSL the card was never looked for: drawing on {}",
+                info.name
+            ),
+            // A WSL without a card to be had (or a driver chosen otherwise)
+            // draws on the CPU, as it should.
+            Some(false) => {}
+            Some(true) => assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name),
+        }
     }
 
     /// Times a 1080p export of footage wholly under full-frame B-roll (the

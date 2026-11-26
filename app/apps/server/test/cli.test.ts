@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import * as nodePath from "node:path";
 
-import { HELP, mcpText } from "../src/cli.ts";
+import { HELP, mcpText, wslDriverWanted } from "../src/cli.ts";
 import { VERSION } from "../src/version.ts";
 
 const MAIN = nodePath.join(import.meta.dir, "../src/main.ts");
@@ -34,3 +34,13 @@ test("edit --version, help, mcp and refusals print what they should", () => {
   // A dev build never updates itself.
   expect(edit(["update"]).stdout).toBe(`This build of Edit (v${VERSION}) doesn't update itself; pull and rebuild.\n`);
 }, 30_000);
+
+test("edit serve starts itself again with WSL's graphics card driver chosen only under WSL, and only once", () => {
+  expect(wslDriverWanted({}, true, "linux")).toBe(true);
+  // Started again with it (or chosen otherwise): as it is.
+  expect(wslDriverWanted({ GALLIUM_DRIVER: "d3d12" }, true, "linux")).toBe(false);
+  expect(wslDriverWanted({ GALLIUM_DRIVER: "llvmpipe" }, true, "linux")).toBe(false);
+  // Linux off WSL, and a Mac: never.
+  expect(wslDriverWanted({}, false, "linux")).toBe(false);
+  expect(wslDriverWanted({}, true, "darwin")).toBe(false);
+});

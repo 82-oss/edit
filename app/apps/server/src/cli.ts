@@ -2,12 +2,15 @@
 // commands beside them. `main.ts` runs it; this file only defines it, so
 // tests can call its parts.
 
+import fs from "node:fs";
+
 import * as accounts from "./accounts.ts";
 import * as diag from "./diag.ts";
 import { join } from "./paths.ts";
 import * as seams from "./seams.ts";
 import { fail, start } from "./serve.ts";
-import { runCli as updateCli } from "./update.ts";
+import { native } from "./native/index.ts";
+import { runCli as updateCli, startArgs } from "./update.ts";
 import { BUILD } from "./version.ts";
 import { runSupport } from "./support_cli.ts";
 import { allowNotifications, keepLauncher, windowCommand } from "./linux_desktop.ts";
@@ -70,6 +73,26 @@ Agents then see tools like get_project, add_text, update_clip, set_keyframes,
 render_frame and contact_sheet, and their edits appear live in the open project.`;
 }
 
+/**
+ * Whether `edit serve` (or `edit`, whose server runs in its process) should start itself again with Mesa's Direct3D
+ * 12 driver chosen: Linux under WSL (`/dev/dxg`), none chosen yet. Mesa's OpenGL reads it from the environment, and
+ * it's how the engine's exports and Edit's Chrome reach the graphics card there (edit-engine render.rs `wsl_gpu`;
+ * Nov 25, Boyfriends on mandalorian: drawn on the CPU). Set only in a process not yet started: a change to a running
+ * one's environment races its threads' reads.
+ */
+export function wslDriverWanted(env: Record<string, string | undefined>, dxg: boolean, platform = process.platform): boolean {
+  return platform === "linux" && dxg && env.GALLIUM_DRIVER === undefined;
+}
+
+/** Becomes this same `edit serve` (pid, terminal, arguments) with `GALLIUM_DRIVER=d3d12`; on the CPU, as before, if it can't. */
+function startWithWslDriver(): void {
+  try {
+    native().reexec(process.execPath, startArgs(), { GALLIUM_DRIVER: "d3d12" });
+  } catch (error) {
+    diag.warn("gpu", `couldn't start again with WSL's graphics card driver chosen, so drawing on the CPU: ${diag.messageOf(error)}`);
+  }
+}
+
 function defaultHome(): string {
   const home = process.env.HOME;
   return join(home !== undefined ? home : ".", ".edit");
@@ -96,6 +119,7 @@ export async function main(args: string[]): Promise<void> {
   const command = args[0];
   switch (command) {
     case "serve":
+      if (wslDriverWanted(process.env, fs.existsSync("/dev/dxg"))) startWithWslDriver();
       // A bundle's window helper starts `edit serve` from Finder's bare environment.
       if (process.env.EDIT_ADOPT_SHELL_ENV === "1") adoptShellEnv();
       // Headless (not Edit.app's window starting it): signing in is a code printed here.
@@ -181,6 +205,8 @@ export async function main(args: string[]): Promise<void> {
 
 /** The desktop app: the same server, in this process, with a window onto it (on Linux, Chrome's). */
 function app(home: string, port: number): void {
+  // Its server runs in this process, as `edit serve`'s does.
+  if (wslDriverWanted(process.env, fs.existsSync("/dev/dxg"))) startWithWslDriver();
   const url = `http://127.0.0.1:${port}/`;
   const helper = process.platform === "linux" ? null : windowHelper(home);
   const window = helper !== null ? [helper, "--url", url] : process.platform === "linux" ? windowCommand(home, port) : null;

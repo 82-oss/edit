@@ -5,3 +5,8 @@
 # (nightly-13, Oct 24). At 13.0 they're weak and `@available` guards them.
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
+# Under WSL, Mesa's OpenGL draws on the graphics card through Direct3D 12 only
+# with this chosen (edit-engine render.rs `wsl_gpu`): the engine's own runs
+# (its tests, the export bench) get it as the server does (cli.ts `wslDriver`).
+# A value already set stays; elsewhere nothing reads it but Mesa's OpenGL.
+GALLIUM_DRIVER = { value = "d3d12", force = false }

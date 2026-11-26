@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import * as devtools from "../src/chrome_devtools.ts";
 
@@ -7,10 +7,17 @@ import * as devtools from "../src/chrome_devtools.ts";
 // WebGL at all and every map effect failed "The browser supports WebGL, but initialization failed".
 
 const asked = devtools.gpuHooks.webglOnVulkan;
+const wsl = devtools.gpuHooks.wsl;
+
+// Outside WSL (under it Chrome draws on Direct3D 12 and Vulkan isn't asked about: chrome_shell.test.ts).
+beforeEach(() => {
+  devtools.gpuHooks.wsl = false;
+});
 
 afterEach(() => {
   devtools.gpuHooks.webglOnVulkan = asked;
   devtools.gpuHooks.vulkan = null;
+  devtools.gpuHooks.wsl = wsl;
 });
 
 const angle = (command: string[] | null) => (command ?? []).filter((one) => one.startsWith("--use-angle"));
@@ -49,3 +56,16 @@ test.if(process.platform === "linux" && devtools.headlessBinary() !== null)("the
 test.if(process.platform === "linux" && devtools.headlessBinary() !== null)("a page that draws is read as drawn", async () => {
   expect(await devtools.webglDraws([])).toBe(true);
 }, 30_000);
+
+test.if(process.platform === "linux")("under WSL, Chrome on the card draws on Direct3D 12 without asking about Vulkan", async () => {
+  devtools.gpuHooks.wsl = true;
+  let asks = 0;
+  devtools.gpuHooks.webglOnVulkan = async () => {
+    asks++;
+    return false;
+  };
+  await devtools.gpuChecked();
+  expect(asks).toBe(0);
+  if (devtools.headlessBinary() === null) return;
+  expect(angle(devtools.headlessCommand(["about:blank"], { gpu: true }))).toEqual(["--use-angle=gl-egl"]);
+});
