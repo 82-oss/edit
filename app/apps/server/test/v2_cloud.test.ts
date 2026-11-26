@@ -349,6 +349,63 @@ test("a newer save of one effect waits for the one whose files are going up, and
   }
 });
 
+test("a settled save that failed is tried again while it's still the code here, nothing else needed (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-again");
+  const before = { ...effects.keepHooks };
+  effects.keepHooks.againMs = 20;
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    fs.writeFileSync(join(dir, "scene.html"), "<p>kept on the second try</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const key = effects.list(app.store, id)[0]!.key;
+    // Every try of the first save's one PUT refused (the line drops for a while).
+    mock.cloud.failPuts = 4;
+    await effects.keepVersion(app, id, "board", key, "settled");
+    expect(await v2cloud.versions(item)).toEqual([]);
+    for (let wait = 0; wait < 100 && (await v2cloud.versions(item)).length === 0; wait++) await Bun.sleep(20);
+    expect((await v2cloud.versions(item)).map((one) => one.source)).toEqual([key]);
+  } finally {
+    mock.cloud.failPuts = 0;
+    Object.assign(effects.keepHooks, before);
+    cleanup();
+  }
+});
+
+test("an effect on the timeline twice is brought down once, whole (PR #14's CodeRabbit review)", async () => {
+  const { app, cleanup, id } = hq("v2-twice");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "map");
+    const there = `${dir}-there`;
+    fs.mkdirSync(there, { recursive: true });
+    fs.writeFileSync(join(there, "scene.html"), "<p>made elsewhere</p>");
+    fs.mkdirSync(join(there, "tiles"));
+    for (let at = 0; at < 12; at++) fs.writeFileSync(join(there, "tiles", `${at}.txt`), `tile ${at} of the twice-placed map`);
+    await v2cloud.save(v2cloud.effectKey(id, "map"), "map", there, { source: "elsewhere", reason: "settled" });
+    await app.store.update(id, "test", (project) => {
+      for (const media of ["m1", "m2"]) project.media.push({ id: media, name: "map", path: "/elsewhere/map.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "map", effect_key: "elsewhere" });
+    });
+    // Each of its files fetched once: two fetches into the one folder at once cleared each other's.
+    let fetched = 0;
+    mock.cloud.beforeGet = async (key) => {
+      if (key.startsWith("edit/library/sha256/")) fetched++;
+    };
+    expect(await effects.bringDown(app, id)).toEqual(["map"]);
+    expect(fetched).toBe(13);
+    expect(fs.readdirSync(join(dir, "tiles")).length).toBe(12);
+    expect(fs.readdirSync(join(dir, "..")).filter((one) => one.includes(".incoming-") || one.includes(".outgoing-"))).toEqual([]);
+  } finally {
+    mock.cloud.beforeGet = null;
+    cleanup();
+  }
+});
+
 test("a version fetched into a folder its agent changed meanwhile isn't swapped in over it (PR #14's CodeRabbit review)", async () => {
   const { cleanup, id, app } = hq("v2-changed-meanwhile");
   try {

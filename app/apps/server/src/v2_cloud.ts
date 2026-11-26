@@ -30,6 +30,7 @@
 
 import * as addons from "./addons.ts";
 import { ADDON_PREFIX } from "./addons.ts";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -206,7 +207,9 @@ export async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => P
  * the new.
  */
 async function getFiles(files: File[], dir: string, still?: () => boolean): Promise<boolean> {
-  const fresh = `${dir}.incoming-${process.pid}`;
+  // Its own, by call: two fetches into one folder side by side each cleared the other's (PR #14's CodeRabbit review).
+  const call = `${process.pid}-${randomUUID()}`;
+  const fresh = `${dir}.incoming-${call}`;
   fs.rmSync(fresh, { recursive: true, force: true });
   for (const file of files) {
     if (!join(fresh, file.path).startsWith(fresh + sep)) throw new Error(`a file outside the folder: ${file.path}`);
@@ -230,7 +233,7 @@ async function getFiles(files: File[], dir: string, still?: () => boolean): Prom
     fs.rmSync(fresh, { recursive: true, force: true });
     return false;
   }
-  const old = `${dir}.outgoing-${process.pid}`;
+  const old = `${dir}.outgoing-${call}`;
   fs.rmSync(old, { recursive: true, force: true });
   if (fs.existsSync(dir)) fs.renameSync(dir, old);
   fs.renameSync(fresh, dir);

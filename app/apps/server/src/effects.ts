@@ -2316,7 +2316,7 @@ async function place(app: App, render: Render): Promise<void> {
  * new version). In the background; signed out, there's no cloud and nothing
  * is kept.
  */
-export function keepVersion(app: App, project: string, name: string, key: string, reason: "settled" | "rendered" = "rendered"): Promise<void> {
+export function keepVersion(app: App, project: string, name: string, key: string, reason: "settled" | "rendered" = "rendered", attempt = 1): Promise<void> {
   if (!v2cloud.enabled()) return Promise.resolve();
   const item = v2cloud.effectKey(project, name);
   const dir = folder(app.store, project, name);
@@ -2335,7 +2335,11 @@ export function keepVersion(app: App, project: string, name: string, key: string
     })
     .catch((error: unknown) => {
       // Moved on while it went up: the save asked for the newer code keeps that.
-      if (!(error instanceof v2cloud.Moved)) diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`);
+      if (error instanceof v2cloud.Moved) return;
+      diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud (try ${attempt} of ${keepHooks.tries}): ${diag.messageOf(error)}`);
+      // Tried again a little later, while it's still the code here: nothing else may come to keep it (its render failing
+      // too, and no change after), and the edit couldn't go on from another computer (PR #14's CodeRabbit review).
+      if (attempt < keepHooks.tries) setTimeout(() => void keepVersion(app, project, name, key, reason, attempt + 1), keepHooks.againMs).unref?.();
     })
     .finally(() => {
       if (keeping.get(item) === next) keeping.delete(item);
@@ -2343,6 +2347,9 @@ export function keepVersion(app: App, project: string, name: string, key: string
   keeping.set(item, next);
   return next;
 }
+
+/** How often a save that failed is tried in all, and how long after the last (tests make it quick). */
+export const keepHooks = { tries: 4, againMs: 30_000 };
 
 /** Each effect's saves to V2's cloud under way, by its item: the last asked, which the next waits on. */
 const keeping = new Map<string, Promise<void>>();
@@ -2416,10 +2423,14 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
     lookedWhileEditing.set(project, editing);
   }
   // Each effect asked of the cloud side by side: an edit of 19 effects asked one after another kept its renders waiting.
+  // Each effect once, however many of the timeline's media are of it: two fetches into one folder side by side
+  // cleared each other's (PR #14's CodeRabbit review).
+  const seen = new Set<string>();
   const came = await Promise.all(
     live.project.media.map(async (media): Promise<string | null> => {
       const name = media.effect;
-      if (name === undefined || name === null || !NAME.test(name)) return null;
+      if (name === undefined || name === null || !NAME.test(name) || seen.has(name)) return null;
+      seen.add(name);
       try {
         return (await bringOne(app, project, name, typeof media.effect_key === "string" ? media.effect_key : null, frame, editing)) ? name : null;
       } catch (error) {
@@ -3204,6 +3215,9 @@ export function start(app: App): void {
 
 /** The effects already rendered from their code as it is kept in V2's cloud too, those from before it was (Nov 11) among them: what's there already isn't sent again. */
 function keepRendered(app: App, project: string): void {
+  // Only where it's edited: a computer watching another's edit kept its own older render over the code settled there
+  // (PR #14's CodeRabbit review).
+  if (!editingHere(app, project)) return;
   for (const effect of needed(app.store, project)) {
     if (effect.fresh && effect.current !== null) void keepVersion(app, project, effect.name, effect.current.key);
   }
