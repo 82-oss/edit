@@ -9,7 +9,7 @@
 import * as lanes from "../lanes.ts";
 import type { Clip, Focus, Note, Proposal, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor, notesOnTheirWords } from "./blocks.ts";
 // commentary.ts reads it from here, which keeps the order fixing.ts and this module load in.
 export { editNote };
 import * as claude from "./claude.ts";
@@ -618,7 +618,7 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
     } else clip.narration = text;
   }
   proposals = placeNotes(script, work, proposals);
-  const clips = tidy.fitToParts(work.clips, script.parts ?? []);
+  const clips = notesOnTheirWords({ ...script, corrections: work.corrections }, tidy.fitToParts(work.clips, script.parts ?? []));
   if (clips.length > 500) throw new Error("Those edits would leave more than 500 items in the timeline.");
   return [clips, work.corrections, settle(clips, proposals)];
 }

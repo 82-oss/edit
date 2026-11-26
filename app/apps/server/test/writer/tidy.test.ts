@@ -3,8 +3,8 @@ import { expect, test } from "bun:test";
 import type { Clip, Script, Word } from "@edit/types/writer";
 
 import { lineCount, pageCount, textWidth } from "../../src/writer/pages.ts";
-import { noteAnchor } from "../../src/writer/blocks.ts";
-import { beatForFloor, boundaryIssues, joinLate, joinSlivers, PAUSE_BEAT_MS, polish, tighten } from "../../src/writer/tidy.ts";
+import { editNote, editLines, noteAnchor, notesOnTheirWords } from "../../src/writer/blocks.ts";
+import { beatForFloor, boundaryIssues, joinLate, joinSlivers, PAUSE_BEAT_MS, polish, removeRange, tighten } from "../../src/writer/tidy.ts";
 
 const clip = (id: string, startMs: number, endMs: number): Clip => ({ id, startMs, endMs });
 
@@ -93,4 +93,25 @@ test("clips a courtroom's relaxed half joins keep their notes, on the same words
   const script = { words: said, corrections } as unknown as Script;
   expect(noteAnchor(script, a, "all", 25)).toEqual({ start: 25, end: 28, quote: "all" });
   expect(clips[3]!.notes![0]!.anchor!.start).toBe(6);
+});
+
+test("a split clip's notes go to the piece that says their words", () => {
+  const said = words([["Where", "s", 0, 500], ["were", "s", 600, 1_000], ["you?", "s", 1_100, 1_500], ["Home", "s", 5_000, 5_500], ["all", "s", 5_600, 6_000], ["night", "s", 6_100, 6_500]]);
+  const script = { words: said, corrections: {} } as unknown as Script;
+  const later = { id: "n1", text: "edit: zoom in", at: 0, anchor: { start: 12, end: 21, quote: "all night" } };
+  const earlier = { id: "n2", text: "edit: a map", at: 0, anchor: { start: 0, end: 5, quote: "Where" } };
+  const loose = { id: "n3", text: "edit: black and white", at: 0 };
+  const across = { id: "n4", text: "edit: slow down", at: 0, anchor: { start: 11, end: 20, quote: "you? Home" } };
+  const pieces = removeRange([{ id: "c", startMs: 0, endMs: 7_000, notes: [later, earlier, loose, across] }, { id: "i", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Then." }], 2_000, 4_500);
+  expect(pieces.map((one) => one.notes?.length ?? 0)).toEqual([4, 0, 0]);
+  const placed = notesOnTheirWords(script, pieces);
+  expect(placed[0]!.notes!.map((note) => note.id)).toEqual(["n2", "n3", "n4"]);
+  expect(placed[1]!.notes).toEqual([{ ...later, anchor: { start: 5, end: 14, quote: "all night" } }]);
+  expect(pieces[0]!.notes!.length).toBe(4);
+});
+
+test("every line of an editor's note is one the editor is shown", () => {
+  expect(editNote("Show the house.")).toBe("edit: Show the house.");
+  expect(editNote("Edit: Show the house.\nThen show the map.")).toBe("edit: Show the house.\nedit: Then show the map.");
+  expect(editLines([editNote("Show the house.\n\nThen show the map.")])).toEqual(["edit: Show the house.", "edit: Then show the map."]);
 });

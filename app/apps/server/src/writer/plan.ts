@@ -11,7 +11,7 @@ import * as addons from "../addons.ts";
 import * as lanes from "../lanes.ts";
 import type { Clip, Part, Research, Script, Word } from "@edit/types/writer";
 
-import { caseCount, editNote, isCutIn, noteAnchor } from "./blocks.ts";
+import { caseCount, editNote, isCutIn, noteAnchor, notesOnTheirWords } from "./blocks.ts";
 import { describe } from "./brief.ts";
 import * as formats from "./formats.ts";
 import type { Format } from "./formats.ts";
@@ -444,7 +444,7 @@ function cleanUp(script: Script, given: Clip[], format: Format, opening: Opening
     else beat = found;
   }
   const done = run(beat);
-  return { clips: done.clips, fixed, pauses: done.pauses, stalls: done.stalls, belowFloor };
+  return { clips: notesOnTheirWords(script, done.clips), fixed, pauses: done.pauses, stalls: done.stalls, belowFloor };
 }
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
