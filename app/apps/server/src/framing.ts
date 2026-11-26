@@ -161,9 +161,19 @@ export async function findBorders(media: Picture): Promise<Borders> {
   return borders;
 }
 
+/**
+ * A picture over its alpha (a cleaned strip, an effect's subtitles): see-through
+ * round what it draws by design, so it has no borders and never fills the frame
+ * (Nov 26: once cloud files were read, every Trooper strip read as letterboxed).
+ */
+function seeThrough(media: object): boolean {
+  const one = media as { stacked_alpha?: boolean | null; cleans?: unknown };
+  return one.stacked_alpha === true || one.cleans != null;
+}
+
 /** Starts finding a media's borders in the background (once at a time per file). */
 export function warmBorders(media: Picture): void {
-  if (cachedBorders(media) !== null || finding.has(media.path) || cacheFile(media) === null) return;
+  if (seeThrough(media) || cachedBorders(media) !== null || finding.has(media.path) || cacheFile(media) === null) return;
   finding.add(media.path);
   void findBorders(media).finally(() => finding.delete(media.path));
 }
@@ -274,7 +284,7 @@ export function letterboxed(project: Project): Record<string, unknown>[] {
     // The Windows screen's pieces sit in its windows, which are designed (and fill their screens themselves).
     if (/Desktop · /u.test(clip.name ?? "")) continue;
     const media = mediaOf(project, clip.media);
-    if (media === undefined || (media.kind !== "video" && media.kind !== "image")) continue;
+    if (media === undefined || (media.kind !== "video" && media.kind !== "image") || seeThrough(media)) continue;
     if ((clip.opacity ?? 1) < 0.5 || fills(clip)) continue;
     const designed = project.clips.some(
       (other) => other.type === "solid" && other.gradient !== undefined && other.gradient !== null && shown(other) && other.start < clipEnd(clip) && clipEnd(other) > clip.start,
