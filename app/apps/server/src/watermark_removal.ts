@@ -32,6 +32,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as priority from "./removal_priority.ts";
 import { writeAtomic } from "./files.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -503,7 +504,8 @@ export function lookingAt(id: string): number {
 /** The queue: up to `limits.cells` at once, a file's cells first (its mark known), the next file to look at beside them (one at a time). */
 function drain(app: App): void {
   while (running < cellsAtOnce()) {
-    const job = queue.shift();
+    // A project an export waits on goes first (removal_priority.ts).
+    const job = priority.takeNext(queue);
     if (job !== undefined) {
       running += 1;
       underWay.add(job);

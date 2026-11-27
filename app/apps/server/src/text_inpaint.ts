@@ -28,6 +28,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as priority from "./removal_priority.ts";
 import * as finder from "./found.ts";
 import { probe } from "./media.ts";
 import type { Media } from "./model.ts";
@@ -850,7 +851,8 @@ function drain(): void {
   while (lanes.size < most && queue.length > 0) {
     // Its first stretch is taken off the queue before this line returns, so the count above is right.
     const lane = (async () => {
-      for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
+      // A project an export waits on goes first (removal_priority.ts).
+      for (let next = priority.takeNext(queue); next !== undefined; next = priority.takeNext(queue)) await next.run();
     })();
     lanes.add(lane);
     void lane

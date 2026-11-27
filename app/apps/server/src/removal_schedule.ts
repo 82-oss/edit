@@ -41,6 +41,7 @@ import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as removerCloud from "./remover_cloud.ts";
 import * as reuseOwner from "./reuse_owner.ts";
+import * as priority from "./removal_priority.ts";
 import * as sections from "./removal_sections.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
@@ -220,6 +221,16 @@ export function exportNote(project: Project): string | null {
  */
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
+  // While it waits, its pieces are taken ahead of projects nobody waits on (removal_priority.ts).
+  const release = priority.waitedOn(id);
+  try {
+    await waitForOut(app, id, limitMs, signal);
+  } finally {
+    release();
+  }
+}
+
+async function waitForOut(app: App, id: string, limitMs: number, signal?: AbortSignal): Promise<void> {
   const started = Date.now();
   // Pieces this export has seen RunPod refuse: it goes without them, even once a background retry sends one again
   // while it waits on the rest (their hold ending mid-wait); the removal line and later exports count them as ever.
