@@ -54,6 +54,9 @@ export interface TurnHooks {
   now: () => number;
 }
 
+/** After this many `ageMs`, a render nobody waits on counts as waited on (30 minutes at five). */
+const STARVED_AGES = 6;
+
 export class Turns {
   private readonly line: Waiter[] = [];
   private held: { asking: Asking; at: number; first: boolean } | null = null;
@@ -81,7 +84,20 @@ export class Turns {
   }
 
   private first(waiter: Waiter, now: number): boolean {
-    return waiter.asking.urgent() || now - waiter.since >= this.hooks.ageMs;
+    return this.tier(waiter, now) < 2;
+  }
+
+  /**
+   * 0: someone waits on it now (an export, a tool); 1: waiting longer than `ageMs`; 2: the rest. One that's waited on
+   * goes before ones that are only old (Nov 27, mandalorian: with five projects' renders queued for hours every one
+   * counted as old, and Gen Alpha's export waited on its new key lines while the slot went round the other four).
+   */
+  private tier(waiter: Waiter, now: number): number {
+    if (waiter.asking.urgent()) return 0;
+    const waited = now - waiter.since;
+    // Long enough and it counts as waited on all the same: nobody's render waits for ever behind another's export.
+    if (waited >= this.hooks.ageMs * STARVED_AGES) return 0;
+    return waited >= this.hooks.ageMs ? 1 : 2;
   }
 
   private dropStale(): void {
@@ -104,7 +120,7 @@ export class Turns {
     let found: Waiter | null = null;
     let rank: [number, number, number] = [0, 0, 0];
     for (const waiter of among) {
-      const mine: [number, number, number] = [this.first(waiter, now) ? 0 : 1, this.served.get(waiter.asking.project) ?? -1, waiter.since];
+      const mine: [number, number, number] = [this.tier(waiter, now), this.served.get(waiter.asking.project) ?? -1, waiter.since];
       if (found === null || mine[0] < rank[0] || (mine[0] === rank[0] && (mine[1] < rank[1] || (mine[1] === rank[1] && mine[2] < rank[2])))) {
         found = waiter;
         rank = mine;
@@ -145,8 +161,8 @@ export class Turns {
       now,
     );
     if (rival === null) return false;
-    const theirs = this.first(rival, now) ? 0 : 1;
-    const mine = held.first || held.asking.urgent() ? 0 : 1;
+    const theirs = this.tier(rival, now);
+    const mine = held.asking.urgent() ? 0 : held.first ? 1 : 2;
     if (theirs !== mine) return theirs < mine;
     return now - held.at >= this.hooks.sliceMs;
   }

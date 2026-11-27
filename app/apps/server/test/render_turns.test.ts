@@ -93,8 +93,24 @@ test("a render waited on holds the slot against renders nobody waits on, until o
   tick(60_000);
   expect(a.turn!.shouldYield()).toBe(false);
   tick(240_000);
-  // B has waited 5 minutes: as good as waited on, and A has had its slice.
+  // B has waited 5 minutes: older, but an export waits on A (Nov 27: old isn't waited on).
+  expect(a.turn!.shouldYield()).toBe(false);
+  tick(1_500_000);
+  // 30 minutes: as good as waited on, and A has had its slice.
   expect(a.turn!.shouldYield()).toBe(true);
+});
+
+test("a render waited on goes before renders that are only old", async () => {
+  const { turns, tick } = setup(30_000, 300_000);
+  const held = track(turns.take(asking("H")));
+  await settle();
+  const old = track(turns.take(asking("OLD")));
+  tick(400_000);
+  const wanted = track(turns.take(asking("WANTED", { urgent: true })));
+  held.turn!.release();
+  await settle();
+  expect(wanted.turn).not.toBeNull();
+  expect(old.turn).toBeNull();
 });
 
 test("among projects of the same standing, the one served longest ago goes next (round robin), then the one asking first", async () => {
