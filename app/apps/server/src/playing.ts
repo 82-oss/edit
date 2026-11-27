@@ -156,6 +156,23 @@ export async function whenIdle(stop: () => boolean = () => false): Promise<boole
   return !stop();
 }
 
+/** Whether project `id` plays now (its page said so in the last few seconds), or someone waits on its footage. */
+export function busyWith(id: string): boolean {
+  isPlaying();
+  linkHeld();
+  return plays.has(id) || holds.has(id);
+}
+
+/**
+ * Resolves once project `id` itself isn't playing nor waited on (false when `stop()` gave up first). For a quick write
+ * to that project (a removal strip laid): another project's play isn't touched by it, and waiting on every play held
+ * all four projects' finished pieces while one page played (Nov 27, mandalorian: nothing laid for 40 minutes).
+ */
+export async function whenProjectIdle(id: string, stop: () => boolean = () => false): Promise<boolean> {
+  while (busyWith(id) && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
+  return !stop();
+}
+
 /** Resolves once nothing plays, held or not. */
 export async function whenNotPlaying(stop: () => boolean = () => false): Promise<boolean> {
   while (isPlaying() && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));

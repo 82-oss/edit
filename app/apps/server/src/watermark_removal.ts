@@ -569,7 +569,10 @@ async function work(app: App, job: Job): Promise<void> {
     if (run === null) throw new Error("this Edit's engine can't take watermarks out");
     const input = await cloudMedia.originalInput(app.store.cacheDir(), job.media);
     const keep = await stampOf(app, job.media, input).catch(() => []);
-    if (!(await playing.whenIdle(stopped))) return;
+    // Below a play, unless an export waits on this project (removal_priority.ts): then it goes on through it.
+    if (!priority.isWaitedOn(job.project) && !(await playing.whenIdle(() => stopped() || priority.isWaitedOn(job.project)))) {
+      if (stopped()) return;
+    }
     const started = Date.now();
     const removed = await run.remove(
       { source: input, size: [job.media.width || 1280, job.media.height || 720], fps: job.media.fps || 30, from: job.from, to: job.to, model: job.model.json, keep, out },
@@ -634,7 +637,7 @@ function holdQueued(said: string, at: number): void {
 /** Puts a cell's strip in the project (clean_strips.ts lays it over the clips, under a text strip of the same frames). */
 async function place(app: App, id: string, footage: Media, from: number, box: Box, file: string): Promise<void> {
   const probed: Probe = await probe(file);
-  await playing.whenIdle();
+  await playing.whenProjectIdle(id);
   const to = from + probed.duration;
   await app.store.update(id, "watermark removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;

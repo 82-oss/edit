@@ -65,3 +65,27 @@ test("a play held on its spinner is a play to the CPU work (subtitle reads, cens
     off();
   }
 });
+
+test("a quick write to one project waits only on that project's own play or footage, never on another project's (Nov 27: one page's play held all four projects' finished removal pieces)", async () => {
+  playing.note("other", true);
+  expect(playing.isIdle()).toBe(false);
+  expect(playing.busyWith("mine")).toBe(false);
+  expect(await playing.whenProjectIdle("mine")).toBe(true);
+  playing.note("mine", true);
+  expect(playing.busyWith("mine")).toBe(true);
+  let laid = false;
+  void playing.whenProjectIdle("mine").then(() => (laid = true));
+  await Bun.sleep(playing.hooks.pollMs + 10);
+  expect(laid).toBe(false);
+  playing.note("mine", false);
+  await Bun.sleep(playing.hooks.pollMs + 10);
+  expect(laid).toBe(true);
+  // Footage waited on for that project holds its writes too.
+  playing.holdLink("mine", 600);
+  expect(playing.busyWith("mine")).toBe(true);
+  playing.releaseLink("mine");
+  expect(playing.busyWith("mine")).toBe(false);
+  // A stop gives up the wait.
+  playing.note("mine", true);
+  expect(await playing.whenProjectIdle("mine", () => true)).toBe(false);
+});

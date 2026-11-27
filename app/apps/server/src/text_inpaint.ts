@@ -619,7 +619,7 @@ export function current(project: { media: Media[] }, media: string, from: number
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
 async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined, stands: () => boolean = () => true): Promise<void> {
   const probed = await probe(file);
-  await playing.whenIdle(() => !stands());
+  await playing.whenProjectIdle(id, () => !stands());
   // Its plan gone stale meanwhile (a Stop of their text): not laid, here or once the store's turn comes.
   if (!stands()) return;
   await app.store.update(id, "text removal", (project) => {
