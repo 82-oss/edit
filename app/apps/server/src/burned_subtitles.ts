@@ -194,7 +194,7 @@ playing.onIdle(next);
 
 /** Between two steps of a read nobody waits on: until nothing plays (or someone waits on it, or on one behind it). */
 async function giveWay(path: string): Promise<void> {
-  if (!wanted(path)) await playing.whenIdle(() => wanted(path));
+  if (!wanted(path)) await playing.whenIdle(() => wanted(path), playing.YIELD_MOST_MS);
 }
 
 function stateFile(path: string): string | null {

@@ -151,10 +151,18 @@ function idleChanged(): void {
  * Resolves once nothing plays and nobody waits on footage (at once when so); false when `stop()` gave up first.
  * Background work waits here between its steps, never in the middle of a write.
  */
-export async function whenIdle(stop: () => boolean = () => false): Promise<boolean> {
-  while (!isIdle() && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
+export async function whenIdle(stop: () => boolean = () => false, mostMs = Number.POSITIVE_INFINITY): Promise<boolean> {
+  const until = hooks.now() + mostMs;
+  while (!isIdle() && !stop() && hooks.now() < until) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
   return !stop();
 }
+
+/**
+ * How long removal's heavy steps (a file's look for its mark, a watermark cell) give way to a play before they go on
+ * through it: a page left playing for an hour held every look, and with them every stretch waiting on its file's look,
+ * of four compilations (Nov 27, mandalorian: nothing cleaned or looked at for over an hour).
+ */
+export const YIELD_MOST_MS = 2 * 60_000;
 
 /** Whether project `id` plays now (its page said so in the last few seconds), or someone waits on its footage. */
 export function busyWith(id: string): boolean {

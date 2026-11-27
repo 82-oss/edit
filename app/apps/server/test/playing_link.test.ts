@@ -89,3 +89,18 @@ test("a quick write to one project waits only on that project's own play or foot
   playing.note("mine", true);
   expect(await playing.whenProjectIdle("mine", () => true)).toBe(false);
 });
+
+test("background work gives way to a play for at most its limit, then goes on through it", async () => {
+  let now = 1_000;
+  playing.hooks.now = () => now;
+  playing.note("p", true);
+  let went = false;
+  void playing.whenIdle(() => false, 5_000).then(() => (went = true));
+  await Bun.sleep(playing.hooks.pollMs + 10);
+  expect(went).toBe(false);
+  now += 5_001;
+  // The play is renewed (still playing) but the limit has passed.
+  playing.note("p", true);
+  await Bun.sleep(playing.hooks.pollMs + 10);
+  expect(went).toBe(true);
+});

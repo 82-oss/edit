@@ -157,7 +157,7 @@ export function regionOf(plan: Pick<BlurPlan, "band" | "labels" | "subtitles" | 
 
 /** Their text's reads over source seconds [from, to) (text_track.ts `track`), giving way to a play between chunks. */
 export const track = (plan: TrackPlan, from: number, to: number, read: (times: number[], keep: number[]) => Promise<ScreenText[][]>): Promise<Sample[]> => trackRead(plan, from, to, read, async () => {
-  await playing.whenIdle();
+  await playing.whenIdle(() => false, playing.YIELD_MOST_MS);
 });
 
 /** Their text's box at source second `t` of a track (see the top), null where there's none. */
@@ -620,7 +620,8 @@ async function layNow(app: App, id: string): Promise<void> {
   const want = wanted(app, live.project);
   // Nothing to change: no save (an unchanged save would still wake every watcher).
   if (lay(structuredClone(live.project), want) === false) return;
-  await playing.whenIdle();
+  // A quick write to this project: only its own play holds it (playing.ts `whenProjectIdle`).
+  await playing.whenProjectIdle(id);
   await app.store.update(id, "text removal", (project) => {
     lay(project, wanted(app, project));
   });

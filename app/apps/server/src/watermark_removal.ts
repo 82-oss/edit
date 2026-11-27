@@ -173,7 +173,7 @@ export async function learn(app: App, media: Media, hint: Box | null = null, kee
   const source = await sourceOf(media);
   const input = await cloudMedia.originalInput(app.store.cacheDir(), media);
   const avoid = [...(await stampOf(app, media, input).catch(() => [])), ...keep];
-  await playing.whenIdle();
+  await playing.whenIdle(() => false, playing.YIELD_MOST_MS);
   let text: string;
   try {
     text = await run.learn(input, [media.width || 1280, media.height || 720], media.duration ?? 0, hint, avoid, () => {});
@@ -570,7 +570,7 @@ async function work(app: App, job: Job): Promise<void> {
     const input = await cloudMedia.originalInput(app.store.cacheDir(), job.media);
     const keep = await stampOf(app, job.media, input).catch(() => []);
     // Below a play, unless an export waits on this project (removal_priority.ts): then it goes on through it.
-    if (!priority.isWaitedOn(job.project) && !(await playing.whenIdle(() => stopped() || priority.isWaitedOn(job.project)))) {
+    if (!priority.isWaitedOn(job.project) && !(await playing.whenIdle(() => stopped() || priority.isWaitedOn(job.project), playing.YIELD_MOST_MS))) {
       if (stopped()) return;
     }
     const started = Date.now();
