@@ -30,7 +30,6 @@ export type StillAnswer = { still: boolean; box?: Box | null; why?: string };
 /** What the LaMa caption clean of a stretch said (caption.rs `clean`): the strip's band in shares (null with no captions), frames LaMa filled and carried along the motion, the shadow style it fitted, where LaMa ran (coreml, cuda or cpu), and the seconds each step took. */
 export type CaptionAnswer = { box: Box | null; inferred: number; carried?: number; style?: unknown; fit?: [number, number]; provider?: string; seconds?: Record<string, number> };
 
-
 /** One export, running on its own thread. */
 export declare class ExportJob {
   /** Starts exporting; progress (0–1) comes to `onProgress`. */

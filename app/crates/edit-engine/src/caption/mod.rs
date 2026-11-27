@@ -77,6 +77,44 @@ enum Prepared {
     },
 }
 
+/// The most frames brightened at once (a quarter of the cores, at least two).
+const BRIGHTEN_AT_ONCE: usize = 8;
+
+/// One frame's letters undone where they darkened it (`area`, the stretch's band): the frame brightened back, the
+/// hole LaMa fills, the rim around it, and the frame's grey for the motion; Clear with no letters on it.
+fn brighten(
+    frame: Rgb,
+    s: Mask,
+    area: Option<(usize, usize, usize, usize)>,
+    style: &shadow::Style,
+    scale: f32,
+    w: usize,
+    rows: usize,
+) -> Prepared {
+    let Some((ax0, ay0, ax1, ay1)) = area else {
+        return Prepared::Clear;
+    };
+    let (undone, hole_c, near_c) = shadow::undo(
+        &frame.crop(ax0, ay0, ax1, ay1),
+        &s.crop(ax0, ay0, ax1, ay1),
+        style,
+        scale,
+    );
+    let mut res = frame.clone();
+    res.paste(ax0, ay0, &undone);
+    let mut hole: Mask = Img::filled(w, rows, false);
+    hole.paste(ax0, ay0, &hole_c);
+    let mut near: Mask = Img::filled(w, rows, false);
+    near.paste(ax0, ay0, &near_c);
+    let gray = luma_plane(&frame);
+    Prepared::Captioned {
+        res,
+        hole,
+        near,
+        gray,
+    }
+}
+
 impl Clock {
     /// Another stage's time added in (the stages overlap: the sum is work, not the stretch's wall time).
     fn add(&mut self, other: &Self) {
@@ -508,7 +546,17 @@ pub fn clean_with(
             let mut clock = Clock::default();
             clock.tick("start");
             let mut read = 0usize;
-            while read < total {
+            // Each frame's brightening on a thread of its own, several frames at once, handed on in order: no frame
+            // depends on another here, and one thread at a time was the stretch's pace (Nov 27, mandalorian: 692 s of a
+            // 23 s stretch's 790, 0.75 s a frame on a 1920x936 band, while LaMa waited 489 s for it and the 4060 idled).
+            let at_once = std::thread::available_parallelism()
+                .map_or(4, |n| n.get() / 4)
+                .clamp(2, BRIGHTEN_AT_ONCE);
+            let mut pending: std::collections::VecDeque<std::thread::ScopedJoinHandle<'_, Prepared>> =
+                std::collections::VecDeque::new();
+            let mut open = true;
+            let style = &style;
+            while read < total && open {
                 check(stopped)?;
                 let Some(frame) = source.next(stopped)? else {
                     break;
@@ -521,35 +569,27 @@ pub fn clean_with(
                 }
                 clock.tick("letters");
                 let area = area_of(&masks[read], y0, w, rows, margin).filter(|_| s.any());
-                let prepared = match area {
-                    None => Prepared::Clear,
-                    Some((ax0, ay0, ax1, ay1)) => {
-                        let (undone, hole_c, near_c) = shadow::undo(
-                            &frame.crop(ax0, ay0, ax1, ay1),
-                            &s.crop(ax0, ay0, ax1, ay1),
-                            &style,
-                            scale,
-                        );
-                        let mut res = frame.clone();
-                        res.paste(ax0, ay0, &undone);
-                        let mut hole: Mask = Img::filled(w, rows, false);
-                        hole.paste(ax0, ay0, &hole_c);
-                        let mut near: Mask = Img::filled(w, rows, false);
-                        near.paste(ax0, ay0, &near_c);
-                        let gray = luma_plane(&frame);
-                        clock.tick("brighten");
-                        Prepared::Captioned {
-                            res,
-                            hole,
-                            near,
-                            gray,
-                        }
-                    }
-                };
-                if to_middle.send(prepared).is_err() {
-                    break;
-                }
+                pending.push_back(scope.spawn(move || brighten(frame, s, area, style, scale, w, rows)));
                 read += 1;
+                if pending.len() >= at_once {
+                    let Some(oldest) = pending.pop_front() else {
+                        break;
+                    };
+                    let prepared = oldest
+                        .join()
+                        .map_err(|payload| crate::util::crashed("brightening a frame", &*payload))?;
+                    clock.tick("brighten");
+                    open = to_middle.send(prepared).is_ok();
+                }
+            }
+            for one in pending {
+                let prepared = one
+                    .join()
+                    .map_err(|payload| crate::util::crashed("brightening a frame", &*payload))?;
+                clock.tick("brighten");
+                if open {
+                    open = to_middle.send(prepared).is_ok();
+                }
             }
             drop(to_middle);
             Ok::<_, String>((read, clock))
