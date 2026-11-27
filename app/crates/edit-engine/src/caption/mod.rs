@@ -520,16 +520,21 @@ pub fn clean_with(
         return Err("no caption letters found to clean".to_owned());
     };
 
-    let mut guard = MODEL
-        .lock()
-        .map_err(|_| "the model's lock was poisoned".to_owned())?;
-    if guard.as_ref().is_none_or(|(path, _)| path != model) {
-        *guard = Some((model.to_path_buf(), lama::Lama::load(model)?));
-    }
-    let Some((_, lama)) = guard.as_mut() else {
-        return Err("the model didn't load".to_owned());
+    // The model is loaded once and kept; it's held only for each frame it fills, so two stretches cleaned at once share
+    // it, and one's reading, motion and levelling go on while the other's frame is filled (Nov 27, mandalorian: held
+    // for a whole stretch, a second lane only waited, while LaMa was 124 s of a 472 s stretch and the 4060 idled).
+    let provider = {
+        let mut guard = MODEL
+            .lock()
+            .map_err(|_| "the model's lock was poisoned".to_owned())?;
+        if guard.as_ref().is_none_or(|(path, _)| path != model) {
+            *guard = Some((model.to_path_buf(), lama::Lama::load(model)?));
+        }
+        let Some((_, lama)) = guard.as_ref() else {
+            return Err("the model didn't load".to_owned());
+        };
+        lama.provider
     };
-    let provider = lama.provider;
     clock.tick("fit and model");
 
     // Three stages a frame apart, so the slowest sets the pace instead of their sum: the front reads each frame, finds
@@ -656,7 +661,15 @@ pub fn clean_with(
                         age += 1;
                         carried_frames += 1;
                     } else {
-                        fill(lama, &mut res, &hole, scale)?;
+                        {
+                            let mut guard = MODEL
+                                .lock()
+                                .map_err(|_| "the model's lock was poisoned".to_owned())?;
+                            let Some((_, lama)) = guard.as_mut() else {
+                                return Err("the model went away".to_owned());
+                            };
+                            fill(lama, &mut res, &hole, scale)?;
+                        }
                         clock.tick("lama");
                         inferred += 1;
                         age = 0;

@@ -570,6 +570,8 @@ const waitingSeconds = (): number => queue.reduce((sum, one) => sum + one.second
 let busy: Promise<void> | null = null;
 /** Stretches cleaned at once: RunPod's workers (the account's 10), or this machine's one GPU. */
 const AT_ONCE_CLOUD = 10;
+/** Stretches LaMa cleans at once on this computer. */
+const LOCAL_AT_ONCE = 2;
 
 const keyOf = (media: string, from: number, to: number) => `clean:${media}@${Math.round(from * 1000)}-${Math.round(to * 1000)}`;
 const jobKey = (source: string, from: number, to: number) => `${source}|${Math.round(from * 1000)}|${Math.round(to * 1000)}`;
@@ -841,8 +843,10 @@ const lanes = new Set<Promise<void>>();
  * cleaned one at a time, 58 queued and 1 running, on a relay with cards to spare).
  */
 function drain(): void {
-  // LaMa here takes one stretch at a time (the engine keeps one model on the GPU).
-  const most = !lamaHere() && cloudNow() ? AT_ONCE_CLOUD : 1;
+  // LaMa here takes two stretches at once: the engine keeps one model, held only while it fills a frame, so one
+  // stretch's reading, motion and levelling go on while the other's frame is filled (Nov 27, mandalorian: one at a time,
+  // LaMa was 124 s of a 472 s stretch and the 4060 sat mostly idle).
+  const most = lamaHere() ? LOCAL_AT_ONCE : cloudNow() ? AT_ONCE_CLOUD : 1;
   while (lanes.size < most && queue.length > 0) {
     // Its first stretch is taken off the queue before this line returns, so the count above is right.
     const lane = (async () => {
