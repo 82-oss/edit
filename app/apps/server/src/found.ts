@@ -1042,8 +1042,10 @@ function stopFinder(child: ReturnType<typeof Bun.spawn>): void {
 
 async function python(app: App, args: string[]): Promise<unknown> {
   const command = [join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args];
-  // setsid: a group of its own (its pid is the group's), so leaving stops its scans and their workers too.
-  const child = Bun.spawn(GROUPED ? ["setsid", ...command] : command, { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
+  // setsid: a group of its own (its pid is the group's), so leaving stops its scans and their workers too. nice: reading a
+  // file for their text waits behind what someone is waiting on now (Nov 27, mandalorian: two scans took 28 of 32 cores
+  // and the LaMa clean, watermark cells and exports of four edits stood still for 40 minutes).
+  const child = Bun.spawn(GROUPED ? ["setsid", "nice", "-n", "19", ...command] : command, { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
   finders.add(child);
   void child.exited.then(() => finders.delete(child));
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
