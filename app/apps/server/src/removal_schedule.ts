@@ -162,6 +162,20 @@ export function progressOf(id: string): { done: number; out: number } {
   return { done, out };
 }
 
+/** What `progressOf`'s out is made of, for the removal line's detail: which part an export still waits on. */
+export function outParts(id: string): Record<string, number | string[]> {
+  return {
+    marks: watermarkRemoval.piecesOf(id).filter((one) => one.state === "queued" || one.state === "running").length,
+    looks: watermarkRemoval.lookingAt(id),
+    blur: textBlur.outOf(id),
+    clean: textInpaint.outOf(id),
+    finder: found.outOf(id),
+    uploads: cloud.waitedFor(id),
+    replanning: replanning.get(id) ?? 0,
+    planning: textRemoval.planningAfterRead(id) ? 1 : 0,
+  };
+}
+
 /** The export's step while pieces are out: "3 of 19 pieces" (null when none is). */
 export function exportLine(id: string): string | null {
   const { done, out } = progressOf(id);
@@ -568,7 +582,7 @@ export function routes(router: Router<App>): void {
   router.get("/api/projects/{id}/removal", ({ app, params }) => {
     const id = params.id ?? "";
     if (app.store.get(id) === null) throw new ApiError(404, "no such project");
-    return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id), lanes: textInpaint.lanesNow() });
+    return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id), lanes: textInpaint.lanesNow(), out: outParts(id) });
   });
   router.post("/api/projects/{id}/removal/stop", async ({ app, params, request }) => {
     const id = params.id ?? "";
