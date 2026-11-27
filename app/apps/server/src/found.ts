@@ -1015,14 +1015,35 @@ function scriptsDir(app: App): string {
   return dir;
 }
 
-/** The finders this Edit started that are still reading: leaving stops them (Nov 26, mandalorian: a restart left one reading a whole file on the card for nobody). */
+/**
+ * The finders this Edit started that are still reading: leaving stops them, and everything they started (Nov 26,
+ * mandalorian: a restart left one reading a whole file on the card for nobody). On Linux each runs in a process group
+ * of its own, so the scan.py it runs and that one's workers go with it (Nov 27: only find.py was stopped, and its
+ * scan of a 40-minute file and two workers went on at 95% for 26 minutes beside the new server's read of the same file).
+ */
 const finders = new Set<ReturnType<typeof Bun.spawn>>();
+const GROUPED = process.platform === "linux";
 process.on("exit", () => {
-  for (const child of finders) child.kill();
+  for (const child of finders) stopFinder(child);
 });
 
+/** `child` and, where it leads a group of its own, everything it started. */
+function stopFinder(child: ReturnType<typeof Bun.spawn>): void {
+  if (GROUPED) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+      return;
+    } catch {
+      // Gone already, or not a group leader: the child alone.
+    }
+  }
+  child.kill();
+}
+
 async function python(app: App, args: string[]): Promise<unknown> {
-  const child = Bun.spawn([join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
+  const command = [join(INSTALLED, "venv", "bin", "python"), join(scriptsDir(app), "find.py"), ...args];
+  // setsid: a group of its own (its pid is the group's), so leaving stops its scans and their workers too.
+  const child = Bun.spawn(GROUPED ? ["setsid", ...command] : command, { stdout: "pipe", stderr: "pipe", env: { ...process.env, PROCS: "2" } });
   finders.add(child);
   void child.exited.then(() => finders.delete(child));
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
