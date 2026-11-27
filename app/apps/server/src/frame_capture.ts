@@ -135,4 +135,6 @@ export async function run(): Promise<void> {
   }
 }
 
-if (import.meta.main) await run();
+// Not awaited at the top: a top-level await makes every module that imports this one load asynchronously, and the
+// compiled binary then failed to start (nightly-103's smoke test: "Unexpected identifier 'init_cloud_media'").
+if (import.meta.main) void run();
