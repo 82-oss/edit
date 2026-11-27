@@ -224,8 +224,8 @@ pub(crate) struct Frames {
 
 impl Frames {
     fn open(args: Vec<OsString>, w: usize, h: usize) -> Result<Self, String> {
+        // At the clean's own priority, not background: the stretch's decode sets its pace, and an export waits on it.
         let mut command = crate::util::ffmpeg_command();
-        crate::util::background_command(&mut command);
         command
             .args(args)
             .stdin(Stdio::null())
@@ -346,7 +346,6 @@ fn read_frames(
     h: usize,
     send: &std::sync::mpsc::SyncSender<Read1>,
 ) {
-    crate::util::background_thread();
     let mut buffer = vec![0u8; w * h * 3];
     loop {
         let one = match stdout.read_exact(&mut buffer) {
@@ -397,7 +396,6 @@ impl Strip {
         partial.push(".partial.mp4");
         let partial = PathBuf::from(partial);
         let mut command = crate::util::ffmpeg_command();
-        crate::util::background_command(&mut command);
         command.args([
             "-hide_banner",
             "-loglevel",

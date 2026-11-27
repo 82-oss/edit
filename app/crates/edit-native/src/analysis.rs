@@ -502,7 +502,7 @@ pub async fn watermark_remove(
 }
 
 /// Their captions out of a stretch filmed by a camera that doesn't move (the engine's still.rs `clean`), from `job`
-/// (found.ts `stillClean`'s JSON): on a thread of its own at background priority, stopped once it has taken longer
+/// (found.ts `stillClean`'s JSON): on a thread of its own (utility, not background: an export waits on it), stopped once it has taken longer
 /// than a stretch may.
 #[napi(ts_return_type = "Promise<StillAnswer>")]
 pub async fn still_clean(job: String) -> napi::Result<serde_json::Value> {
@@ -512,7 +512,9 @@ pub async fn still_clean(job: String) -> napi::Result<serde_json::Value> {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    edit_engine::util::background_thread();
+                    // Not background: every export waits on these, and they run one at a time (Nov 27, mandalorian:
+                    // at nice 10 on a full machine a 23 s stretch took 13 to 16 minutes, 35 to 40 s a second).
+                    edit_engine::util::utility_thread();
                     let deadline = std::time::Instant::now() + edit_engine::still::LONGEST;
                     edit_engine::still::clean(&job, &|| std::time::Instant::now() > deadline)
                 })
@@ -525,7 +527,7 @@ pub async fn still_clean(job: String) -> napi::Result<serde_json::Value> {
 
 /// Their captions out of a stretch the still clean can't take (the engine's caption.rs `clean`: the shadow brightened
 /// back, the letters filled by LaMa at `model`, steadied along the camera's motion), from `job` (the still clean's job,
-/// text_inpaint.ts's request): on a thread of its own at background priority, stopped once it has taken longer than a
+/// text_inpaint.ts's request): on a thread of its own (utility, not background: an export waits on it), stopped once it has taken longer than a
 /// stretch may.
 #[napi(ts_return_type = "Promise<CaptionAnswer>")]
 pub async fn caption_clean(job: String, model: String) -> napi::Result<serde_json::Value> {
@@ -535,7 +537,9 @@ pub async fn caption_clean(job: String, model: String) -> napi::Result<serde_jso
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    edit_engine::util::background_thread();
+                    // Not background: every export waits on these, and they run one at a time (Nov 27, mandalorian:
+                    // at nice 10 on a full machine a 23 s stretch took 13 to 16 minutes, 35 to 40 s a second).
+                    edit_engine::util::utility_thread();
                     let deadline = std::time::Instant::now() + edit_engine::still::LONGEST;
                     edit_engine::caption::clean(&job, std::path::Path::new(&model), &|| {
                         std::time::Instant::now() > deadline
