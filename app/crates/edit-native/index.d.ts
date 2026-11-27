@@ -75,7 +75,7 @@ export interface CachePaths {
 /**
  * Their captions out of a stretch the still clean can't take (the engine's caption.rs `clean`: the shadow brightened
  * back, the letters filled by LaMa at `model`, steadied along the camera's motion), from `job` (the still clean's job,
- * text_inpaint.ts's request): on a thread of its own at background priority, stopped once it has taken longer than a
+ * text_inpaint.ts's request): on a thread of its own (utility, not background: an export waits on it), stopped once it has taken longer than a
  * stretch may.
  */
 export declare function captionClean(job: string, model: string): Promise<CaptionAnswer>
@@ -594,7 +594,7 @@ export declare function speedSpanHolding(project: ProjectInput, start: number, e
 
 /**
  * Their captions out of a stretch filmed by a camera that doesn't move (the engine's still.rs `clean`), from `job`
- * (found.ts `stillClean`'s JSON): on a thread of its own at background priority, stopped once it has taken longer
+ * (found.ts `stillClean`'s JSON): on a thread of its own (utility, not background: an export waits on it), stopped once it has taken longer
  * than a stretch may.
  */
 export declare function stillClean(job: string): Promise<StillAnswer>
