@@ -131,6 +131,8 @@ export interface CaptionAnswer {
   inferred: number;
   carried?: number;
   provider?: string;
+  /** The seconds each step took (decode, letters, brighten, motion, lama, write…). */
+  seconds?: Record<string, number>;
 }
 
 export interface RenderRequest {

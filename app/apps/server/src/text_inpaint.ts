@@ -446,7 +446,7 @@ class LocalLama implements Cleaner {
     try {
       const answer = await clean(JSON.stringify({ ...rest, found: "", plates: "", key: "" }), LAMA);
       // Where the stretch's time went (caption.rs's clock: decode, letters, brighten, motion, lama, write…), to find what sets the pace.
-      const spent = Object.entries((answer as { seconds?: Record<string, number> }).seconds ?? {}).map(([step, took]) => `${step} ${took} s`).join(", ");
+      const spent = Object.entries(answer.seconds ?? {}).map(([step, took]) => `${step} ${took} s`).join(", ");
       diag.info("removal", `LaMa on ${answer.provider ?? "?"}: ${answer.inferred} frames filled, ${answer.carried ?? 0} carried${spent === "" ? "" : ` (${spent})`}`);
       return { ok: true, box: answer.box ?? null, inferred: answer.inferred, seconds: (Date.now() - started) / 1000 };
     } catch (error) {

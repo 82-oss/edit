@@ -14,11 +14,16 @@ function sources(dir: string): string[] {
   });
 }
 
+/** Prefixes the server only reads, put there by an admin: a teammate's Edit never writes them (text_inpaint.ts `LAMA_KEY`, the caption clean's model). */
+const READ_ONLY = ["edit/models/"];
+
 test("every edit/ prefix the server names is one the relay lets anyone signed in write", () => {
   const named = new Set<string>();
   for (const file of sources(path.join(import.meta.dir, "../src"))) {
     for (const match of fs.readFileSync(file, "utf8").matchAll(/[`"'](edit\/[a-z_-]+\/)/g)) named.add(match[1]!);
   }
   expect(named.size).toBeGreaterThan(10);
-  expect([...named].filter((prefix) => !WRITABLE.some((writable) => prefix.startsWith(writable))).sort()).toEqual([]);
+  expect([...named].filter((prefix) => !READ_ONLY.includes(prefix) && !WRITABLE.some((writable) => prefix.startsWith(writable))).sort()).toEqual([]);
+  // A read-only prefix stays out of the team's writes: no one but an admin replaces the model every Edit downloads.
+  expect(READ_ONLY.filter((prefix) => WRITABLE.some((writable) => prefix.startsWith(writable)))).toEqual([]);
 });
