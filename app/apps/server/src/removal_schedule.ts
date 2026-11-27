@@ -40,6 +40,7 @@ import { isOverlay } from "./clean_strips.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as removerCloud from "./remover_cloud.ts";
+import * as reuseOwner from "./reuse_owner.ts";
 import * as sections from "./removal_sections.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
@@ -104,6 +105,8 @@ const ensuring = new Map<string, Promise<void>>();
 async function ensureNow(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return cloud.stopWaiting(id);
+  // A Reuse link to someone else's upload is a source played whole: planned as any footage (reuse_owner.ts).
+  await reuseOwner.check(app, id).catch((error: unknown) => diag.warn("removal", `${id}: checking whose its Reuse links are: ${diag.messageOf(error)}`));
   // What this plan asks to wait for (uploads still going up from here) is all the project waits for once it's in.
   const plan = cloud.planBegins(id);
   await removal.refresh();
