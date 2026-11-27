@@ -468,7 +468,9 @@ pub async fn watermark_remove(
     on_progress: crate::Progress,
 ) -> napi::Result<Option<serde_json::Value>> {
     crate::blocking("taking a watermark out", move || {
-        edit_engine::util::background_thread();
+        // Not background: an export waits on its cells, and only a few run at once (Nov 27, mandalorian: at nice 10
+        // on a full machine no cell finished in two days, each outlasting the server between restarts).
+        edit_engine::util::utility_thread();
         let (width, height) = pair(&piece.size, "size")?;
         let model: edit_engine::watermark::Model = serde_json::from_str(&piece.model)
             .map_err(|error| format!("the watermark's model doesn't read: {error}"))?;

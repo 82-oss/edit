@@ -70,8 +70,8 @@ impl Decoder {
         _frame_bytes: usize,
         fast: bool,
     ) -> Result<Self, String> {
+        // At the cell's own priority, not background: an export waits on it.
         let mut command = crate::util::ffmpeg_command();
-        crate::util::background_command(&mut command);
         command.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
         if fast {
             command.args(["-skip_frame", "noref"]);
@@ -171,8 +171,8 @@ fn rate(fps: f64) -> String {
 impl Encoder {
     fn open(out: &Path, w: usize, h: usize, fps: f64) -> Result<Self, String> {
         let gop = ((fps / 2.0).round() as u32).max(1).to_string();
+        // At the cell's own priority, not background: an export waits on it.
         let mut command = crate::util::ffmpeg_command();
-        crate::util::background_command(&mut command);
         command.args([
             "-hide_banner",
             "-loglevel",
@@ -1534,7 +1534,7 @@ fn parallel<T: Send, R: Send>(
             .into_iter()
             .map(|group| {
                 scope.spawn(move || {
-                    crate::util::background_thread();
+                    crate::util::utility_thread();
                     group.into_iter().map(work).collect::<Vec<R>>()
                 })
             })
