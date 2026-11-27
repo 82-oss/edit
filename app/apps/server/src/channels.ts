@@ -26,7 +26,7 @@
 //   POST   /api/channels                {url} or {title} → {channel}: added, or a placeholder by its name (a teacher's)
 //   POST   /api/channels/{key}/link     {url} → {channel}: a placeholder linked to its YouTube channel
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
-//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?, watermark?, watermarkLook?} → {channel}
+//   PUT    /api/channels/{key}          {narration?, style?, compilation?, lanes?, label?, watermark?, watermarkLook?} → {channel}
 //   GET    /api/channels/{key}/watermark   its watermark's picture (channel_marks.ts)
 //   POST   /api/channels/{key}/watermark   a picture's bytes → {channel}: uploaded as its watermark (a teacher's)
 //   DELETE /api/channels/{key}          put away (its teaching kept)
@@ -90,6 +90,8 @@ export interface Channel {
   fetchedAt: number;
   /** Who narrates its videos; null until it's set up. */
   narration: Narration | null;
+  /** The kind of video it makes, set on its page (`styleOf`); null or missing: its narration's. */
+  style?: Style | null;
   compilation: boolean;
   /**
    * Its watermark (Sphe, Nov 16: "show watermarks when available for that
@@ -394,8 +396,14 @@ export function withMade(channel: Channel): Channel & Made {
   };
 }
 
-/** Who reads a channel's scripts, as Edit's tools take it: a voice (the house's voice-over pipeline, bodycam's) or the editor's recording (interrogation's). */
-export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
+/**
+ * The style a channel's edits are made in: the one set on its page, else its narration's (the editor's recording an
+ * interrogation, a voice bodycam). Who narrates is the narration's alone (script.ts `narrationOf`). Sphe, Nov 27: the
+ * style had been the narration's alone, so a channel narrated by a voice that makes interrogations (Sam's
+ * Compilations) was edited as bodycam, with no case's date and map nor its outro ("we got some feedback, especially
+ * about us not matching the old v1 stuff like the outro for a case").
+ */
+export const styleOf = (channel: Channel): Style => channel.style ?? (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
 
 /**
  * The frame of a new edit on `channel` (Sphe, Nov 21: "for this channel we want 9:16 (for shorts for example) or, we
@@ -684,7 +692,7 @@ export function routes(router: Router<App>): void {
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown; watermarkLook?: unknown; trello?: unknown; competitors?: unknown }>(context);
+      const given = await readJson<{ narration?: unknown; style?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown; watermarkLook?: unknown; trello?: unknown; competitors?: unknown }>(context);
       const trello = given.trello === undefined ? undefined : trelloOf(given.trello);
       if (given.competitors !== undefined && typeof given.competitors !== "string") throw bad("competitors is the team's list, as text");
       const look = given.watermarkLook === undefined ? undefined : lookOf(given.watermarkLook);
@@ -692,6 +700,7 @@ export function routes(router: Router<App>): void {
       // Its picture in the Watermarks folder (the channel page's picker lists them), or null for none.
       if (given.watermark !== undefined && given.watermark !== null && (typeof given.watermark !== "string" || given.watermark === "")) throw bad("watermark is its picture's Drive id in the Watermarks folder, or null for none");
       const narration = narrationOf(given.narration);
+      if (given.style !== undefined && given.style !== null && !STYLES.some((one) => one.value === given.style)) throw bad(`style is one of ${STYLES.map((one) => one.value).join(", ")}, or null for its narration's`);
       if (given.compilation !== undefined && typeof given.compilation !== "boolean") throw bad("compilation is true or false");
       const lanes: Partial<Record<Lane, string>> = {};
       if (given.lanes !== undefined) {
@@ -703,7 +712,7 @@ export function routes(router: Router<App>): void {
           lanes[lane] = text;
         }
       }
-      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}), ...(look !== undefined ? { watermarkLook: look } : {}), ...(trello !== undefined ? { trello } : {}), ...(typeof given.competitors === "string" ? { competitors: given.competitors } : {}) })) as Channel);
+      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.style !== undefined ? { style: given.style } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}), ...(look !== undefined ? { watermarkLook: look } : {}), ...(trello !== undefined ? { trello } : {}), ...(typeof given.competitors === "string" ? { competitors: given.competitors } : {}) })) as Channel);
       forget();
       return json({ channel });
     })
@@ -786,7 +795,7 @@ function changed<T>(given?: T): T | undefined {
 // addons.ts reads the channels through these, handed over here instead of imported there (its `from`: a ring of imports otherwise).
 Object.assign(addons.from, {
   placesOf,
-  narrationStyle: (channel: string) => {
+  channelStyle: (channel: string) => {
     const found = channelOf({ channel });
     return found === null ? "bodycam" : styleOf(found);
   },

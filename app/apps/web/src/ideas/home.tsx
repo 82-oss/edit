@@ -3,6 +3,7 @@
 // user: "one tab, one mode, one page … i think thats better").
 
 import { useChannelChoice } from "../components/Channels";
+import { channelStyle } from "../lib/channels";
 import { ProblemView } from "../components/ProblemView";
 import { AREA, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "../components/NewWork";
 import { useBeta } from "../lib/beta";
@@ -229,9 +230,10 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
   const v2 = useBeta((beta) => beta.v2);
   const pick = (key: string | null) => {
     setChannel(key);
-    // A channel narrated by the editor's recording makes interrogation ideas; a voice's, bodycam ones (where both are theirs).
+    // The channel's kind of video decides (where both are theirs): an interrogation channel's ideas are interrogation ones, bodycam's bodycam.
     const found = channels.find((one) => one.key === key);
-    const kind: Workspace | null = found?.narration ? (found.narration.kind === "recorded" ? "interrogation" : "bodycam") : null;
+    const style = found?.narration || found?.style ? channelStyle(found) : null;
+    const kind: Workspace | null = style === "interrogation" || style === "bodycam" ? style : null;
     if (kind !== null && workspaces.includes(kind)) setWorkspace(kind);
   };
   const [steer, setSteer] = useState("");

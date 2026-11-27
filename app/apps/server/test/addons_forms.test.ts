@@ -265,10 +265,12 @@ describe("a Short made on a channel does what V1's Short does", () => {
       // Recorded narration: the channel's long edits get the team's recording, its Shorts none.
       expect(script.narrationOf(channelShort(TAPED.key, "interrogation"))).toBe("none");
       expect(script.narrationOf(channelShort(SHORTS.key, "bodycam"))).toBe("none");
-      expect(script.narrationOf(longOn(BOTH.key, "interrogation"))).toBe("recording");
+      // A long edit is narrated by its channel's narrator, whatever its style (Nov 27: a voice's interrogations).
+      expect(script.narrationOf(longOn(BOTH.key, "interrogation"))).toBe("house");
       expect(script.narrationOf(longOn(BOTH.key, "bodycam"))).toBe("house");
+      expect(script.narrationOf(longOn(TAPED.key, "interrogation"))).toBe("recording");
       // A channel without the add-on keeps its narration whatever its frame (a moved V1 edit with an odd frame).
-      expect(script.narrationOf(channelShort(PLAIN.key, "interrogation"))).toBe("recording");
+      expect(script.narrationOf(channelShort(PLAIN.key, "interrogation"))).toBe("house");
       for (const p of [v1Short(), channelShort(TAPED.key, "interrogation"), channelShort(SHORTS.key, "bodycam"), channelShort(BOTH.key, "bodycam")]) {
         expect([p.channel ?? null, addons.has(p, "case-research")]).toEqual([p.channel ?? null, false]);
       }

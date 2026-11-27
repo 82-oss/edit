@@ -12,9 +12,9 @@
 //
 // A project made without a channel (every V1 project) has its style's
 // add-ons, exactly what the code did by style (`v1`). A channel's project
-// starts from the same list, its style being what its channel's narration
-// gave it when it was made (bodycam's, or interrogation's when the team
-// records it: `channels.ts` `styleOf`) or a moved V1 edit's own; then what's
+// starts from the same list, its style being its channel's when it was made
+// (set on its page, else its narration's: bodycam's, or interrogation's when
+// the team records it: `channels.ts` `styleOf`) or a moved V1 edit's own; then what's
 // set on the channel or its group; then only those that fit its frame
 // (`form`).
 //
@@ -53,8 +53,8 @@ export const ADDON_PREFIX = "addon-";
  */
 export const from = {
   placesOf: ((_channel, _lane) => []) as typeof channelsModule.placesOf,
-  /** A channel's narration's style, as a project made in it now gets it; bodycam until it's read. */
-  narrationStyle: (_channel: string): "bodycam" | "interrogation" => "bodycam",
+  /** A channel's style, as a project made in it now gets it; bodycam until it's read. */
+  channelStyle: (_channel: string): Style => "bodycam",
   refreshChannels: (): Promise<unknown> => Promise.resolve(),
   addonItems: (() => []) as typeof v2cloudModule.addonItems,
   skillKey: ((name) => name) as typeof v2cloudModule.skillKey,
@@ -448,9 +448,9 @@ export function itemOf(channel: string, name: Name): Item | null {
   return itemsAt(channel, CATALOGUE[name].lane).get(name) ?? null;
 }
 
-/** A channel's narration's style, as a project made in it now gets it (`channels.styleOf`); bodycam until it's read. */
-function narrationStyle(channel: string): "bodycam" | "interrogation" {
-  return from.narrationStyle(channel);
+/** A channel's style, as a project made in it now gets it (`channels.styleOf`); bodycam until it's read. */
+function channelStyle(channel: string): Style {
+  return from.channelStyle(channel);
 }
 
 function defaults(name: Name, style: Style): Record<string, unknown> {
@@ -472,7 +472,7 @@ function lane(channel: string, which: BuiltIn["lane"], style: Style): Effective[
 
 /** Every add-on of a channel's lane as a project made in it now has them, on or off, frame or not: for the agent's list, the channel's page and New project. */
 export function ofChannel(channel: string, which: BuiltIn["lane"]): Effective[] {
-  return lane(channel, which, narrationStyle(channel));
+  return lane(channel, which, channelStyle(channel));
 }
 
 const hasChannel = (project: Of): project is Of & { channel: string } => typeof project.channel === "string" && project.channel !== "";
@@ -483,9 +483,9 @@ function holding(project: Of, name: Name): Effective | null {
   if (!hasChannel(project)) {
     return own.v1.includes(project.style) ? { name, on: true, from: "default", settings: defaults(name, project.style) } : null;
   }
-  // Its defaults are the style it was made with, never the narration read now: a channel's own project got it from
-  // the narration then (`styleOf`), a V1 edit moved onto the channel keeps its own (channel_move.ts), and the
-  // narration changed since changes neither, so each runs what it ran.
+  // Its defaults are the style it was made with, never the channel's read now: a channel's own project got it from
+  // the channel then (`styleOf`), a V1 edit moved onto the channel keeps its own (channel_move.ts), and the
+  // channel's style changed since changes neither, so each runs what it ran.
   const found = lane(project.channel, own.lane, project.style).find((one) => one.name === name);
   if (found?.on !== true) return null;
   // The frame decides only on a channel that makes Shorts on purpose (it has `short-form` set): there a long edit's

@@ -16,7 +16,7 @@
 // an idea or a thumbnail of a channel given to them (in full or by its label)
 // is theirs to make, open and work on, whatever kinds of video they hold. A
 // channel's edit had needed `edit.<style>` beside the channel, its style being
-// only how the channel's videos are narrated (channels.ts `styleOf`), so
+// the channel's (channels.ts `styleOf`), so
 // someone holding `edit.courtroom` and given Inspector Ted couldn't open its
 // edits. Work of no channel (V1) keeps the kinds rule exactly.
 

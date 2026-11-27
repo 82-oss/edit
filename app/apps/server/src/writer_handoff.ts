@@ -107,7 +107,7 @@ export const isCommentary = (given: Pick<WriterScript, "sourceKind" | "commentar
 
 /**
  * The style of the edit made from `given` for `channel` (null: none, V1's
- * `scriptStyle`). A channel's edit runs the way its videos are narrated
+ * `scriptStyle`). A channel's edit runs in the channel's style
  * (channels.styleOf), as New edit's channel projects do; but one made from a
  * commentary keeps commentary's (Nov 21: commentary's home is the
  * InternetJanitor channel), since what an essay's edit needs that isn't a

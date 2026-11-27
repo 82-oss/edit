@@ -347,6 +347,23 @@ describe("a channel's project with no add-ons set", () => {
     expect(on(made("unset"))).toEqual(EDIT_LANE("bodycam"));
   });
 
+  test("a style set on the channel wins over its narration's, and who narrates stays the narrator (Nov 27: Sam's Compilations)", () => {
+    const interrogations = { ...channel("compilations", { kind: "voice", id: "v", name: "Andrew" }), style: "interrogation" as const };
+    const court = { ...channel("court", { kind: "recorded" }), style: "courtroom" as const };
+    useChannelsForTests([...CHANNELS, interrogations, court]);
+    expect(styleOf(interrogations)).toBe("interrogation");
+    expect(styleOf(court)).toBe("courtroom");
+    expect(addons.ofChannel("compilations", "edit").filter((one) => one.on).map((one) => one.name)).toEqual(EDIT_LANE("interrogation"));
+    const made = onChannel("compilations", WIDE, styleOf(interrogations));
+    expect(on(made)).toEqual(EDIT_LANE("interrogation"));
+    // Voiced by the channel's voice, never waiting on a recording the team doesn't make.
+    expect(narrationOf(made)).toBe("house");
+    expect(narrationOf(onChannel("court", WIDE, "courtroom"))).toBe("recording");
+    // Unset, the narration's as before.
+    expect(narrationOf(onChannel("voiced", WIDE, "bodycam"))).toBe("house");
+    expect(narrationOf(onChannel("recorded", WIDE, "interrogation"))).toBe("recording");
+  });
+
   test("its style decides, not the narration read now: a moved V1 edit, a narration changed since, a channel not read", () => {
     useChannelsForTests(CHANNELS);
     // channel_move.ts keeps a moved edit's style, so what ran for its kind still runs.

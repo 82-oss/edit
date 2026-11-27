@@ -10,6 +10,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 
 import type { WatermarkLook } from "@edit/types/watermark";
+import type { Style } from "./types";
 
 import { ApiError, request } from "./api";
 
@@ -41,6 +42,8 @@ export interface Channel {
   views: number | null;
   /** Who narrates its videos; null until it's set up. */
   narration: Narration | null;
+  /** The kind of video it makes, set on its page; null or missing: its narration's (`channelStyle`). */
+  style?: Style | null;
   compilation: boolean;
   /** Its watermark: its logo's Drive id in the Watermarks folder, put on its exports; null or missing: none, so its exports offer none. */
   watermark?: string | null;
@@ -167,7 +170,7 @@ export const channelApi = {
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
   /** A Trello board from a pasted link, read but not kept: its name and the lists ideas go to. */
   board: (url: string) => request<{ trello: Trello }>("GET", `/api/channels/board?url=${encodeURIComponent(url)}`).then((answer) => answer.trello),
-  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null; watermarkLook?: WatermarkLook | null; trello?: Trello | null; competitors?: string }) =>
+  set: (key: string, change: { narration?: Narration; style?: Style | null; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null; watermarkLook?: WatermarkLook | null; trello?: Trello | null; competitors?: string }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
   /** A picture uploaded as its watermark (a teacher's): kept with the channel, in place of a Drive one. */
   uploadWatermark: async (key: string, file: File) => {
@@ -232,6 +235,9 @@ export function compact(count: number | null | undefined): string | null {
 }
 
 /** Who narrates, in a word or two. */
+/** The kind of video a channel makes, as its edits are made (the server's channels.ts `styleOf`): its own, else its narration's. */
+export const channelStyle = (channel: Pick<Channel, "style" | "narration">): Style => channel.style ?? (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
+
 export const narrationLabel = (narration: Narration | null) => (narration === null ? null : narration.kind === "recorded" ? "Recorded by the editor" : narration.name);
 
 /**

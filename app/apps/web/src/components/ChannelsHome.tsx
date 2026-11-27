@@ -17,6 +17,7 @@ import { create } from "zustand";
 import {
   bannerUrl,
   channelsOf,
+  channelStyle,
   compact,
   countsOf,
   groupApi,
@@ -43,7 +44,8 @@ import { AddChannel, AddToGroup, ChannelAvatar, ChannelsFailed, facts, GroupAvat
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { COLUMNS, NAME, PILL, ROW } from "./HomeTable";
 import { Loader } from "./Logo";
-import { Button, ConfirmDialog, cx, IconButton, spring, Switch } from "./ui";
+import { Button, ConfirmDialog, cx, IconButton, Select, spring, Switch } from "./ui";
+import { STYLES } from "../lib/types";
 import { ChannelWatermark } from "./ChannelWatermark";
 import { VoicePicker } from "./VoicePicker";
 
@@ -655,6 +657,32 @@ function Narrator({ channel, className }: { channel: Channel; className?: string
   );
 }
 
+/** The kinds of video a channel can make (a Short is its add-on's, not a kind). */
+const CHANNEL_STYLES = STYLES.filter((one) => one.value !== "shorts");
+
+/**
+ * The kind of video it makes, which its edits follow (Sphe, Nov 27: Sam's Compilations, narrated by a voice, was
+ * edited as bodycam): its narration's until a teacher picks one.
+ */
+function Kind({ channel }: { channel: Channel }) {
+  const teacher = useChannels((state) => state.teacher);
+  const style = channelStyle(channel);
+  const label = CHANNEL_STYLES.find((one) => one.value === style)?.label ?? style;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span>
+        <span className="block text-[13px] font-medium">Kind of video</span>
+        <span className="block text-[12px] text-faint">How its edits are made</span>
+      </span>
+      {teacher ? (
+        <Select value={style} options={CHANNEL_STYLES} onChange={(picked) => change(channel, "kind of video", { style: picked })} className="h-7 shrink-0 justify-end px-2 text-[13px] hover:bg-hover" />
+      ) : (
+        <span className="text-[13px] text-muted">{label}</span>
+      )}
+    </div>
+  );
+}
+
 /** Whether it's a compilation channel: boxed beside the voice on a group's card, a line of its own on a channel's page. */
 function Compilation({ channel, boxed = false }: { channel: Channel; boxed?: boolean }) {
   const teacher = useChannels((state) => state.teacher);
@@ -887,6 +915,7 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
                   <span className={LABEL}>Who narrates</span>
                   <Narrator channel={channel} />
                 </div>
+                <Kind channel={channel} />
                 <Compilation channel={channel} />
                 {teacher && channel.masked !== true && <ChannelWatermark channel={channel} still={mine.find((one) => one.kind === "edit")?.id} />}
                 {teacher && channel.masked !== true && <IdeasBoard channel={channel} />}
