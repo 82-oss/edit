@@ -144,6 +144,23 @@ export function keepsLock(presence: Presence): boolean {
 export interface Attempt {
   base: number;
   hash: string;
+  /**
+   * The bodies of earlier pushes on the same base whose answers never came (newest last). Any of them may be the one
+   * that landed (Nov 27, mandalorian: two pushes of a project timed out under load, the first landed as the next rev,
+   * and checked against the second's body alone it was taken as someone else's: the agent's work was kept aside and
+   * the older version opened, three times in ten minutes).
+   */
+  earlier?: string[];
+}
+
+/** How many unanswered pushes on one base are remembered. */
+export const EARLIER_KEPT = 8;
+
+/** The attempt to write down for a push of `hash` on `base`, after `before` (the one written down, if any). */
+export function nextAttempt(before: Attempt | undefined, base: number, hash: string): Attempt {
+  if (before === undefined || before.base !== base) return { base, hash };
+  const earlier = [...(before.earlier ?? []), before.hash].filter((one) => one !== hash).slice(-EARLIER_KEPT);
+  return earlier.length === 0 ? { base, hash } : { base, hash, earlier };
 }
 
 export function bodyHash(body: string | Uint8Array): string {
@@ -152,7 +169,8 @@ export function bodyHash(body: string | Uint8Array): string {
 
 /** Whether the cloud's rev is this machine's own push (sent on `attempt.base`, its body hashing to `attempt.hash`), whose answer was lost. */
 export function isOwnSave(attempt: Attempt | undefined | null, cloud: { readonly rev: number; readonly bodyHash: string | null } | null): boolean {
-  return attempt !== undefined && attempt !== null && cloud !== null && cloud.bodyHash !== null && cloud.rev === attempt.base + 1 && cloud.bodyHash === attempt.hash;
+  if (attempt === undefined || attempt === null || cloud === null || cloud.bodyHash === null || cloud.rev !== attempt.base + 1) return false;
+  return cloud.bodyHash === attempt.hash || (attempt.earlier ?? []).includes(cloud.bodyHash);
 }
 
 /** Someone else took the lock: what happens to this machine's version (changes here are kept aside, theirs is taken). */

@@ -70,9 +70,9 @@ import * as busy from "./busy.ts";
 import { RELEASE } from "./version.ts";
 import * as os from "node:os";
 import * as nodePath from "node:path";
-import { afterLost, type Attempt, bodyHash, displayName, holderFor, isOwnSave, keepsLock, TIMING } from "./sync_core.ts";
+import { afterLost, type Attempt, bodyHash, displayName, holderFor, isOwnSave, keepsLock, nextAttempt, TIMING } from "./sync_core.ts";
 
-export { afterLost, isOwnSave } from "./sync_core.ts";
+export { afterLost, isOwnSave, nextAttempt } from "./sync_core.ts";
 
 const { DEBOUNCE, RENEW_EVERY, VIEWER_TTL, LINGER, CHECK_EVERY } = TIMING;
 /** Retries after a failure wait 5 s, 10 s, 20 s… up to this. */
@@ -422,7 +422,10 @@ function readSaved(value: unknown): Saved | null {
   const saved: Saved = { rev, dirty };
   if (token !== null) saved.token = token;
   const attempt = fields.attempt as Partial<Attempt> | undefined;
-  if (typeof attempt?.base === "number" && typeof attempt.hash === "string") saved.attempt = { base: attempt.base, hash: attempt.hash };
+  if (typeof attempt?.base === "number" && typeof attempt.hash === "string") {
+    const earlier = Array.isArray(attempt.earlier) ? attempt.earlier.filter((one): one is string => typeof one === "string") : [];
+    saved.attempt = earlier.length === 0 ? { base: attempt.base, hash: attempt.hash } : { base: attempt.base, hash: attempt.hash, earlier };
+  }
   return saved;
 }
 
@@ -683,7 +686,7 @@ export class Cloud implements CloudHook {
   /** A push of `body` on cloud rev `base` is about to go: written down first (`ownSave`). */
   attempting(id: string, base: number, body: string): void {
     this.with(id, (entry) => {
-      entry.saved.attempt = { base, hash: bodyHash(body) };
+      entry.saved.attempt = nextAttempt(entry.saved.attempt, base, bodyHash(body));
     });
     this.persist();
   }
@@ -1346,10 +1349,11 @@ async function ownSave(app: App, cloudProjects: Cloud, id: string): Promise<bool
     const meta = await remote.get(id);
     if (meta === null || meta.rev !== attempt.base + 1 || meta.bodyUrl === "") return false;
     const body = new TextDecoder().decode(await http("GET", meta.bodyUrl, null, SLOW));
-    if (!isOwnSave(attempt, { rev: meta.rev, bodyHash: bodyHash(body) })) return false;
+    const landed = bodyHash(body);
+    if (!isOwnSave(attempt, { rev: meta.rev, bodyHash: landed })) return false;
     const live = app.store.get(id);
-    // Unchanged since that push: saved; changed since: pushed again on top of it.
-    const still = live !== null && bodyHash(JSON.stringify(hooks.outgoing(app, id, live.project))) === attempt.hash;
+    // Unchanged since the push that landed: saved; changed since (or a later push of it never landed): pushed again on top of it.
+    const still = live !== null && bodyHash(JSON.stringify(hooks.outgoing(app, id, live.project))) === landed;
     cloudProjects.with(id, (entry) => {
       entry.saved.rev = meta.rev;
       entry.saved.dirty = !still;
