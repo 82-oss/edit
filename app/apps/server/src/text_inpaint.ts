@@ -761,8 +761,19 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
     }
     piece.state = "queued";
     queue.push({ key, seconds: to - from, project: id, piece, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
+    // Started at once, not when the whole plan is through: the rest of a plan can wait a long while (a stretch from the
+    // shelf laid only once its project isn't playing), and every stretch queued before it, of every project, waited
+    // with it (Nov 27, mandalorian: 312 stretches queued and both lanes idle for 25 minutes while a page played).
+    drain();
   }
   drain();
+}
+
+/** The lanes at work and the stretches waiting for one, for the removal line's detail. */
+export function lanesNow(): { lanes: number; queued: number; queuedBy: Record<string, number> } {
+  const queuedBy: Record<string, number> = {};
+  for (const one of queue) queuedBy[one.project] = (queuedBy[one.project] ?? 0) + 1;
+  return { lanes: lanes.size, queued: queue.length, queuedBy };
 }
 
 async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece, from: number, to: number, first: number, boxes: Box[][], beneath: Beneath[], under: string): Promise<void> {

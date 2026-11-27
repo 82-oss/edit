@@ -568,7 +568,7 @@ export function routes(router: Router<App>): void {
   router.get("/api/projects/{id}/removal", ({ app, params }) => {
     const id = params.id ?? "";
     if (app.store.get(id) === null) throw new ApiError(404, "no such project");
-    return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id) });
+    return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id), lanes: textInpaint.lanesNow() });
   });
   router.post("/api/projects/{id}/removal/stop", async ({ app, params, request }) => {
     const id = params.id ?? "";
