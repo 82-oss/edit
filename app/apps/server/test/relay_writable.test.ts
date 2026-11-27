@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { WRITABLE } from "../../relay/src/authz.ts";
+import { READ_ONLY, WRITABLE } from "../../relay/src/authz.ts";
 
 function sources(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -13,9 +13,6 @@ function sources(dir: string): string[] {
     return entry.isDirectory() ? sources(full) : entry.name.endsWith(".ts") ? [full] : [];
   });
 }
-
-/** Prefixes the server only reads, put there by an admin: a teammate's Edit never writes them (text_inpaint.ts `LAMA_KEY`, the caption clean's model). */
-const READ_ONLY = ["edit/models/"];
 
 test("every edit/ prefix the server names is one the relay lets anyone signed in write", () => {
   const named = new Set<string>();

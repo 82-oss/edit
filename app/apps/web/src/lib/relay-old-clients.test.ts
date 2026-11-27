@@ -13,7 +13,7 @@ import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet, type JWK } from
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { readCutOffsWith, useKeys } from "../../../relay/src/auth";
-import { EDIT_CALLS, WRITABLE } from "../../../relay/src/authz";
+import { EDIT_CALLS, READ_ONLY, WRITABLE } from "../../../relay/src/authz";
 import { callable } from "../../../relay/src/cloud";
 import { ideaCallable } from "../../../relay/src/ideas";
 import relay, { type Env } from "../../../relay/src/index";
@@ -200,7 +200,7 @@ describe("the last nightlies against today's relay", () => {
       const { routes: wanted, calls, prefixes } = asks(sources(tag));
       for (const route of wanted) if (!(await routes(route, bearer))) problems.push(`${tag} calls ${route.method ?? "GET/POST"} ${route.path}: today's relay doesn't route it`);
       for (const call of calls) if (!allowed(call)) problems.push(`${tag} calls ${call.kind ?? "the function"} ${call.name}: today's relay doesn't allow it`);
-      for (const prefix of prefixes) if (!WRITABLE.some((one) => prefix.startsWith(one))) problems.push(`${tag} names ${prefix}: today's relay doesn't let a teammate write there`);
+      for (const prefix of prefixes) if (!READ_ONLY.includes(prefix) && !WRITABLE.some((one) => prefix.startsWith(one))) problems.push(`${tag} names ${prefix}: today's relay doesn't let a teammate write there`);
       // The comb found something: an empty build would pass everything.
       expect(wanted.length, `${tag}'s relay routes`).toBeGreaterThan(10);
       expect(calls.length, `${tag}'s cloud functions`).toBeGreaterThan(20);

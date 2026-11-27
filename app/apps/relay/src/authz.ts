@@ -171,6 +171,12 @@ export function channelRefused(found: Caller, op: "read" | "write", key: string)
   return null;
 }
 
+/**
+ * Where Edit only reads in R2, put there by an admin: a teammate's Edit names them but never writes them, and they stay
+ * out of WRITABLE (no one but an admin replaces the LaMa model every Edit downloads, text_inpaint.ts `LAMA_KEY`).
+ */
+export const READ_ONLY = ["edit/models/"];
+
 /** Where Edit writes in R2 (cloud_media.ts, reviews.ts, reports, ideas). */
 export const WRITABLE = [
   "edit/originals/", "edit/proxies/", "edit/excerpts/", "edit/analysis/", "edit/sound/",
