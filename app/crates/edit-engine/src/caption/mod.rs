@@ -552,8 +552,9 @@ pub fn clean_with(
             let at_once = std::thread::available_parallelism()
                 .map_or(4, |n| n.get() / 4)
                 .clamp(2, BRIGHTEN_AT_ONCE);
-            let mut pending: std::collections::VecDeque<std::thread::ScopedJoinHandle<'_, Prepared>> =
-                std::collections::VecDeque::new();
+            let mut pending: std::collections::VecDeque<
+                std::thread::ScopedJoinHandle<'_, Prepared>,
+            > = std::collections::VecDeque::new();
             let mut open = true;
             let style = &style;
             while read < total && open {
@@ -569,15 +570,17 @@ pub fn clean_with(
                 }
                 clock.tick("letters");
                 let area = area_of(&masks[read], y0, w, rows, margin).filter(|_| s.any());
-                pending.push_back(scope.spawn(move || brighten(frame, s, area, style, scale, w, rows)));
+                pending.push_back(
+                    scope.spawn(move || brighten(frame, s, area, style, scale, w, rows)),
+                );
                 read += 1;
                 if pending.len() >= at_once {
                     let Some(oldest) = pending.pop_front() else {
                         break;
                     };
-                    let prepared = oldest
-                        .join()
-                        .map_err(|payload| crate::util::crashed("brightening a frame", &*payload))?;
+                    let prepared = oldest.join().map_err(|payload| {
+                        crate::util::crashed("brightening a frame", &*payload)
+                    })?;
                     clock.tick("brighten");
                     open = to_middle.send(prepared).is_ok();
                 }

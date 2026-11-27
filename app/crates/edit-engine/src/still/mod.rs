@@ -869,6 +869,36 @@ fn load_plates(path: &Path, w: usize) -> Option<Plates> {
 
 /// The video's shots and their plates, kept in `plates` (every stretch of every file of the video reads the same ones).
 /// Only from seconds the finder read, each caption's box left out, so no caption of theirs can get into a plate.
+/// Videos whose plate came out empty, by plate path: what the build read (`looks_of`), so the same reads aren't made again.
+static NO_PLATE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// What a plate build of `job` reads: its file's boxes and its siblings', each by path, size and last write (FNV-1a),
+/// which change as more of them is read.
+fn looks_of(job: &Job) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |bytes: &[u8]| {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for path in std::iter::once(&job.found).chain(job.also.iter().take(24).map(|one| &one.found)) {
+        mix(path.as_bytes());
+        let (size, written) = std::fs::metadata(path).map_or((0, 0), |meta| {
+            let written = meta
+                .modified()
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_nanos() as u64);
+            (meta.len(), written)
+        });
+        mix(&size.to_le_bytes());
+        mix(&written.to_le_bytes());
+    }
+    hash
+}
+
 fn build_plates(
     job: &Job,
     found: &Found,
@@ -877,10 +907,20 @@ fn build_plates(
 ) -> Result<Option<Plates>, String> {
     let (w, h) = (job.width as usize, job.height as usize);
     let path = plate_path(job);
-    // An empty one (too few looks when it was made) is made again: another file of the video may have them now.
+    // An empty one (too few looks when it was made) is made again: another file of the video may have them now. Not
+    // when nothing it would read has changed: the same files' boxes found no plate a moment ago (Nov 27, mandalorian:
+    // moving bodycam footage never has one, and each of a file's stretches read it and its 24 siblings again for one,
+    // about 4 minutes a stretch before the model could start).
+    let looked = looks_of(job);
     if !again {
         if let Some(kept) = load_plates(&path, w).filter(|(_, plated)| !plated.is_empty()) {
             return Ok(Some(kept));
+        }
+        if NO_PLATE
+            .lock()
+            .is_ok_and(|seen| seen.get(&path) == Some(&looked))
+        {
+            return Ok(None);
         }
     }
     let mut files: Vec<(String, Vec<String>, Found)> =
@@ -963,6 +1003,11 @@ fn build_plates(
                 real: one.real_frame(&plate),
                 plate,
             });
+        }
+    }
+    if plated.is_empty() {
+        if let Ok(mut seen) = NO_PLATE.lock() {
+            seen.insert(path.clone(), looked);
         }
     }
     std::fs::create_dir_all(&job.plates).map_err(|error| format!("the plates' folder: {error}"))?;
