@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import { cleanedInfo } from "./music_removed.ts";
 
 import * as addons from "./addons.ts";
+import { channelOf } from "./channels.ts";
 import type { App } from "./app.ts";
 import { parseTranscript } from "./captions_core.ts";
 import { clipFrom, textStyleFrom } from "./clips.ts";
@@ -3212,8 +3213,10 @@ function afterLine(after: ScriptJob["after"], step: NonNullable<ScriptJob["after
 }
 
 /**
- * Who narrates a project's video, for its import: its style's (model.ts
- * `NARRATION`), but never anyone on a Short, which is its footage's own sound.
+ * Who narrates a project's video, for its import: its channel's narrator
+ * (a voice the house's voice-over, the editor's recording theirs), else its
+ * style's (model.ts `NARRATION`), but never anyone on a Short, which is its
+ * footage's own sound.
  * V1's Short is style "shorts" (NARRATION "none"), and `has` gives it the add-on
  * by that style; a Short made on a channel has its channel narration's style
  * (Nov 21: as interrogation, a recorded channel's Short fetched and placed the
@@ -3221,7 +3224,12 @@ function afterLine(after: ScriptJob["after"], step: NonNullable<ScriptJob["after
  */
 export function narrationOf(project: Project | undefined): (typeof NARRATION)[keyof typeof NARRATION] {
   if (project === undefined) return NARRATION.bodycam;
-  return addons.has(project, "short-form") ? "none" : NARRATION[project.style];
+  if (addons.has(project, "short-form")) return "none";
+  // A channel's is its narrator's, whatever its style (Nov 27: Sam's Compilations, a voice's, edits as interrogation).
+  const narration = channelOf(project)?.narration;
+  if (narration?.kind === "voice") return "house";
+  if (narration?.kind === "recorded") return "recording";
+  return NARRATION[project.style];
 }
 
 /**

@@ -432,7 +432,7 @@ export class ConvexMock {
         // What's left out stays; a watermark of null takes it off (accounts' channels.ts).
         const row = this.channels.find((one) => one.key === args.key);
         if (row === undefined) throw new Fail("invalid", `no channel ${String(args.key)}.`);
-        for (const field of ["narration", "compilation", "label"] as const) if (args[field] !== undefined) row[field] = args[field];
+        for (const field of ["narration", "style", "compilation", "label"] as const) if (args[field] !== undefined) row[field] = args[field];
         if (args.lanes !== undefined) row.lanes = { ...(row.lanes as object), ...(args.lanes as object) };
         // One picture at a time: a Drive id, or one uploaded ({sha256, ext}); a look of null is the house's again.
         if (args.watermark !== undefined) {

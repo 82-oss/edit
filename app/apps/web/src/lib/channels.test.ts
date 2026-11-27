@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bannerUrl, channelsOf, groupTitle, narrationShort, rowsOf, taughtWords, type Channel, type Group } from "./channels";
+import { bannerUrl, channelStyle, channelsOf, groupTitle, narrationShort, rowsOf, taughtWords, type Channel, type Group } from "./channels";
 
 const channel = (key: string, title: string): Channel => ({ key, youtubeId: null, handle: null, title, description: "", avatar: null, banner: null, subscribers: null, videos: null, views: null, narration: null, compilation: false, lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, at: 0 });
 const group = (...keys: string[]): Group => ({ key: "gr-0123456789", lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, channels: keys });
@@ -31,6 +31,13 @@ describe("Channels' table (Sphe, Nov 15: a group is one row, its channels not un
   it("says what each lane was taught in words", () => {
     expect(taughtWords({ ideas: 0, thumbnails: 0, script: 3, edit: 17 })).toBe("Script 3 · Edit 17");
     expect(taughtWords({ ideas: 0, thumbnails: 0, script: 0, edit: 0 })).toBe("Nothing yet");
+  });
+  it("makes the kind of video set on it, else its narration's (Nov 27: Sam's Compilations, a voice's, makes interrogations)", () => {
+    const voice = { kind: "voice", id: "v", name: "Andrew" } as const;
+    expect(channelStyle({ narration: voice })).toBe("bodycam");
+    expect(channelStyle({ narration: { kind: "recorded" } })).toBe("interrogation");
+    expect(channelStyle({ narration: voice, style: "interrogation" })).toBe("interrogation");
+    expect(channelStyle({ narration: { kind: "recorded" }, style: null })).toBe("interrogation");
   });
   it("names a voice by its first name, and a banner by its desktop band", () => {
     expect(narrationShort({ kind: "voice", id: "v", name: "Andrew - Smooth audio books" })).toBe("Andrew");
