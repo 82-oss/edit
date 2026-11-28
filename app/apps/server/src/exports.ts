@@ -548,6 +548,7 @@ export async function archiveExportFile(
   carriedOn = false,
   moving?: () => void,
   wanted?: () => boolean,
+  unshared = false,
 ): Promise<boolean> {
   let size: number;
   try { size = fs.statSync(output).size; } catch { return false; }
@@ -564,13 +565,17 @@ export async function archiveExportFile(
   } catch { return false; }
   // Stopped for a newer export of this file: that one is written here now, and goes up itself.
   if (signal?.aborted) return false;
-  return letGoHere(output, room, wanted);
+  return letGoHere(output, room, wanted, unshared);
 }
 
 /** An export now in the cloud: kept here while the disk has room or something still reads it, else deleted. Whether that went as it should. */
-function letGoHere(output: string, room: (path: string) => number, wanted?: () => boolean): boolean {
+function letGoHere(output: string, room: (path: string) => number, wanted?: () => boolean, unshared = false): boolean {
   // Archived; while the disk keeps its room it stays here too: it's the project's newest.
   if (room(output) > KEEP_NEWEST_FREE) return true;
+  // Not on a review yet, it stays however short the disk is: a share comes after nearly every export, and it fetched
+  // the same bytes back first (Nov 28, the MacBook Air at 15 GB free: Gen Alpha's 5.1 GB export deleted once it was up,
+  // then fetched back for its share, an hour before the link). Room asked for later takes it (`dropArchived`).
+  if (unshared) return true;
   // A copy being read stays until the reading's done; so does one a share's full-quality upload still has to send
   // (`wanted`: its row in the job table). After a restart that upload's own hold isn't taken yet when this carries on,
   // and on a Mac under 20 GB free the file went from under it: it then tried a file that wasn't there twenty times
@@ -648,7 +653,7 @@ export async function archiveFinished(home: string, id: string, output: string, 
   const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
   // Its bytes going up are its row's beat (Nov 21): noted only as it began, an upload of hours read as still.
   const moving = () => jobs.beat(home, rowKey);
-  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving, wanted)) {
+  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving, wanted, !forShare)) {
     try {
       remember(home, id, record);
     } catch { /* the list keeps the local-only record */ }
@@ -1090,6 +1095,34 @@ export function dropKept(home: string, except: string, free: (path: string) => n
     freed += size;
   }
   if (freed > 0) diag.info("export", `freed ${(freed / 1e9).toFixed(1)} GB: exports already in the cloud, kept here while there was room`);
+  return freed;
+}
+
+/**
+ * Room asked for on the disk holding `dir` (an export, the cache's cleaner): the local copies of exports already in the
+ * cloud (verified by size) go, the oldest first, until `free()` is `wanted` (the project's newest unshared one kept
+ * while there was room among them: `letGoHere`). Never one being read, pinned for its chunks, or a share's
+ * full-quality upload still to send. Bytes freed.
+ */
+export function dropArchived(home: string, dir: string, wanted: number, free: () => number): number {
+  if (free() >= wanted) return 0;
+  const here = deviceOf(dir);
+  const sending = new Set(jobs.list(home, "full").filter((job) => jobs.live(job)).map((job) => job.args.path));
+  let freed = 0;
+  for (const record of Object.values(readRecords(home)).flat().sort((a, b) => a.finished_ms - b.finished_ms)) {
+    if (free() >= wanted) break;
+    if (record.cloudKey === undefined || reading.has(record.path) || filePins.pinned(record.path) || sending.has(record.path) || deviceOf(record.path) !== here) continue;
+    let size: number;
+    try {
+      size = fs.statSync(record.path).size;
+    } catch {
+      continue;
+    }
+    if (record.bytes !== null && size !== record.bytes) continue;
+    fs.rmSync(record.path, { force: true });
+    freed += size;
+  }
+  if (freed > 0) diag.info("export", `freed ${(freed / 1e9).toFixed(1)} GB for room asked: exports already in the cloud, kept here`);
   return freed;
 }
 

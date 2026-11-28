@@ -67,7 +67,7 @@ import { Semaphore } from "./semaphore.ts";
 import * as diag from "./diag.ts";
 import * as thread from "./thread.ts";
 import * as drive from "./drive.ts";
-import { beingRead } from "./exports.ts";
+import { beingRead, dropArchived } from "./exports.ts";
 import * as retention from "./export_retention.ts";
 import * as later from "./later.ts";
 import { exportRoots } from "./export_folder.ts";
@@ -1486,9 +1486,11 @@ export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
   const quick = scriptCopiesFirst(app, wanted);
   if (quick.enough) return quick.bytes;
+  const exported = archivedExports(app, wanted);
+  if (diskHooks.free(cache) >= wanted) return quick.bytes + exported;
   const entries = ledger.covers(cache) ? ledger.all() : undefined;
   const report = cleanCache(app, false, Date.now(), { freeBytes: wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
-  const freed = report.bytes + quick.bytes;
+  const freed = report.bytes + quick.bytes + exported;
   saidFreed(freed, wanted);
   return freed;
 }
@@ -1522,15 +1524,31 @@ export async function makeRoomAsync(app: App, wanted: number): Promise<number> {
     if (waiting === ask) waiting = null;
     thread.note("room asked of the cache for work");
     const cache = app.store.cacheDir();
+    const exported = archivedExports(app, ask.wanted);
+    if (diskHooks.free(cache) >= ask.wanted) return exported;
     // Local-first originals the last pass found in R2 have their used stretches cut first, so they can go (local_first_room.ts).
     if (heldInR2.size > 0) await localRoom.keep(app, (path, bytes) => heldInR2.get(path) === bytes, doneLately, undefined, localProjects);
     const entries = ledger.covers(cache) ? ledger.all() : undefined;
     const report = await cleanCacheGently(app, false, Date.now(), { freeBytes: ask.wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
     saidFreed(report.bytes, ask.wanted);
-    return report.bytes;
+    return report.bytes + exported;
   });
   waiting = ask;
   return quick.bytes + (await ask.freed);
+}
+
+/**
+ * Exports already in the cloud kept here (a project's newest, one not on a review yet among them: exports.ts
+ * `letGoHere`): they go first when room is asked, as they once went the moment they were up with the disk short.
+ */
+function archivedExports(app: App, wanted: number): number {
+  const cache = app.store.cacheDir();
+  try {
+    return dropArchived(app.store.home, cache, wanted, () => diskHooks.free(cache));
+  } catch (error) {
+    diag.warn("cache", `exports already in the cloud: ${diag.messageOf(error)}`);
+    return 0;
+  }
 }
 
 /** The edits marked done on Home (none when Later can't be reached: ordered by when they were worked on alone). */

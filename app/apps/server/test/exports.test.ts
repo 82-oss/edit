@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-import { archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
+import { archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropArchived, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
 import type { Project } from "../src/model.ts";
 import * as jobs from "../src/jobs.ts";
 import * as capacity from "../src/export_capacity.ts";
@@ -241,6 +241,32 @@ test("archiveExportFile deletes locally only after a size-verified upload", asyn
     expect(await archiveExportFile(file, "edit/exports/p/Out.mp4", io(50), () => 0)).toBe(true);
     expect(fs.existsSync(file)).toBe(false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an export not on a review yet stays here once it's up however short the disk, and goes when room is asked (Nov 28, the MacBook Air: Gen Alpha's export deleted once up, then fetched back for its share)", async () => {
+  const filePins = await import("../src/file_pins.ts");
+  const home = fs.mkdtempSync(`${os.tmpdir()}/edit-unshared-`);
+  try {
+    const file = `${home}/Out.mp4`;
+    fs.writeFileSync(file, Buffer.alloc(50));
+    const io = { enabled: () => true, upload: async () => {}, head: async () => ({ size: 50 }) };
+    expect(await archiveExportFile(file, "edit/exports/p/Out.mp4", io, () => 0, undefined, false, undefined, undefined, true)).toBe(true);
+    expect(fs.existsSync(file)).toBe(true);
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ p: [{ path: file, name: "Out.mp4", finished_ms: 1, seconds: 1, bytes: 50, frames: 30, whole: true, format: "h264", cloudKey: "edit/exports/p/Out.mp4" }] }));
+    // Room enough already: nothing goes.
+    expect(dropArchived(home, home, 10, () => 100)).toBe(0);
+    // Read by a share, or copied out of by an export: it stays.
+    const release = holdExport(file);
+    expect(dropArchived(home, home, 10, () => 0)).toBe(0);
+    release();
+    const unpin = filePins.pin([file]);
+    expect(dropArchived(home, home, 10, () => 0)).toBe(0);
+    unpin();
+    expect(fs.existsSync(file)).toBe(true);
+    // Room asked, and nothing holds it: it goes.
+    expect(dropArchived(home, home, 10, () => 0)).toBe(50);
+    expect(fs.existsSync(file)).toBe(false);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test("a re-export fetches the archived last export back, so its unchanged chunks are reused", async () => {

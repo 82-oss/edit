@@ -167,3 +167,33 @@ test("an export of a range waits for and starts only the graphics it shows, and 
     cleanup();
   }
 }, 30_000);
+
+test("a project held on another computer has nothing made ready for its graphics here, while one held here does (Nov 28, the Mac: BERSERK, held by nobody there, kept its graphics' footage exporting for hours beside Gen Alpha's export)", async () => {
+  const { Cloud } = await import("../src/cloud_projects.ts");
+  const { app, cleanup } = fixtureHome("effect-render-elsewhere");
+  const id = app.store.create("BERSERK", { width: 1920, height: 1080, fps: 30 }).project.id;
+  let lock = "elsewhere";
+  const cloud = Object.assign(Object.create(Cloud.prototype) as InstanceType<typeof Cloud>, {
+    status: () => ({ cloud: true, on: true, lock }),
+    mayWrite: async () => {},
+    wrote: () => {},
+    created: () => {},
+  });
+  // The fixture's own hook (if any) stands aside for one whose lock is said here.
+  (app.store as unknown as { cloudHook: unknown }).cloudHook = cloud;
+  const made: string[] = [];
+  // Only its own: an earlier test's project may still be settling.
+  effects.beforeRenders.set("test", async (_app, project) => void (project === id && made.push(project)));
+  try {
+    effects.renderSoon(app, id);
+    await Bun.sleep(6_500);
+    expect(made).toEqual([]);
+    lock = "held";
+    effects.renderSoon(app, id);
+    for (let wait = 0; wait < 40 && made.length === 0; wait++) await Bun.sleep(250);
+    expect(made).toEqual([id]);
+  } finally {
+    effects.beforeRenders.delete("test");
+    cleanup();
+  }
+}, 30_000);

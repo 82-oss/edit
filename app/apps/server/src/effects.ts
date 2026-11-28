@@ -3090,12 +3090,15 @@ function prepareAndRender(app: App, project: string): void {
     running.again = true;
     return;
   }
+  // Made ready and drawn by itself only where the project is being edited: its render is written into the project (an
+  // export asked for here makes it ready and waits for it all the same, `waitForRenders`). Elsewhere what's beneath its
+  // graphics was made again at every change that came down for nothing drawn after (Nov 28, the Mac: BERSERK, held by
+  // nobody there, kept its graphics' footage exporting for hours and Gen Alpha's export went at half speed beside it).
+  if (!editingHere(app, project)) return;
   const pass = { again: false };
   preparing.set(project, pass);
   void readyToRender(app, project)
     .then(() => {
-      // Drawn by itself only where the project is being edited: its render is written into the project (an export asked
-      // for here waits for it all the same, `waitForRenders`).
       if (!editingHere(app, project)) return;
       const due = needed(app.store, project).filter((one) => !one.fresh && one.current !== null);
       // Its code in the cloud before it's drawn: a render can take long, or never finish here. Not while a newer change
