@@ -63,6 +63,12 @@ type Where = "here" | "feedback";
 type What = "whole" | RangesMode;
 const WHERE = "edit.export.where";
 const WHAT = "edit.export.what";
+/**
+ * The finished stretches' export whose Done was shown and closed, by project: opened again, the dialog is the Export
+ * as before, not that Done (the 1957 murder edit, Nov 28: "Saved to ~/Downloads" came up every time the dialog
+ * opened, with only Close and Download, and a new version couldn't be exported).
+ */
+const batchSeenKey = (id: string) => `edit.export.batchSeen.${id}`;
 const keptWhere = (): Where => (readSetting(WHERE) === "feedback" ? "feedback" : "here");
 const keptWhat = (): What => {
   const kept = readSetting(WHAT);
@@ -142,7 +148,9 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
         (given) => {
           if (!live) return;
           setBatch(given);
-          if (given !== null && (!given.finished || !openedRef.current)) setBatchShown(true);
+          // Finished: shown once as the dialog opens (after a reload too, Nov 12), until its Done has been seen and closed.
+          const seen = given !== null && given.finished && readSetting(batchSeenKey(project.id)) === String(given.finished_ms);
+          if (given !== null && (!given.finished || (!openedRef.current && !seen))) setBatchShown(true);
           openedRef.current = true;
         },
         () => {},
@@ -284,6 +292,14 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [failedNow, open]);
 
+  // A finished stretches' export whose Done is showing: remembered as seen once the dialog closes.
+  const seenBatch = useRef<{ id: string; at: number | null } | null>(null);
+  useEffect(() => {
+    if (open || seenBatch.current === null) return;
+    writeSetting(batchSeenKey(seenBatch.current.id), String(seenBatch.current.at));
+    seenBatch.current = null;
+    setBatchShown(false);
+  }, [open]);
   if (!project) return null;
   const busy = starting || sharing !== null;
   const exporting = exportState?.state === "queued" || exportState?.state === "running";
@@ -413,6 +429,8 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const doneShare = ran?.share === true && !doneBatch && lastShare?.state === "done" && link !== null;
   const doneSave = ran !== null && !ran.share && !doneBatch && exportState?.state === "done" && typeof exportState.path === "string";
   const done = !running && !problem && (doneShare || doneSave || doneBatch);
+  // Its Done seen (`seenBatch`): once the dialog closes, it doesn't come back for this export.
+  if (doneBatch) seenBatch.current = { id: project.id, at: batch.finished_ms };
   // What it puts up, from the share's own job while it runs (a note heard before it goes over a version makes it the
   // next one), else the server's answer for the share about to start.
   // A share just begun has no job yet: the last one's words stood in its heading for a second (the MacBook Air, Nov 22).

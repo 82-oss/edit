@@ -488,3 +488,26 @@ describe("ShareDialog's three states: before, while it runs, done", () => {
     useAccount.setState({ account: null } as never);
   });
 });
+
+describe("a finished stretches' export (the 1957 murder edit, Nov 28: its Done came up at every open, and nothing could be exported)", () => {
+  it("shows its Done as the dialog opens, and once closed, opens on the Export again", async () => {
+    useEditor.setState({ project: project(), exportState: null });
+    vi.spyOn(api, "watermarks").mockResolvedValue({ channel: null, channels: [] });
+    vi.spyOn(api, "review").mockResolvedValue({ sharing: null, share: null, watermark: null, review: null, next: null, notes: [] } as unknown as Review);
+    vi.spyOn(api, "exportFolder").mockResolvedValue({ shown: "~/Movies/Edit", home: "/home/me" } as never);
+    vi.spyOn(api, "rangesExport").mockResolvedValue({ total: 1, done: 1, current: null, outputs: ["/home/me/Downloads/Case 1.mp4"], error: null, cancelled: false, finished: true, finished_ms: 5 } as never);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const render = (shown: boolean) => act(() => root!.render(<ShareDialog open={shown} onClose={() => {}} />));
+    render(true);
+    await settle();
+    expect(document.body.textContent).toContain("Saved to");
+    render(false);
+    await settle();
+    render(true);
+    await settle();
+    expect(document.body.textContent).not.toContain("Saved to");
+    expect(document.body.textContent).toContain("Export");
+  });
+});
